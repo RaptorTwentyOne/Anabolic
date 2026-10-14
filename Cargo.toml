@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/anabolic-core", "crates/anabolic"]
+# Built by crates/anabolic/build.rs and embedded into anabolic.exe.
+exclude = ["crates/anabolic-launch"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anabolic-core = { path = "crates/anabolic-core" }
+arc-swap = "1.9"
+crossbeam-channel = "0.5"
+serde = { version = "1", features = ["derive"] }
+windows = "0.62"
+
+[profile.dev]
+opt-level = 1
+
+# egui is painfully slow unoptimized; dependencies get optimized even in dev.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

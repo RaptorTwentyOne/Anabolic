@@ -1,0 +1,25 @@
+[package]
+name = "anabolic"
+description = "Task Manager on steroids"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anabolic-core.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"] }
+egui_extras = { version = "0.36", default-features = false }
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+embed-resource = "3"
