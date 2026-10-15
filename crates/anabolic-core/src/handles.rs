@@ -779,6 +779,15 @@ pub enum InspectRequest {
         query: String,
         exclude: Vec<String>,
     },
+    /// What the process' threads wait for; `first` is analysed first (the
+    /// thread of a window that is not responding). Runs on a thread of its
+    /// own: it can take seconds, and must not hold up the others.
+    WaitChain {
+        key: ProcKey,
+        first: Option<u32>,
+    },
+    /// Drops the wait chain analysis under way.
+    StopWaitChain,
 }
 
 pub enum Inspection {
@@ -786,6 +795,16 @@ pub enum Inspection {
     Zombies(Arc<ZombieReport>),
     Modules(Arc<ModuleReport>),
     Found(Arc<FindReport>),
+    WaitChain {
+        key: ProcKey,
+        report: Result<Arc<crate::waits::WaitReport>, String>,
+    },
+    /// How far the wait chain analysis of `key` got.
+    WaitProgress {
+        key: ProcKey,
+        done: usize,
+        total: usize,
+    },
     /// `key` is set when a handle inspection failed.
     Failed {
         key: Option<ProcKey>,
@@ -873,6 +892,8 @@ impl ModuleInspector {
 /// tens of megabytes) on its own thread.
 pub struct Inspector {
     tx: Sender<InspectRequest>,
+    /// `None` stops the analysis under way.
+    waits: Sender<Option<(ProcKey, Option<u32>)>>,
 }
 
 const NAME_LIMIT: usize = 250_000;
@@ -938,9 +959,18 @@ fn name_groups(entries: &[HandleEntry], names: &[Option<Arc<str>>]) -> Vec<(u16,
 }
 
 impl Inspector {
-    pub fn start(notify: impl Fn() + Send + 'static) -> (Self, Receiver<Inspection>) {
+    pub fn start(notify: impl Fn() + Send + Sync + 'static) -> (Self, Receiver<Inspection>) {
         let (tx, rx) = unbounded::<InspectRequest>();
+        let (waits, wait_rx) = unbounded();
         let (out, results) = unbounded();
+        let notify = Arc::new(notify);
+        {
+            let (out, notify) = (out.clone(), notify.clone());
+            thread::Builder::new()
+                .name("anabolic-waits".into())
+                .spawn(move || wait_chains(wait_rx, out, &*notify))
+                .expect("failed to spawn the wait chain thread");
+        }
         thread::Builder::new()
             .name("anabolic-inspector".into())
             .spawn(move || {
@@ -953,56 +983,127 @@ impl Inspector {
                     symbols: Symbolizer::default(),
                     files: HashMap::new(),
                 };
-                while let Ok(mut request) = rx.recv() {
-                    // Only the most recent request matters.
+                while let Ok(request) = rx.recv() {
+                    // Of each kind, only the most recent request matters.
+                    let mut queue = vec![request];
                     while let Ok(newer) = rx.try_recv() {
-                        request = newer;
-                    }
-                    let message = match request {
-                        InspectRequest::Handles { key, resolve_names } => {
-                            match inspect_handles(key, resolve_names, &mut types, &devices) {
-                                Ok(report) => Inspection::Handles(Arc::new(report)),
-                                Err(error) => Inspection::Failed {
-                                    key: Some(key),
-                                    what: format!("handles of PID {}", key.pid),
-                                    error,
-                                },
-                            }
+                        let kind = std::mem::discriminant(&newer);
+                        match queue.iter().position(|r| std::mem::discriminant(r) == kind) {
+                            Some(i) => queue[i] = newer,
+                            None => queue.push(newer),
                         }
-                        InspectRequest::Modules { key, addresses } => Inspection::Modules(
-                            Arc::new(modules.inspect(key, &addresses, &devices)),
-                        ),
-                        InspectRequest::FindHandles { query, exclude } => {
-                            match find_handles(&query, &exclude, &types, &devices) {
-                                Ok(report) => Inspection::Found(Arc::new(report)),
+                    }
+                    for request in queue {
+                        let message = match request {
+                            InspectRequest::Handles { key, resolve_names } => {
+                                match inspect_handles(key, resolve_names, &mut types, &devices) {
+                                    Ok(report) => Inspection::Handles(Arc::new(report)),
+                                    Err(error) => Inspection::Failed {
+                                        key: Some(key),
+                                        what: format!("handles of PID {}", key.pid),
+                                        error,
+                                    },
+                                }
+                            }
+                            InspectRequest::Modules { key, addresses } => Inspection::Modules(
+                                Arc::new(modules.inspect(key, &addresses, &devices)),
+                            ),
+                            InspectRequest::FindHandles { query, exclude } => {
+                                match find_handles(&query, &exclude, &types, &devices) {
+                                    Ok(report) => Inspection::Found(Arc::new(report)),
+                                    Err(error) => Inspection::Failed {
+                                        key: None,
+                                        what: format!("search for \"{query}\""),
+                                        error,
+                                    },
+                                }
+                            }
+                            // Sent to their own thread by `request`.
+                            InspectRequest::WaitChain { .. } | InspectRequest::StopWaitChain => {
+                                continue;
+                            }
+                            InspectRequest::Zombies => match zombie_report() {
+                                Ok(report) => Inspection::Zombies(Arc::new(report)),
                                 Err(error) => Inspection::Failed {
                                     key: None,
-                                    what: format!("search for \"{query}\""),
+                                    what: "zombie scan".into(),
                                     error,
                                 },
-                            }
-                        }
-                        InspectRequest::Zombies => match zombie_report() {
-                            Ok(report) => Inspection::Zombies(Arc::new(report)),
-                            Err(error) => Inspection::Failed {
-                                key: None,
-                                what: "zombie scan".into(),
-                                error,
                             },
-                        },
-                    };
-                    if out.send(message).is_err() {
-                        return;
+                        };
+                        if out.send(message).is_err() {
+                            return;
+                        }
+                        notify();
                     }
-                    notify();
                 }
             })
             .expect("failed to spawn the inspector thread");
-        (Self { tx }, results)
+        (Self { tx, waits }, results)
     }
 
     pub fn request(&self, request: InspectRequest) {
-        let _ = self.tx.send(request);
+        // A closed channel means the app is closing: nothing to do.
+        match request {
+            InspectRequest::WaitChain { key, first } => {
+                let _ = self.waits.send(Some((key, first)));
+            }
+            InspectRequest::StopWaitChain => {
+                let _ = self.waits.send(None);
+            }
+            other => {
+                let _ = self.tx.send(other);
+            }
+        }
+    }
+}
+
+/// The wait chain thread: one analysis at a time; a newer request (or a
+/// stop) ends the one under way, which then answers nothing.
+fn wait_chains(
+    requests: Receiver<Option<(ProcKey, Option<u32>)>>,
+    out: Sender<Inspection>,
+    notify: &dyn Fn(),
+) {
+    const PROGRESS: Duration = Duration::from_millis(250);
+    let mut next = None;
+    loop {
+        let request = match next.take() {
+            Some(request) => request,
+            None => match requests.recv() {
+                Ok(request) => request,
+                Err(_) => return,
+            },
+        };
+        let Some((key, first)) = request else {
+            continue;
+        };
+        let mut told = Instant::now();
+        let report = crate::waits::wait_chains(key, first, &mut |done, total| {
+            if let Ok(newer) = requests.try_recv() {
+                next = Some(newer);
+                return false;
+            }
+            if told.elapsed() >= PROGRESS {
+                told = Instant::now();
+                let _ = out.send(Inspection::WaitProgress { key, done, total });
+                notify();
+            }
+            true
+        });
+        if next.is_some() {
+            continue;
+        }
+        if out
+            .send(Inspection::WaitChain {
+                key,
+                report: report.map(Arc::new),
+            })
+            .is_err()
+        {
+            return;
+        }
+        notify();
     }
 }
 

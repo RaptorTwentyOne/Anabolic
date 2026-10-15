@@ -146,7 +146,7 @@ fn points(ring: &Ring, rect: Rect, visible: usize, max: f32) -> Vec<Pos2> {
 }
 
 /// The area under a polyline is not convex, so build it from quads.
-fn area_mesh(points: &[Pos2], bottom: f32, color: Color32) -> Mesh {
+pub fn area_mesh(points: &[Pos2], bottom: f32, color: Color32) -> Mesh {
     let mut mesh = Mesh::default();
     mesh.reserve_vertices(points.len() * 2);
     mesh.reserve_triangles((points.len() - 1) * 2);

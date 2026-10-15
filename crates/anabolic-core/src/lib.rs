@@ -34,6 +34,7 @@ pub mod sysinfo;
 pub mod taskmgr;
 pub mod topology;
 mod util;
+pub mod waits;
 pub mod winfile;
 
 pub use collector::{Collector, CollectorConfig, Command};

@@ -16,6 +16,7 @@ mod history_page;
 mod icons;
 mod perf;
 mod proc_table;
+mod rules;
 mod settings;
 #[cfg(debug_assertions)]
 mod shot;

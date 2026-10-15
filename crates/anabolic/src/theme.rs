@@ -113,6 +113,7 @@ pub mod icon {
     pub const SHIELD: &str = "\u{EA18}";
     pub const SPEED: &str = "\u{EC4A}";
     pub const HISTORY: &str = "\u{E81C}";
+    pub const RULES: &str = "\u{E9E9}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

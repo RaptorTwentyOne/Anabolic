@@ -1,7 +1,8 @@
 //! The flight recorder: what the machine was doing, kept for a few days in
 //! 10-second buckets, so a stall can be looked at after it is over. A bucket
 //! holds the machine's totals, the processes that led in CPU, memory, disk,
-//! I/O, network or GPU, and the processes that started or exited.
+//! I/O, network or GPU, the processes that started or exited, and the ones
+//! with a window that was not responding.
 //!
 //! The collector hands every snapshot to [`Recorder::observe`]: one pass
 //! over the process list, no I/O. A finished bucket goes to a writer thread
@@ -16,6 +17,7 @@
 //! P pid cpu_avg cpu_max private_kb io_kb disk_kb net_kb gpu_avg name
 //! S count pid name    (started in the bucket; pid of the first)
 //! X count pid name    (exited in the bucket)
+//! N count pid name    (not responding in `count` samples of the bucket)
 //! ```
 
 use std::collections::HashMap;
@@ -97,6 +99,8 @@ pub struct Bucket {
     pub processes: Vec<ProcRecord>,
     pub started: Vec<Event>,
     pub exited: Vec<Event>,
+    /// `count`: samples in which a window of it was not responding.
+    pub hung: Vec<Event>,
 }
 
 impl Bucket {
@@ -134,7 +138,7 @@ impl Bucket {
                 p.name,
             );
         }
-        for (tag, events) in [("S", &self.started), ("X", &self.exited)] {
+        for (tag, events) in [("S", &self.started), ("X", &self.exited), ("N", &self.hung)] {
             for e in events {
                 let _ = writeln!(out, "{tag} {} {} {}", e.count, e.pid, e.name);
             }
@@ -161,7 +165,7 @@ pub fn parse(text: &str) -> Vec<Bucket> {
                     b.processes.push(p);
                 }
             }
-            "S" | "X" => {
+            "S" | "X" | "N" => {
                 let f: Vec<&str> = rest.splitn(3, ' ').collect();
                 let event = (f.len() == 3)
                     .then(|| {
@@ -173,10 +177,10 @@ pub fn parse(text: &str) -> Vec<Bucket> {
                     })
                     .flatten();
                 if let (Some(b), Some(event)) = (current.as_mut(), event) {
-                    if tag == "S" {
-                        b.started.push(event);
-                    } else {
-                        b.exited.push(event);
+                    match tag {
+                        "S" => b.started.push(event),
+                        "X" => b.exited.push(event),
+                        _ => b.hung.push(event),
                     }
                 }
             }
@@ -334,6 +338,7 @@ struct Accumulator {
     procs: HashMap<ProcKey, ProcAcc>,
     started: Vec<(u32, Arc<str>)>,
     exited: Vec<(u32, Arc<str>)>,
+    hung: Vec<(u32, Arc<str>)>,
 }
 
 /// Groups by name, most frequent first, at most `MAX_EVENTS` names.
@@ -396,6 +401,9 @@ impl Accumulator {
             }
             if p.first_seen == snap.seq {
                 self.started.push((p.pid, p.name.clone()));
+            }
+            if p.not_responding {
+                self.hung.push((p.pid, p.name.clone()));
             }
             let a = self.procs.entry(p.key).or_insert_with(|| ProcAcc {
                 pid: p.pid,
@@ -471,6 +479,7 @@ impl Accumulator {
             processes: procs,
             started: group(self.started),
             exited: group(self.exited),
+            hung: group(self.hung),
         }
     }
 }
@@ -624,6 +633,11 @@ mod tests {
                 pid: 78,
                 count: 1,
                 name: Arc::from("conhost.exe"),
+            }],
+            hung: vec![Event {
+                pid: 1234,
+                count: 7,
+                name: Arc::from("Some Game.exe"),
             }],
         }
     }

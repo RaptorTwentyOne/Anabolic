@@ -733,6 +733,7 @@ impl State {
                 net_rx_total: tracked.net_rx_total,
                 net_tx_total: tracked.net_tx_total,
                 user_sid: tracked.sid.clone(),
+                not_responding: false,
             };
 
             if self.selected == Some(key) {
@@ -764,9 +765,18 @@ impl State {
             self.thread_prev_for = None;
         }
 
+        // Window state only: no process is opened for this.
+        let hung = crate::waits::hung_windows();
+        for p in processes
+            .iter_mut()
+            .filter(|p| p.state != ProcState::Exited)
+        {
+            p.not_responding = hung.iter().any(|h| h.pid == p.pid);
+        }
         let mut system = SystemStats {
             cpu: cpu.total,
             cores: cpu.cores,
+            hung,
             ..Default::default()
         };
         for p in processes

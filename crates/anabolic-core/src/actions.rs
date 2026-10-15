@@ -129,6 +129,9 @@ pub enum Action {
     Copy(String),
     /// Start this program again elevated. Waits on the UAC prompt.
     RelaunchElevated,
+    /// Done on the user's standing orders (a rule), not a click: only a
+    /// failure is reported.
+    Quiet(Box<Action>),
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +183,9 @@ impl ActionRunner {
 
 fn perform(action: Action) -> Option<Outcome> {
     let result = match action {
+        Action::Quiet(action) => {
+            return perform(*action).filter(|o| matches!(o, Outcome::Error(_)));
+        }
         Action::ReplaceTaskManager { on, launcher } => {
             return Some(match crate::taskmgr::set_replaced(on, launcher) {
                 Ok(()) => Outcome::TaskManager(crate::taskmgr::registration()),

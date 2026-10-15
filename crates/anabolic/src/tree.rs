@@ -233,6 +233,7 @@ pub fn aggregate(procs: &[ProcessInfo], members: &[u32]) -> ProcessInfo {
         }
         alive = true;
         all_suspended &= p.state == ProcState::Suspended;
+        a.not_responding |= p.not_responding;
         a.cpu += p.cpu;
         a.cpu_kernel += p.cpu_kernel;
         a.cpu_time += p.cpu_time;

@@ -117,6 +117,8 @@ pub struct ProcessInfo {
     pub net_rx_total: u64,
     pub net_tx_total: u64,
     pub user_sid: Option<Arc<[u8]>>,
+    /// One of its windows has taken no message for five seconds.
+    pub not_responding: bool,
 }
 
 impl ProcessInfo {
@@ -164,6 +166,7 @@ impl ProcessInfo {
             net_rx_total: 0,
             net_tx_total: 0,
             user_sid: None,
+            not_responding: false,
         }
     }
 
@@ -344,6 +347,8 @@ pub struct SystemStats {
     pub disk_tracing: bool,
     pub disk_trace_error: Option<String>,
     pub page_files: Vec<crate::hwinfo::PageFile>,
+    /// Windows that are not responding, one per thread.
+    pub hung: Vec<crate::waits::HungWindow>,
 }
 
 #[derive(Clone, Debug)]

@@ -45,6 +45,7 @@ const INTERVALS: [(u64, &str); 6] = [
 enum Pending {
     ResolveNames(ProcKey),
     LoadModules(ProcKey),
+    WaitChain(ProcKey),
     CloseHandle(FoundHandle),
 }
 
@@ -88,6 +89,9 @@ pub struct App {
     handle_view: HandleView,
     perf_view: PerfView,
     history: crate::history_page::HistoryPage,
+    wait_view: crate::details::WaitView,
+    rules_page: crate::rules::RulesPage,
+    rule_engine: crate::rules::Engine,
     /// Logical processor shown in detail on the CPU view.
     perf_core: Option<usize>,
     /// Context switch tracing is on (only while the CPU view is visible).
@@ -124,6 +128,9 @@ pub struct App {
     relaunching: bool,
     /// `--pid N` on the command line: select it once it shows up.
     pending_pid: Option<u32>,
+    /// `--waits`: analyze the wait chain of `--pid` once it shows up (the
+    /// person who typed the flag asked for it; no dialog).
+    pending_waits: bool,
     /// Started with command line overrides: do not persist settings.
     session_only: bool,
 }
@@ -159,6 +166,7 @@ impl App {
                     | "--handles"
                     | "--perf"
                     | "--history"
+                    | "--rule"
                     | "--core"
                     | "--alert"
                     | "--zombies"
@@ -168,6 +176,12 @@ impl App {
         });
         if args.iter().any(|a| a == "--history") {
             settings.tab = Tab::History;
+        }
+        // `--rule NAME`: the rule editor, for that program.
+        let mut rules_page = crate::rules::RulesPage::default();
+        if let Some(image) = value("--rule") {
+            rules_page.new_rule(image, None);
+            settings.tab = Tab::Rules;
         }
         let mut perf_view = PerfView::default();
         if args.iter().any(|a| a == "--perf") {
@@ -217,6 +231,7 @@ impl App {
         }
         let detail_tab = match value("--tab") {
             Some("threads") => DetailTab::Threads,
+            Some("waits") => DetailTab::Waits,
             Some("modules") => DetailTab::Modules,
             Some("network") => DetailTab::Network,
             _ if args.iter().any(|a| a == "--handles") => DetailTab::Handles,
@@ -274,6 +289,9 @@ impl App {
             handle_view: HandleView::default(),
             perf_view,
             history: Default::default(),
+            wait_view: Default::default(),
+            rules_page,
+            rule_engine: Default::default(),
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
@@ -310,6 +328,7 @@ impl App {
             pinned: None,
             focus_search: false,
             pending_pid,
+            pending_waits: args.iter().any(|a| a == "--waits"),
             taskmgr: None,
             this_app: anabolic_core::taskmgr::app_path().map(|p| p.display().to_string()),
             relaunching: false,
@@ -373,6 +392,24 @@ impl App {
                     self.module_view.pending = None;
                     self.module_view.report = Some(report);
                 }
+                Inspection::WaitProgress { key, done, total } => {
+                    if self.wait_view.pending == Some(key) {
+                        self.wait_view.progress = Some((done, total));
+                    }
+                }
+                Inspection::WaitChain { key, report } => {
+                    if self.wait_view.pending == Some(key) {
+                        self.wait_view.pending = None;
+                        self.wait_view.progress = None;
+                    }
+                    match report {
+                        Ok(report) => {
+                            self.wait_view.report = Some(report);
+                            self.wait_view.error = None;
+                        }
+                        Err(e) => self.wait_view.error = Some((key, e)),
+                    }
+                }
                 Inspection::Found(report) => {
                     self.find.pending = false;
                     self.find.report = Some(report);
@@ -419,6 +456,9 @@ impl App {
                     let key = p.key;
                     self.pending_pid = None;
                     self.go_to(key);
+                    if std::mem::take(&mut self.pending_waits) {
+                        self.analyze_waits(key);
+                    }
                 }
             }
         }
@@ -732,7 +772,7 @@ impl App {
                         lines: vec![
                             format!(
                                 "Anabolic will open {} (PID {}) and duplicate each of its {} handles to read \
-                                 their names: file paths, registry keys, object names, and the processes and \
+                                 their names: file paths, registry keys, object names, and the processes \n                                  and \
                                  threads they point to.",
                                 p.name,
                                 p.pid,
@@ -768,6 +808,49 @@ impl App {
                     self.confirm = Some((dialog, Pending::LoadModules(key)));
                 }
                 UiCmd::LoadModules(key) => self.load_modules(key),
+                UiCmd::NewRule {
+                    image,
+                    base_priority,
+                } => {
+                    let priority = anabolic_core::actions::Priority::from_base(base_priority)
+                        .and_then(crate::rules::RulePriority::from_core);
+                    self.rules_page.new_rule(&image, priority);
+                    self.settings.tab = Tab::Rules;
+                }
+                UiCmd::StopWaitChain => {
+                    self.inspector.request(InspectRequest::StopWaitChain);
+                    self.wait_view.pending = None;
+                    self.wait_view.progress = None;
+                }
+                UiCmd::ConfirmWaitChain(key) => {
+                    let Some(p) = self.snapshot.find(key) else {
+                        continue;
+                    };
+                    let dialog = ConfirmDialog {
+                        title: "Analyze the wait chain?".into(),
+                        lines: vec![
+                            format!(
+                                "Anabolic will ask Windows what each thread of {} (PID {}) is waiting for, \
+                                 and follow the chain into other processes. Windows opens the threads for \
+                                 reading; nothing is injected or suspended.",
+                                p.name, p.pid
+                            ),
+                            format!(
+                                "Windows spends about 60 ms of CPU on each waiting thread. {} has {} threads, so \
+                                 this can take up to {} s, on four threads at low priority. Threads that are \
+                                 running or idle are left out.",
+                                p.name,
+                                p.threads,
+                                (p.threads as f32 * 0.06 / 4.0).ceil().max(1.0)
+                            ),
+                            "Protected programs such as anti-cheat or security software may refuse this access \
+                             or treat it as suspicious."
+                                .into(),
+                        ],
+                        confirm: "Analyze".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::WaitChain(key)));
+                }
                 UiCmd::OpenFind => self.open_find(),
                 UiCmd::FindHandles { query, exclude } => {
                     self.find.pending = true;
@@ -847,6 +930,9 @@ impl App {
             }
             if i.consume_key(Modifiers::COMMAND, Key::Num3) {
                 self.settings.tab = Tab::History;
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::Num4) {
+                self.settings.tab = Tab::Rules;
             }
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
@@ -974,6 +1060,7 @@ impl App {
                 "Ctrl+2",
             ),
             (Tab::History, theme::icon::HISTORY, "History", "Ctrl+3"),
+            (Tab::Rules, theme::icon::RULES, "Rules", "Ctrl+4"),
         ];
         for (tab, icon, label, keys) in pages {
             let selected = self.settings.tab == tab;
@@ -1131,7 +1218,8 @@ impl App {
                 let mut changed = ui
                     .checkbox(&mut self.settings.record_history, "Keep a history for")
                     .on_hover_text(
-                        "Every 10 seconds while Anabolic runs: the machine's totals and the processes                          that led. Look back on the History page (Ctrl+3).",
+                        "Every 10 seconds while Anabolic runs: the machine's totals and the processes \
+                         that led. Look back on the History page (Ctrl+3).",
                     )
                     .changed();
                 let days = ui.add_enabled(
@@ -1146,7 +1234,8 @@ impl App {
             });
             ui.horizontal(|ui| {
                 ui.label("Graphs show").on_hover_text(
-                    "Fit stretches each graph over the history collected so far.                      A fixed window keeps its length from the start, and new values flow in from the right.",
+                    "Fit stretches each graph over the history collected so far. \
+                     A fixed window keeps its length from the start, and new values flow in from the right.",
                 );
                 for span in GraphSpan::ALL {
                     ui.selectable_value(&mut self.settings.graph_span, span, span.label());
@@ -1383,6 +1472,27 @@ impl App {
         });
     }
 
+    /// Follows what the process' threads wait for, a hung window's thread
+    /// first, and shows the answer in its details.
+    fn analyze_waits(&mut self, key: ProcKey) {
+        let first = self
+            .snapshot
+            .system
+            .hung
+            .iter()
+            .find(|h| h.pid == key.pid)
+            .map(|h| h.tid);
+        self.wait_view.pending = Some(key);
+        self.wait_view.started = Some(std::time::Instant::now());
+        self.wait_view.progress = None;
+        self.wait_view.error = None;
+        self.inspector
+            .request(InspectRequest::WaitChain { key, first });
+        self.go_to(key);
+        self.detail_tab = DetailTab::Waits;
+        self.settings.show_details = true;
+    }
+
     fn load_modules(&mut self, key: ProcKey) {
         if self.module_view.pending == Some(key) {
             return;
@@ -1543,6 +1653,7 @@ impl App {
                         match pending {
                             Pending::ResolveNames(key) => self.inspect_handles(key, true),
                             Pending::LoadModules(key) => self.load_modules(key),
+                            Pending::WaitChain(key) => self.analyze_waits(key),
                             Pending::CloseHandle(found) => self.actions.run(Action::CloseHandle {
                                 pid: found.pid,
                                 process: found.process.clone(),
@@ -1613,6 +1724,7 @@ impl eframe::App for App {
             Tab::Processes => "Processes".to_string(),
             Tab::Performance => format!("Performance/{:?}", self.perf_view),
             Tab::History => "History".to_string(),
+            Tab::Rules => "Rules".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
         if !self.title_bar_styled {
@@ -1622,6 +1734,15 @@ impl eframe::App for App {
         }
         let ctx = ui.ctx().clone();
         self.pump(&ctx);
+        // Rules: standing orders go to the action thread quietly; alerts
+        // become toasts.
+        let (actions, alerts) = self.rule_engine.step(&self.settings.rules, &self.snapshot);
+        for action in actions {
+            self.actions.run(Action::Quiet(Box::new(action)));
+        }
+        for alert in alerts {
+            self.toasts.error(alert);
+        }
         // Every graph reads its time span from here, in samples.
         crate::graph::set_window(self.settings.graph_span.seconds().map_or(0, |s| {
             (s * 1000 / self.settings.interval_ms.max(1)) as usize
@@ -1674,28 +1795,34 @@ impl eframe::App for App {
                         .resizable(true)
                         .default_size(260.0)
                         .min_size(110.0)
-                        .show(ui, |ui| match (&group, self.table.selected) {
-                            (Some(g), _) => details::show_group(
-                                ui,
-                                g,
-                                &self.snapshot,
-                                &self.details,
-                                &mut self.icons,
-                                &mut cmds,
-                            ),
-                            (None, Some(key)) => details::show(
-                                ui,
-                                &mut self.detail_tab,
-                                key,
-                                &self.snapshot,
-                                &self.details,
-                                &mut self.icons,
-                                &mut self.handle_view,
-                                &self.module_view,
-                                &mut self.focus_thread,
-                                &mut cmds,
-                            ),
-                            (None, None) => {}
+                        .show(ui, |ui| {
+                            // Fill the panel whatever the tab holds, so
+                            // switching tabs never changes its height.
+                            ui.set_min_height(ui.available_height());
+                            match (&group, self.table.selected) {
+                                (Some(g), _) => details::show_group(
+                                    ui,
+                                    g,
+                                    &self.snapshot,
+                                    &self.details,
+                                    &mut self.icons,
+                                    &mut cmds,
+                                ),
+                                (None, Some(key)) => details::show(
+                                    ui,
+                                    &mut self.detail_tab,
+                                    key,
+                                    &self.snapshot,
+                                    &self.details,
+                                    &mut self.icons,
+                                    &mut self.handle_view,
+                                    &self.module_view,
+                                    &self.wait_view,
+                                    &mut self.focus_thread,
+                                    &mut cmds,
+                                ),
+                                (None, None) => {}
+                            }
                         });
                 }
                 egui::CentralPanel::default_margins().show(ui, |ui| {
@@ -1722,6 +1849,20 @@ impl eframe::App for App {
                         &self.zombie_view,
                         &mut cmds,
                     );
+                });
+            }
+            Tab::Rules => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            crate::rules::show(
+                                ui,
+                                &mut self.rules_page,
+                                &mut self.settings.rules,
+                                &self.snapshot,
+                            );
+                        });
                 });
             }
             Tab::History => {

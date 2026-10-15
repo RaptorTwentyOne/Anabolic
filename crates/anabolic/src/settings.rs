@@ -208,6 +208,7 @@ pub enum Tab {
     Processes,
     Performance,
     History,
+    Rules,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -264,6 +265,7 @@ pub struct Settings {
     pub record_history: bool,
     /// Days of history kept.
     pub history_days: u32,
+    pub rules: Vec<crate::rules::Rule>,
 }
 
 impl Default for Settings {
@@ -296,6 +298,7 @@ impl Default for Settings {
             graph_span: GraphSpan::Fit,
             record_history: true,
             history_days: 7,
+            rules: Vec::new(),
         }
     }
 }

@@ -66,6 +66,9 @@ struct Summary {
     events: Vec<(u32, bool, Event)>,
     /// Processes that started or exited in the range.
     event_count: u32,
+    /// (from, to, pid, name): spans in which a window of the process was
+    /// not responding, newest first.
+    hangs: Vec<(u32, u32, u32, Arc<str>)>,
 }
 
 #[derive(Default)]
@@ -340,6 +343,20 @@ fn day_strip(ui: &mut Ui, l: &Loaded, window: &mut u32) {
             painter.vline(px, top..=base, Stroke::new(1.0, cpu));
         }
     }
+    // Something was not responding: a red mark along the top.
+    let mut hangs = false;
+    for (b, &t) in l.buckets.iter().zip(&l.local) {
+        if !b.hung.is_empty() {
+            hangs = true;
+            let x0 = x_at(rect, 0, DAY, t);
+            let x1 = x_at(rect, 0, DAY, t + BUCKET_SECS as u32).max(x0 + 1.0);
+            painter.rect_filled(
+                Rect::from_x_y_ranges(x0..=x1, rect.top()..=rect.top() + 3.0),
+                0.0,
+                theme::BAD,
+            );
+        }
+    }
     let shown = Rect::from_x_y_ranges(
         x_at(rect, 0, DAY, *window)..=x_at(rect, 0, DAY, *window + HOUR),
         rect.y_range(),
@@ -358,7 +375,11 @@ fn day_strip(ui: &mut Ui, l: &Loaded, window: &mut u32) {
         *window = t.saturating_sub(HOUR / 2).min(DAY - HOUR) / 600 * 600;
     }
     if let Some(pos) = response.hover_pos() {
-        response.on_hover_text(format!("{}: show this hour", hm(t_at(rect, 0, DAY, pos.x))));
+        let mut text = format!("{}: show this hour", hm(t_at(rect, 0, DAY, pos.x)));
+        if hangs {
+            text.push_str("\nRed marks: a program was not responding");
+        }
+        response.on_hover_text(text);
     }
     // Hour marks under the strip.
     let (labels, _) = ui.allocate_exact_size(vec2(rect.width(), 14.0), Sense::hover());
@@ -377,8 +398,76 @@ fn day_strip(ui: &mut Ui, l: &Loaded, window: &mut u32) {
     }
 }
 
-/// One hour at full resolution: CPU average as bars with its peak as a
-/// tick, memory as a line. Drag to pick a range, click to pick a record,
+/// Lanes of the hour view, top to bottom.
+#[derive(Clone, Copy, PartialEq)]
+enum Lane {
+    Cpu,
+    Memory,
+    Disk,
+    Network,
+    Gpu,
+    Processes,
+    Hung,
+}
+
+const LANES: [(Lane, f32); 7] = [
+    (Lane::Cpu, 96.0),
+    (Lane::Memory, 48.0),
+    (Lane::Disk, 52.0),
+    (Lane::Network, 52.0),
+    (Lane::Gpu, 36.0),
+    (Lane::Processes, 44.0),
+    (Lane::Hung, 16.0),
+];
+const LANE_GAP: f32 = 6.0;
+/// Room left of the lanes for their names and scales.
+const GUTTER: f32 = 104.0;
+const MIB: f32 = 1024.0 * 1024.0;
+
+/// Bytes per second over a record.
+fn per_sec(b: &Bucket, bytes: u64) -> f32 {
+    bytes as f32 / b.secs.max(1.0)
+}
+
+/// The top of a byte-rate lane: a power of two of MB/s, at least 1 MB/s,
+/// so its label stays round and an idle hour does not magnify noise.
+fn rate_scale(max: f32) -> f32 {
+    ((max / MIB).ceil().max(1.0) as u32).next_power_of_two() as f32 * MIB
+}
+
+fn rate_label(bytes_per_sec: f32) -> String {
+    let mb = bytes_per_sec / MIB;
+    if mb >= 1024.0 {
+        format!("{:.0} GB/s", mb / 1024.0)
+    } else {
+        format!("{mb:.0} MB/s")
+    }
+}
+
+/// A lane's name, scale and colour key, left of it.
+fn lane_label(painter: &egui::Painter, x: f32, lane: Rect, lines: &[&[(&str, Color32)]]) {
+    let mut y = lane.top();
+    for (i, parts) in lines.iter().enumerate() {
+        let size = if i == 0 { theme::META } else { theme::CAPTION };
+        let mut job = egui::text::LayoutJob::default();
+        for (text, color) in *parts {
+            job.append(
+                text,
+                0.0,
+                egui::TextFormat::simple(FontId::proportional(size), *color),
+            );
+        }
+        let galley = painter.layout_job(job);
+        let height = galley.size().y;
+        painter.galley(Pos2::new(x, y), galley, theme::TEXT_WEAK);
+        y += height;
+    }
+}
+
+/// One hour, a bar per ten-second record, in lanes that share the time
+/// axis: CPU (average, with the peak fainter above it), memory, disk and
+/// network (in above the line, out below it), GPU, processes started and
+/// exited, and hangs. Drag to pick a range, click to pick a record,
 /// double-click to clear.
 fn hour_graph(
     ui: &mut Ui,
@@ -388,18 +477,13 @@ fn hour_graph(
     drag_from: &mut Option<u32>,
 ) {
     ui.horizontal(|ui| {
-        let swatch = |ui: &mut Ui, color: Color32, text: &str| {
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            ui.painter().rect_filled(r, 2.0, color);
-            ui.label(
-                RichText::new(text)
-                    .size(theme::META)
-                    .color(theme::TEXT_WEAK),
-            );
-            ui.add_space(8.0);
-        };
-        swatch(ui, theme::CPU, "CPU, average (the tick is the peak)");
-        swatch(ui, theme::MEMORY, "Memory in use");
+        ui.label(
+            RichText::new(
+                "One bar per ten seconds · disk, network and processes on a square-root scale, so small activity shows · hover a bar for details",
+            )
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
+        );
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             ui.label(
                 RichText::new("Drag to pick a range, double-click to clear")
@@ -408,55 +492,249 @@ fn hour_graph(
             );
         });
     });
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), 170.0), Sense::click_and_drag());
-    let painter = ui.painter_at(rect.expand(1.0));
-    painter.rect_filled(rect, 2.0, theme::BG);
-    let grid = Stroke::new(1.0, theme::GRID);
-    for pct in [25.0, 50.0, 75.0] {
-        let y = painter.round_to_pixel_center(rect.bottom() - rect.height() * pct / 100.0);
-        painter.hline(rect.x_range(), y, grid);
-    }
-    for m in (10..60).step_by(10) {
-        let x = painter.round_to_pixel_center(x_at(rect, window, HOUR, window + m * 60));
-        painter.vline(x, rect.y_range(), grid);
-    }
+    ui.add_space(4.0);
 
     let first = l.local.partition_point(|&t| t < window);
     let end = l.local.partition_point(|&t| t < window + HOUR);
-    let y_of = |pct: f32| rect.bottom() - (pct / 100.0).clamp(0.0, 1.0) * rect.height();
-    let step = rect.width() * BUCKET_SECS as f32 / HOUR as f32;
-    let bar = theme::CPU.gamma_multiply(0.55);
+    let buckets = &l.buckets[first..end];
+    let times = &l.local[first..end];
+    let peak_of = |f: &dyn Fn(&Bucket) -> f32| buckets.iter().map(f).fold(0.0, f32::max);
+    let disk_scale = rate_scale(peak_of(&|b| per_sec(b, b.disk_read.max(b.disk_write))));
+    let net_scale = rate_scale(peak_of(&|b| per_sec(b, b.net_rx.max(b.net_tx))));
+    let memory_total = buckets.iter().map(|b| b.memory_total).max().unwrap_or(0);
+    let count = |events: &[Event]| events.iter().map(|e| e.count).sum::<u32>() as f32;
+    let churn_scale = peak_of(&|b| count(&b.started).max(count(&b.exited))).max(1.0);
+
+    let height = LANES.iter().map(|(_, h)| h).sum::<f32>() + LANE_GAP * (LANES.len() - 1) as f32;
+    let (outer, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let plot = Rect::from_x_y_ranges((outer.left() + GUTTER)..=outer.right(), outer.y_range());
+    let response = ui.interact(plot, ui.id().with("history-hour"), Sense::click_and_drag());
+    let painter = ui.painter_at(outer.expand(1.0));
+    let mut lanes = [(Lane::Cpu, plot); LANES.len()];
+    let mut top = outer.top();
+    for (slot, (lane, h)) in lanes.iter_mut().zip(LANES) {
+        *slot = (lane, Rect::from_x_y_ranges(plot.x_range(), top..=top + h));
+        top += h + LANE_GAP;
+    }
+    let rect_of = |which: Lane| {
+        lanes
+            .iter()
+            .find(|(lane, _)| *lane == which)
+            .map_or(plot, |(_, r)| *r)
+    };
+
+    let grid = Stroke::new(1.0, theme::GRID);
+    let peak_color = theme::CPU.gamma_multiply(0.22);
+    let total = fmt::bytes(memory_total);
+    let (disk_top, net_top) = (rate_label(disk_scale), rate_label(net_scale));
+    let churn_top = format!("{churn_scale:.0} per bar");
+    for (lane, r) in lanes {
+        painter.rect_filled(r, 2.0, theme::BG);
+        for m in (10..60).step_by(10) {
+            let x = painter.round_to_pixel_center(x_at(r, window, HOUR, window + m * 60));
+            painter.vline(x, r.y_range(), grid);
+        }
+        let x = outer.left();
+        let dim = theme::TEXT_DIM;
+        match lane {
+            Lane::Cpu => {
+                for pct in [25.0, 50.0, 75.0] {
+                    let y = painter.round_to_pixel_center(r.bottom() - r.height() * pct / 100.0);
+                    painter.hline(r.x_range(), y, grid);
+                }
+                lane_label(
+                    &painter,
+                    x,
+                    r,
+                    &[
+                        &[("CPU", theme::TEXT_WEAK)],
+                        &[("0 – 100 %", dim)],
+                        &[("average", theme::CPU)],
+                        &[("peak", theme::CPU.gamma_multiply(0.6))],
+                    ],
+                );
+            }
+            Lane::Memory => lane_label(
+                &painter,
+                x,
+                r,
+                &[
+                    &[("Memory", theme::TEXT_WEAK)],
+                    &[("in use, of ", dim), (&total, dim)],
+                ],
+            ),
+            Lane::Disk | Lane::Network => {
+                let y = painter.round_to_pixel_center(r.center().y);
+                painter.hline(r.x_range(), y, Stroke::new(1.0, theme::BORDER));
+                let (name, top, up, down) = if lane == Lane::Disk {
+                    (
+                        "Disk",
+                        &disk_top,
+                        ("↑ read  ", theme::DISK_READ),
+                        ("↓ written", theme::DISK_WRITE),
+                    )
+                } else {
+                    (
+                        "Network",
+                        &net_top,
+                        ("↑ in  ", theme::NET_RX),
+                        ("↓ out", theme::NET_TX),
+                    )
+                };
+                lane_label(
+                    &painter,
+                    x,
+                    r,
+                    &[
+                        &[(name, theme::TEXT_WEAK)],
+                        &[("up to ", dim), (top, dim)],
+                        &[up, down],
+                    ],
+                );
+            }
+            Lane::Gpu => lane_label(
+                &painter,
+                x,
+                r,
+                &[&[("GPU", theme::TEXT_WEAK)], &[("busiest, peak", dim)]],
+            ),
+            Lane::Processes => {
+                let y = painter.round_to_pixel_center(r.center().y);
+                painter.hline(r.x_range(), y, Stroke::new(1.0, theme::BORDER));
+                lane_label(
+                    &painter,
+                    x,
+                    r,
+                    &[
+                        &[("Processes", theme::TEXT_WEAK)],
+                        &[("up to ", dim), (&churn_top, dim)],
+                        &[("↑ started  ", theme::GOOD), ("↓ exited", theme::TEXT_WEAK)],
+                    ],
+                );
+            }
+            Lane::Hung => lane_label(&painter, x, r, &[&[("Not responding", theme::BAD)]]),
+        }
+    }
+
+    let step = plot.width() * BUCKET_SECS as f32 / HOUR as f32;
+    let fraction = |r: Rect, f: f32| r.bottom() - f.clamp(0.0, 1.0) * r.height();
+    let [cpu, mem, disk, net, gpu, churn, hung] = [
+        Lane::Cpu,
+        Lane::Memory,
+        Lane::Disk,
+        Lane::Network,
+        Lane::Gpu,
+        Lane::Processes,
+        Lane::Hung,
+    ]
+    .map(rect_of);
+    // In above a lane's middle line, out below it; square-root heights.
+    let mirrored = |r: Rect,
+                    xs: std::ops::RangeInclusive<f32>,
+                    up: f32,
+                    down: f32,
+                    colors: (Color32, Color32)| {
+        let (mid, half) = (r.center().y, r.height() / 2.0 - 1.0);
+        let height = |f: f32| f.clamp(0.0, 1.0).sqrt() * half;
+        let (up, down) = (height(up), height(down));
+        if up >= 0.5 {
+            painter.rect_filled(
+                Rect::from_x_y_ranges(xs.clone(), (mid - up)..=mid),
+                0.0,
+                colors.0,
+            );
+        }
+        if down >= 0.5 {
+            painter.rect_filled(Rect::from_x_y_ranges(xs, mid..=(mid + down)), 0.0, colors.1);
+        }
+    };
     let mut memory: Vec<Pos2> = Vec::new();
     let mut lines: Vec<Vec<Pos2>> = Vec::new();
     let mut previous: Option<u32> = None;
-    for i in first..end {
-        let (b, t) = (&l.buckets[i], l.local[i]);
-        let x0 = x_at(rect, window, HOUR, t);
+    for (b, &t) in buckets.iter().zip(times) {
+        let x0 = x_at(plot, window, HOUR, t);
         let x1 = (x0 + step - 0.5).max(x0 + 1.0);
-        painter.rect_filled(
-            Rect::from_x_y_ranges(x0..=x1, y_of(b.cpu_avg)..=rect.bottom()),
-            0.0,
-            bar,
+        let xs = x0..=x1;
+        let bar = |r: Rect, y: f32| Rect::from_x_y_ranges(xs.clone(), y..=r.bottom());
+
+        let (avg, peak) = (
+            fraction(cpu, b.cpu_avg / 100.0),
+            fraction(cpu, b.cpu_max / 100.0),
         );
-        let peak = y_of(b.cpu_max);
-        painter.hline(x0..=x1, peak, Stroke::new(1.0, theme::CPU));
+        if peak < avg {
+            painter.rect_filled(
+                Rect::from_x_y_ranges(xs.clone(), peak..=avg),
+                0.0,
+                peak_color,
+            );
+        }
+        painter.rect_filled(bar(cpu, avg), 0.0, theme::CPU.gamma_multiply(0.6));
+
         // The memory line breaks where nothing was recorded.
         if previous.is_some_and(|p| t > p + BUCKET_SECS as u32) {
             lines.push(std::mem::take(&mut memory));
         }
-        memory.push(Pos2::new(x0 + step / 2.0, y_of(memory_pct(b))));
+        memory.push(Pos2::new(
+            x0 + step / 2.0,
+            fraction(mem, memory_pct(b) / 100.0),
+        ));
         previous = Some(t);
+
+        mirrored(
+            disk,
+            xs.clone(),
+            per_sec(b, b.disk_read) / disk_scale,
+            per_sec(b, b.disk_write) / disk_scale,
+            (
+                theme::DISK_READ.gamma_multiply(0.75),
+                theme::DISK_WRITE.gamma_multiply(0.75),
+            ),
+        );
+        mirrored(
+            net,
+            xs.clone(),
+            per_sec(b, b.net_rx) / net_scale,
+            per_sec(b, b.net_tx) / net_scale,
+            (
+                theme::NET_RX.gamma_multiply(0.75),
+                theme::NET_TX.gamma_multiply(0.75),
+            ),
+        );
+        if b.gpu_max >= 1.0 {
+            painter.rect_filled(
+                bar(gpu, fraction(gpu, b.gpu_max / 100.0)),
+                0.0,
+                theme::GPU.gamma_multiply(0.6),
+            );
+        }
+
+        mirrored(
+            churn,
+            xs.clone(),
+            count(&b.started) / churn_scale,
+            count(&b.exited) / churn_scale,
+            (theme::GOOD.gamma_multiply(0.7), theme::TEXT_DIM),
+        );
+        if !b.hung.is_empty() {
+            painter.rect_filled(
+                Rect::from_x_y_ranges(xs.clone(), hung.shrink2(vec2(0.0, 2.0)).y_range()),
+                0.0,
+                theme::BAD,
+            );
+        }
     }
     lines.push(memory);
-    for line in lines {
-        if line.len() > 1 {
-            painter.add(Shape::line(line, Stroke::new(1.5, theme::MEMORY)));
-        }
+    for line in lines.into_iter().filter(|l| l.len() > 1) {
+        painter.add(crate::graph::area_mesh(
+            &line,
+            mem.bottom(),
+            theme::MEMORY.gamma_multiply(0.18),
+        ));
+        painter.add(Shape::line(line, Stroke::new(1.5, theme::MEMORY)));
     }
 
     // Picking: snapped to records.
-    let snap_t = |x: f32| t_at(rect, window, HOUR, x) / BUCKET_SECS as u32 * BUCKET_SECS as u32;
+    let snap_t = |x: f32| t_at(plot, window, HOUR, x) / BUCKET_SECS as u32 * BUCKET_SECS as u32;
     if response.double_clicked() {
         *selection = None;
     } else if let Some(pos) = response.interact_pointer_pos() {
@@ -478,8 +756,8 @@ fn hour_graph(
     }
     if let Some((a, b)) = *selection {
         let picked = Rect::from_x_y_ranges(
-            x_at(rect, window, HOUR, a)..=x_at(rect, window, HOUR, b),
-            rect.y_range(),
+            x_at(plot, window, HOUR, a)..=x_at(plot, window, HOUR, b),
+            plot.y_range(),
         );
         painter.rect_filled(picked, 0.0, theme::SELECTION.gamma_multiply(0.45));
         painter.rect_stroke(
@@ -494,22 +772,20 @@ fn hour_graph(
         let t = snap_t(pos.x);
         painter.vline(
             pos.x,
-            rect.y_range(),
+            plot.y_range(),
             Stroke::new(1.0, theme::BORDER_STRONG),
         );
-        let hovered = l.local[first..end]
-            .binary_search(&t)
-            .ok()
-            .map(|i| i + first);
+        let hovered = times.binary_search(&t).ok();
         response.on_hover_ui_at_pointer(|ui| match hovered {
-            Some(i) => bucket_tooltip(ui, &l.buckets[i], l.local[i]),
+            Some(i) => bucket_tooltip(ui, &buckets[i], times[i]),
             None => {
                 ui.label(format!("{}: not recorded", hms(t)));
             }
         });
     }
 
-    let (labels, _) = ui.allocate_exact_size(vec2(rect.width(), 14.0), Sense::hover());
+    let (labels, _) = ui.allocate_exact_size(vec2(outer.width(), 14.0), Sense::hover());
+    let labels = Rect::from_x_y_ranges(plot.x_range(), labels.y_range());
     for m in (0..=60).step_by(10) {
         ui.painter().text(
             Pos2::new(x_at(labels, window, HOUR, window + m * 60), labels.top()),
@@ -525,28 +801,107 @@ fn hour_graph(
     }
 }
 
+/// Up to four names, then how many more.
+fn names(events: &[Event]) -> String {
+    let mut text = events
+        .iter()
+        .take(4)
+        .map(|e| {
+            if e.count > 1 {
+                format!("{} ×{}", e.name, e.count)
+            } else {
+                e.name.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if events.len() > 4 {
+        text.push_str(&format!(" and {} more", events.len() - 4));
+    }
+    text
+}
+
 fn bucket_tooltip(ui: &mut Ui, b: &Bucket, t: u32) {
+    ui.set_max_width(380.0);
     ui.label(widgets::strong(
         format!("{} – {}", hms(t), hms(t + BUCKET_SECS as u32)),
         theme::BODY,
     ));
-    ui.label(format!(
-        "CPU {:.0} % average, {:.0} % peak",
-        b.cpu_avg, b.cpu_max
-    ));
-    ui.label(format!(
-        "Memory {} of {}",
-        fmt::bytes(b.memory_used),
-        fmt::bytes(b.memory_total)
-    ));
-    if b.disk_active > 0.0 {
-        ui.label(format!("Busiest disk {:.0} % active", b.disk_active));
+    let rate = |bytes: u64| fmt::rate_always(per_sec(b, bytes) as f64);
+    egui::Grid::new("history-bucket")
+        .num_columns(2)
+        .spacing([12.0, 2.0])
+        .show(ui, |ui| {
+            let mut row = |name: &str, color: Color32, value: String| {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                    ui.painter().rect_filled(r, 2.0, color);
+                    ui.label(RichText::new(name).color(theme::TEXT_WEAK));
+                });
+                ui.label(value);
+                ui.end_row();
+            };
+            row(
+                "CPU",
+                theme::CPU,
+                format!("{:.0} % average, {:.0} % peak", b.cpu_avg, b.cpu_max),
+            );
+            row(
+                "Memory",
+                theme::MEMORY,
+                format!(
+                    "{} of {} ({:.0} %)",
+                    fmt::bytes(b.memory_used),
+                    fmt::bytes(b.memory_total),
+                    memory_pct(b)
+                ),
+            );
+            let busiest = if b.disk_active > 0.0 {
+                format!(" · busiest disk {:.0} % active", b.disk_active)
+            } else {
+                String::new()
+            };
+            row(
+                "Disk",
+                theme::DISK_READ,
+                format!(
+                    "{} read, {} written{busiest}",
+                    rate(b.disk_read),
+                    rate(b.disk_write)
+                ),
+            );
+            row(
+                "Network",
+                theme::NET_RX,
+                format!("{} in, {} out", rate(b.net_rx), rate(b.net_tx)),
+            );
+            if b.gpu_max > 0.0 {
+                row("GPU", theme::GPU, format!("{:.0} % peak", b.gpu_max));
+            }
+        });
+    let mut busiest: Vec<_> = b.processes.iter().filter(|p| p.cpu_avg >= 0.1).collect();
+    busiest.sort_by(|a, b| b.cpu_avg.total_cmp(&a.cpu_avg));
+    if !busiest.is_empty() {
+        ui.add_space(4.0);
+        ui.label(widgets::strong("Busiest", theme::META).color(theme::TEXT_WEAK));
+        for p in busiest.iter().take(3) {
+            ui.label(format!(
+                "{}  ·  {:.1} % CPU  ·  {} private",
+                p.name,
+                p.cpu_avg,
+                fmt::bytes(p.private)
+            ));
+        }
     }
-    if let Some(p) = b.processes.first().filter(|p| p.cpu_avg > 0.1) {
-        ui.label(
-            RichText::new(format!("Top CPU: {} ({:.1} %)", p.name, p.cpu_avg))
-                .color(theme::TEXT_WEAK),
-        );
+    if !b.hung.is_empty() {
+        ui.add_space(4.0);
+        ui.label(RichText::new(format!("Not responding: {}", names(&b.hung))).color(theme::BAD));
+    }
+    if !b.started.is_empty() {
+        ui.label(RichText::new(format!("Started: {}", names(&b.started))).color(theme::GOOD));
+    }
+    if !b.exited.is_empty() {
+        ui.label(RichText::new(format!("Exited: {}", names(&b.exited))).color(theme::TEXT_WEAK));
     }
 }
 
@@ -606,6 +961,8 @@ fn summarize(l: &Loaded, from: u32, to: u32) -> Summary {
     let mut s = Summary::default();
     let mut by: HashMap<(u32, Arc<str>), Acc> = HashMap::new();
     let mut cpu_sum = 0.0f64;
+    // Consecutive records of the same hang become one span.
+    let mut open_hangs: HashMap<(u32, Arc<str>), (u32, u32)> = HashMap::new();
     let start = l.local.partition_point(|&t| t < from);
     let end = l.local.partition_point(|&t| t < to);
     for i in start..end {
@@ -636,7 +993,26 @@ fn summarize(l: &Loaded, from: u32, to: u32) -> Summary {
             s.event_count += e.count;
             s.events.push((t, false, e.clone()));
         }
+        for e in &b.hung {
+            let next = t + BUCKET_SECS as u32;
+            match open_hangs.get_mut(&(e.pid, e.name.clone())) {
+                Some(span) if span.1 >= t => span.1 = next,
+                Some(span) => {
+                    s.hangs.push((span.0, span.1, e.pid, e.name.clone()));
+                    *span = (t, next);
+                }
+                None => {
+                    open_hangs.insert((e.pid, e.name.clone()), (t, next));
+                }
+            }
+        }
     }
+    s.hangs.extend(
+        open_hangs
+            .into_iter()
+            .map(|((pid, name), (a, b))| (a, b, pid, name)),
+    );
+    s.hangs.sort_by_key(|h| std::cmp::Reverse(h.0));
     if s.secs <= 0.0 {
         return s;
     }
@@ -833,14 +1209,20 @@ fn process_name(ui: &mut Ui, pid: u32, name: &str, snap: &Snapshot, out: &mut Ve
 }
 
 fn events(ui: &mut Ui, s: &Summary, width: f32, snap: &Snapshot, out: &mut Vec<UiCmd>) {
-    let title = if s.events.len() >= ROWS {
+    let title = if !s.hangs.is_empty() {
+        format!(
+            "Events ({} not responding, {} started or exited)",
+            s.hangs.len(),
+            s.event_count
+        )
+    } else if s.events.len() >= ROWS {
         format!("Started and exited ({}, latest shown)", s.event_count)
     } else {
         format!("Started and exited ({})", s.event_count)
     };
     widgets::section(ui, &title);
     let time = 64.0;
-    let kind = 76.0;
+    let kind = 104.0;
     let name = width - time - kind - 8.0;
     widgets::header(
         ui,
@@ -850,7 +1232,35 @@ fn events(ui: &mut Ui, s: &Summary, width: f32, snap: &Snapshot, out: &mut Vec<U
             ("Process", name, Align::Min),
         ],
     );
-    for (i, (t, started, e)) in s.events.iter().enumerate() {
+    // Hangs first: they are what this page is most often opened for.
+    let hangs = s.hangs.len().min(ROWS);
+    for (i, (from, to, pid, process)) in s.hangs.iter().take(ROWS).enumerate() {
+        widgets::row(ui, i, |ui| {
+            widgets::text(
+                ui,
+                time,
+                Align::Min,
+                RichText::new(hms(*from)).color(theme::TEXT_WEAK),
+            );
+            widgets::text(
+                ui,
+                kind,
+                Align::Min,
+                RichText::new("not responding").color(theme::BAD),
+            );
+            widgets::cell(ui, name, Align::Min, |ui| {
+                process_name(ui, *pid, process, snap, out);
+                ui.label(
+                    RichText::new(format!("for {} s", to - from))
+                        .size(theme::META)
+                        .color(theme::TEXT_WEAK),
+                );
+            });
+        });
+    }
+    let shown = s.events.len().min(ROWS - hangs);
+    for (i, (t, started, e)) in s.events.iter().take(shown).enumerate() {
+        let i = i + hangs;
         widgets::row(ui, i, |ui| {
             widgets::text(
                 ui,
@@ -878,5 +1288,5 @@ fn events(ui: &mut Ui, s: &Summary, width: f32, snap: &Snapshot, out: &mut Vec<U
             });
         });
     }
-    widgets::blank_rows(ui, s.events.len(), ROWS, name);
+    widgets::blank_rows(ui, hangs + shown, ROWS, name);
 }

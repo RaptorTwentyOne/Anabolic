@@ -59,6 +59,15 @@ pub enum UiCmd {
     ConfirmResolveNames(ProcKey),
     /// Ask before reading the process' module list (opens it for reading).
     ConfirmLoadModules(ProcKey),
+    /// Ask before following what the process' threads wait for.
+    ConfirmWaitChain(ProcKey),
+    /// Drop the wait chain analysis under way.
+    StopWaitChain,
+    /// Open the rule editor for this program, at its current priority.
+    NewRule {
+        image: Arc<str>,
+        base_priority: i32,
+    },
     /// Load modules without asking (the System process: no process is opened).
     LoadModules(ProcKey),
     OpenFind,
@@ -444,6 +453,13 @@ fn name_cell(
         }
     }
 
+    if p.not_responding {
+        ui.label(widgets::icon(theme::icon::WARNING, 12.0).color(theme::BAD))
+            .on_hover_text(
+                "Not responding: a window of it has taken no message for 5 seconds. \
+                 Wait chain (in the details) shows what it is waiting for.",
+            );
+    }
     let mut text = RichText::new(&*p.name).color(text_color(p, d));
     if r.dim {
         text = text.color(theme::TEXT_DIM);
@@ -669,6 +685,22 @@ pub fn context_menu(
     } else {
         item(ui, out, "Suspend", "", UiCmd::Suspend(p.key));
     }
+    let wait_label = if p.not_responding {
+        "Why is it not responding?"
+    } else {
+        "Analyze wait chain"
+    };
+    item(ui, out, wait_label, "", UiCmd::ConfirmWaitChain(p.key));
+    item(
+        ui,
+        out,
+        &format!("Create a rule for {}\u{2026}", p.name),
+        "",
+        UiCmd::NewRule {
+            image: p.name.clone(),
+            base_priority: p.base_priority,
+        },
+    );
     let current = Priority::from_base(p.base_priority);
     ui.menu_button("Priority", |ui| {
         for pr in Priority::ALL {

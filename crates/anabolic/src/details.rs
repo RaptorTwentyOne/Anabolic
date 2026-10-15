@@ -2,10 +2,12 @@
 //! or the selected app group (totals and members).
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anabolic_core::actions::Priority;
 use anabolic_core::handles::{HandleReport, ModuleReport};
 use anabolic_core::sysinfo::{local_time, now_filetime, thread_state_name, wait_reason_name};
+use anabolic_core::waits::{Chain, Link, Status, WaitReport};
 use anabolic_core::{ProcKey, ProcState, ProcessInfo, Snapshot, ThreadInfo};
 use eframe::egui::{
     self, Align, Frame, Grid, Label, Layout, Margin, RichText, ScrollArea, Sense, Stroke, Ui, vec2,
@@ -24,9 +26,22 @@ pub enum DetailTab {
     #[default]
     General,
     Threads,
+    Waits,
     Modules,
     Network,
     Handles,
+}
+
+/// Wait chains; reports arrive from the inspector.
+#[derive(Default)]
+pub struct WaitView {
+    pub report: Option<Arc<WaitReport>>,
+    /// An analysis is running for this process, since then.
+    pub pending: Option<ProcKey>,
+    pub started: Option<Instant>,
+    /// Threads done, of how many.
+    pub progress: Option<(usize, usize)>,
+    pub error: Option<(ProcKey, String)>,
 }
 
 /// Modules of the selected process; also used to name thread start addresses.
@@ -133,6 +148,7 @@ pub fn show(
     icons: &mut IconCache,
     handles: &mut HandleView,
     modules: &ModuleView,
+    waits: &WaitView,
     focus_thread: &mut Option<(u32, bool)>,
     out: &mut Vec<UiCmd>,
 ) {
@@ -149,6 +165,9 @@ pub fn show(
         ProcState::Suspended => badge.push_str("  ·  SUSPENDED"),
         ProcState::Exited => badge.push_str("  ·  EXITED"),
         ProcState::Running => {}
+    }
+    if p.not_responding {
+        badge.push_str("  ·  NOT RESPONDING");
     }
     if d.is_some_and(|d| d.critical) {
         badge.push_str("  ·  CRITICAL");
@@ -174,6 +193,16 @@ pub fn show(
             .map_or(0, |s| s.connections.len());
         ui.selectable_value(tab, DetailTab::Network, format!("Network ({net})"));
         ui.selectable_value(tab, DetailTab::Modules, "Modules");
+        let waits_label: egui::WidgetText = if p.not_responding {
+            let mut job = widgets::icon_text(ui, theme::icon::WARNING, "Wait chain");
+            if let Some(section) = job.sections.first_mut() {
+                section.format.color = theme::BAD;
+            }
+            job.into()
+        } else {
+            "Wait chain".into()
+        };
+        ui.selectable_value(tab, DetailTab::Waits, waits_label);
         ui.selectable_value(tab, DetailTab::Threads, format!("Threads ({})", p.threads));
         ui.selectable_value(tab, DetailTab::General, "General");
         // Right to left: these end up left of the tabs.
@@ -209,6 +238,7 @@ pub fn show(
     match tab {
         DetailTab::General => general(ui, p, snap, details, out),
         DetailTab::Threads => threads(ui, p, snap, modules, focus_thread, out),
+        DetailTab::Waits => waits_tab(ui, p, snap, waits, out),
         DetailTab::Modules => modules_tab(ui, p, modules, out),
         DetailTab::Handles => handles_tab(ui, p, snap, handles, out),
         DetailTab::Network => network_tab(ui, p, snap),
@@ -439,6 +469,221 @@ fn parent_of<'a>(p: &ProcessInfo, snap: &'a Snapshot) -> Option<&'a ProcessInfo>
 
 fn right(ui: &mut Ui, text: String) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(text));
+}
+
+/// A process by PID, as a link to it when it is another one.
+fn process_link(ui: &mut Ui, pid: u32, own: u32, snap: &Snapshot, out: &mut Vec<UiCmd>) {
+    let live = snap
+        .processes
+        .iter()
+        .find(|q| q.pid == pid && q.state != ProcState::Exited);
+    match live {
+        Some(q) if pid != own => {
+            if widgets::link(ui, &format!("{} ({pid})", q.name))
+                .on_hover_text("Show it in the process list")
+                .clicked()
+            {
+                out.push(UiCmd::GoTo(q.key));
+            }
+        }
+        Some(q) => {
+            ui.label(format!("{} ({pid})", q.name));
+        }
+        None => {
+            ui.label(RichText::new(format!("PID {pid}")).color(theme::TEXT_WEAK));
+        }
+    }
+}
+
+fn waits_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, view: &WaitView, out: &mut Vec<UiCmd>) {
+    let hung: Vec<_> = snap.system.hung.iter().filter(|h| h.pid == p.pid).collect();
+    let report = view.report.as_deref().filter(|r| r.key == p.key);
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if hung.is_empty() {
+                ui.label(RichText::new("None of its windows is hung right now.").color(theme::TEXT_WEAK));
+            }
+            for h in &hung {
+                ui.horizontal(|ui| {
+                    ui.label(widgets::icon(theme::icon::WARNING, 13.0).color(theme::BAD));
+                    ui.label(widgets::strong(
+                        format!("\u{201c}{}\u{201d} is not responding", h.title),
+                        theme::BODY,
+                    ));
+                    ui.label(
+                        RichText::new(format!("its thread {} has taken no message for 5 s", h.tid))
+                            .color(theme::TEXT_WEAK),
+                    );
+                });
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if view.pending == Some(p.key) {
+                    ui.spinner();
+                    let mut text = "Following the wait chains\u{2026}".to_string();
+                    if let Some((done, total)) = view.progress {
+                        text.push_str(&format!("  {done} of {total} threads"));
+                    }
+                    if let Some(started) = view.started {
+                        text.push_str(&format!("  \u{b7}  {} s", started.elapsed().as_secs()));
+                    }
+                    ui.label(RichText::new(text).color(theme::TEXT_WEAK));
+                    if ui
+                        .small_button("Stop")
+                        .on_hover_text("Stop the analysis; nothing is shown for it.")
+                        .clicked()
+                    {
+                        out.push(UiCmd::StopWaitChain);
+                    }
+                    // The seconds count up.
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(500));
+                } else if view.pending.is_some() {
+                    ui.label(
+                        RichText::new("Another process\u{2019} wait chain is being analysed.")
+                            .color(theme::TEXT_WEAK),
+                    );
+                    if ui.small_button("Stop it").clicked() {
+                        out.push(UiCmd::StopWaitChain);
+                    }
+                } else if ui
+                    .button(if report.is_some() { "Analyze again" } else { "Analyze wait chain" })
+                    .on_hover_text(
+                        "Asks Windows what each of its threads is waiting for, across processes \
+                         (opens its threads for reading).",
+                    )
+                    .clicked()
+                {
+                    out.push(UiCmd::ConfirmWaitChain(p.key));
+                }
+                if let Some(r) = report
+                    && view.pending != Some(p.key)
+                {
+                    let mut text = format!(
+                        "{} threads, {} waiting on something",
+                        r.threads,
+                        r.chains.iter().filter(|c| c.links.len() > 1).count(),
+                    );
+                    if r.idle > 0 {
+                        text.push_str(&format!(
+                            " \u{b7} {} running or idle, not followed",
+                            r.idle
+                        ));
+                    }
+                    if r.failed > 0 {
+                        text.push_str(&format!(", {} could not be analysed", r.failed));
+                    }
+                    text.push_str(&format!(" \u{b7} {}", fmt::millis(r.took)));
+                    ui.label(RichText::new(text).size(theme::META).color(theme::TEXT_WEAK));
+                }
+            });
+            if let Some((key, e)) = &view.error
+                && *key == p.key
+            {
+                ui.label(
+                    RichText::new(format!("The wait chain could not be read: {e}"))
+                        .color(theme::ELEVATED_TEXT),
+                );
+            }
+            let Some(r) = report else {
+                return;
+            };
+            if r.skipped > 0 {
+                ui.label(
+                    RichText::new(format!(
+                        "{} threads were skipped: their chain led into something that did not answer \
+                         within 2.5 s, or the 20 s limit ran out. Analyze again to retry them.",
+                        r.skipped
+                    ))
+                    .color(theme::ELEVATED_TEXT),
+                );
+            }
+            ui.add_space(8.0);
+            if r.chains.is_empty() {
+                ui.label(
+                    RichText::new(
+                        "No thread is waiting on anything Windows can follow: \
+                         if it is slow, it is busy, not stuck.",
+                    )
+                    .color(theme::TEXT_WEAK),
+                );
+            }
+            let hung_tids: Vec<u32> = hung.iter().map(|h| h.tid).collect();
+            for (i, chain) in r.chains.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(4.0);
+                    ui.separator();
+                }
+                chain_view(ui, chain, p.pid, &hung_tids, snap, out);
+            }
+        });
+}
+
+fn chain_view(
+    ui: &mut Ui,
+    chain: &Chain,
+    own: u32,
+    hung_tids: &[u32],
+    snap: &Snapshot,
+    out: &mut Vec<UiCmd>,
+) {
+    if chain.cycle {
+        ui.label(
+            widgets::strong("Deadlock: these threads wait on each other", theme::BODY)
+                .color(theme::BAD),
+        );
+    }
+    for (depth, link) in chain.links.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add_space(depth as f32 * 16.0);
+            if depth > 0 {
+                ui.label(RichText::new("\u{2192}").color(theme::TEXT_DIM));
+            }
+            match link {
+                Link::Thread {
+                    pid, tid, status, ..
+                } => {
+                    let label = if depth == 0 {
+                        "Thread"
+                    } else {
+                        "held by thread"
+                    };
+                    ui.label(format!("{label} {tid} of"));
+                    process_link(ui, *pid, own, snap, out);
+                    let color = match status {
+                        Status::Blocked => theme::ELEVATED_TEXT,
+                        Status::Running => theme::GOOD,
+                        _ => theme::TEXT_WEAK,
+                    };
+                    ui.label(RichText::new(status.label()).color(color));
+                    if depth == 0 && hung_tids.contains(tid) {
+                        ui.label(
+                            RichText::new("\u{b7} the hung window's thread")
+                                .size(theme::META)
+                                .color(theme::BAD),
+                        );
+                    }
+                    if depth == 0 && *status == Status::Running {
+                        ui.label(
+                            RichText::new("\u{b7} running, not waiting: busy, not stuck")
+                                .size(theme::META)
+                                .color(theme::TEXT_WEAK),
+                        );
+                    }
+                }
+                Link::Object { wait, name, status } => {
+                    ui.label(format!("waits on {}", wait.label()));
+                    if !name.is_empty() {
+                        ui.label(RichText::new(name).monospace().color(theme::TEXT_WEAK));
+                    }
+                    if !matches!(status, Status::Blocked | Status::Owned | Status::Unknown) {
+                        ui.label(RichText::new(status.label()).color(theme::TEXT_WEAK));
+                    }
+                }
+            }
+        });
+    }
 }
 
 fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot) {
