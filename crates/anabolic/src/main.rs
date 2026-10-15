@@ -13,6 +13,7 @@ mod details;
 mod dialogs;
 mod fmt;
 mod graph;
+mod help;
 mod history_page;
 mod icons;
 mod panes;
@@ -23,6 +24,7 @@ mod settings;
 #[cfg(debug_assertions)]
 mod shot;
 mod stalls;
+mod table;
 mod theme;
 mod tree;
 mod widgets;

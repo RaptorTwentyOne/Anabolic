@@ -58,6 +58,31 @@ enum Pending {
     WaitChainFrom(ProcKey, u32),
 }
 
+/// What to do about a failure, from what Windows said; None when there is
+/// nothing useful to add.
+fn next_step(message: &str, elevated: bool) -> Option<String> {
+    let m = message.to_lowercase();
+    let says = |what: &str| m.contains(what);
+    let step = if says("access is denied") || says("required privilege is not held") {
+        if elevated {
+            "Windows or a security program protects it; its details (General) say what Anabolic can tell."
+        } else {
+            "Restart Anabolic as administrator (top right) and try again."
+        }
+    } else if says("parameter is incorrect") || says("has exited") || says("no longer") {
+        "It has probably exited already; the list catches up on the next refresh."
+    } else if says("being used by another process") || says("clipboard") {
+        "Another program is holding it; try again in a moment."
+    } else if says("cannot find the file") || says("cannot find the path") {
+        "The file has been moved or deleted since it was loaded."
+    } else if says("not supported") {
+        "This Windows version does not offer it."
+    } else {
+        return None;
+    };
+    Some(step.to_string())
+}
+
 /// The "find handles" window.
 #[derive(Default)]
 struct FindView {
@@ -101,6 +126,7 @@ pub struct App {
     wait_view: crate::details::WaitView,
     end_view: crate::details::EndView,
     panes: crate::panes::Panes,
+    tables: crate::table::DetailTables,
     rules_page: crate::rules::RulesPage,
     rule_engine: crate::rules::Engine,
     /// Logical processor shown in detail on the CPU view.
@@ -148,6 +174,8 @@ pub struct App {
     /// skip the dialogs: the person who typed them asked.
     pending_pane: Option<String>,
     pending_stack: bool,
+    /// The shortcuts and colours page (F1).
+    help_open: bool,
     /// Started with command line overrides: do not persist settings.
     session_only: bool,
 }
@@ -189,6 +217,8 @@ impl App {
                     | "--zombies"
                     | "--tab"
                     | "--find"
+                    | "--filter"
+                    | "--detail-sort"
             )
         });
         if args.iter().any(|a| a == "--history") {
@@ -255,6 +285,28 @@ impl App {
             _ => DetailTab::default(),
         };
         let find_query = value("--find").map(str::to_string);
+        // `--filter TEXT` and `--detail-sort N[d]`: the detail tab's table.
+        let mut tables = crate::table::DetailTables::default();
+        let mut handle_view = HandleView::default();
+        {
+            let filter = value("--filter").unwrap_or_default();
+            let sort = value("--detail-sort").and_then(crate::table::TableView::parse_sort);
+            let table = match detail_tab {
+                DetailTab::Threads => Some(&mut tables.threads),
+                DetailTab::Modules => Some(&mut tables.modules),
+                DetailTab::Network => Some(&mut tables.network),
+                _ => None,
+            };
+            match table {
+                Some(t) => {
+                    t.set_filter(filter);
+                    if sort.is_some() {
+                        t.sort = sort;
+                    }
+                }
+                None => handle_view.set_table(filter, sort),
+            }
+        }
         let pending_pid = args
             .iter()
             .position(|a| a == "--pid")
@@ -303,12 +355,13 @@ impl App {
             paused: false,
             detail_tab,
             focus_thread: None,
-            handle_view: HandleView::default(),
+            handle_view,
             perf_view,
             history: Default::default(),
             wait_view: Default::default(),
             end_view: Default::default(),
             panes: Default::default(),
+            tables,
             rules_page,
             rule_engine: Default::default(),
             zombie_view,
@@ -355,6 +408,7 @@ impl App {
                     .to_string()
             }),
             pending_stack: args.iter().any(|a| a == "--stack"),
+            help_open: args.iter().any(|a| a == "--help-page"),
             taskmgr: None,
             this_app: anabolic_core::taskmgr::app_path().map(|p| p.display().to_string()),
             relaunching: false,
@@ -379,10 +433,15 @@ impl App {
                 Outcome::Info(msg) => self.toasts.info(msg),
                 Outcome::Error(msg) => {
                     self.relaunching = false;
-                    self.toasts.error(msg);
+                    let next = next_step(&msg, self.elevated);
+                    self.toasts.error_with(msg, next);
                 }
                 Outcome::Refused { keys, message } => {
-                    self.toasts.error(message);
+                    // The details explain an elevated refusal at length.
+                    let next = (!self.elevated)
+                        .then(|| next_step(&message, false))
+                        .flatten();
+                    self.toasts.error_with(message, next);
                     // The selected one shows why at once.
                     if self.table.selected.is_some_and(|k| keys.contains(&k)) {
                         self.detail_tab = DetailTab::General;
@@ -503,8 +562,9 @@ impl App {
                             self.find.pending = false;
                         }
                     }
+                    let next = next_step(&error, self.elevated);
                     self.toasts
-                        .error(format!("Could not inspect {what}: {error}"));
+                        .error_with(format!("Could not inspect {what}: {error}"), next);
                 }
             }
         }
@@ -1138,6 +1198,9 @@ impl App {
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
+            if i.consume_key(Modifiers::NONE, Key::F1) {
+                self.help_open = !self.help_open;
+            }
             if typing || popup_open {
                 return;
             }
@@ -1442,6 +1505,14 @@ impl App {
                     ui.selectable_value(&mut self.settings.graph_span, span, span.label());
                 }
             });
+            ui.separator();
+            if ui
+                .add(egui::Button::new("Shortcuts and colours").shortcut_text("F1"))
+                .clicked()
+            {
+                self.help_open = true;
+                ui.close();
+            }
         });
     }
 
@@ -2121,6 +2192,7 @@ impl eframe::App for App {
                                     &mut self.handle_view,
                                     &mut self.module_view,
                                     &self.panes,
+                                    &mut self.tables,
                                     &self.wait_view,
                                     &self.end_view,
                                     &mut self.focus_thread,
@@ -2206,6 +2278,7 @@ impl eframe::App for App {
             self.collector.send(Command::TraceDisks(want));
         }
         self.dialogs(&ctx);
+        crate::help::show(&ctx, &mut self.help_open);
         self.toasts.show(&ctx);
         self.maybe_pin();
         #[cfg(debug_assertions)]
@@ -2227,5 +2300,23 @@ impl eframe::App for App {
             return;
         }
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_step;
+
+    #[test]
+    fn failures_say_what_to_do() {
+        let denied = "Could not terminate x.exe (12): Access is denied.";
+        assert!(next_step(denied, false).unwrap().contains("administrator"));
+        assert!(next_step(denied, true).unwrap().contains("protects it"));
+        assert!(
+            next_step("Could not read: The parameter is incorrect.", true)
+                .unwrap()
+                .contains("exited")
+        );
+        assert_eq!(next_step("Something odd happened", true), None);
     }
 }

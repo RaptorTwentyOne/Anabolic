@@ -198,23 +198,31 @@ impl ConfirmDialog {
 
 const TOAST_LIFETIME: Duration = Duration::from_secs(5);
 
+/// (shown at, message, what to do about it, is an error)
+type Toast = (Instant, String, Option<String>, bool);
+
 #[derive(Default)]
 pub struct Toasts {
-    items: Vec<(Instant, String, bool)>,
+    items: Vec<Toast>,
 }
 
 impl Toasts {
     pub fn info(&mut self, text: impl Into<String>) {
-        self.items.push((Instant::now(), text.into(), false));
+        self.items.push((Instant::now(), text.into(), None, false));
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
-        self.items.push((Instant::now(), text.into(), true));
+        self.items.push((Instant::now(), text.into(), None, true));
+    }
+
+    /// An error and, below it, what the user can do about it.
+    pub fn error_with(&mut self, text: impl Into<String>, next: Option<String>) {
+        self.items.push((Instant::now(), text.into(), next, true));
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
-        self.items.retain(|(t, _, error)| {
+        self.items.retain(|(t, _, _, error)| {
             now - *t
                 < if *error {
                     TOAST_LIFETIME * 2
@@ -230,7 +238,7 @@ impl Toasts {
             .order(egui::Order::Foreground)
             .interactable(false)
             .show(ctx, |ui| {
-                for (_, text, error) in &self.items {
+                for (_, text, next, error) in &self.items {
                     Frame::new()
                         .fill(theme::RAISED)
                         .stroke(Stroke::new(
@@ -246,12 +254,15 @@ impl Toasts {
                             } else {
                                 theme::TEXT
                             }));
+                            if let Some(next) = next {
+                                ui.label(RichText::new(next).color(theme::TEXT_WEAK));
+                            }
                         });
                     ui.add_space(6.0);
                 }
             });
         // Wake up again to expire the oldest one.
-        if let Some((t, _, error)) = self.items.first() {
+        if let Some((t, _, _, error)) = self.items.first() {
             let life = if *error {
                 TOAST_LIFETIME * 2
             } else {

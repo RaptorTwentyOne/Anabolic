@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anabolic_core::actions::Priority;
 use anabolic_core::ending::EndReport;
-use anabolic_core::handles::{HandleReport, ModuleReport};
+use anabolic_core::handles::{HandleReport, ModuleReport, ModuleRow};
 use anabolic_core::sysinfo::{local_time, now_filetime, thread_state_name, wait_reason_name};
 use anabolic_core::waits::{Chain, Link, Status, WaitReport};
 use anabolic_core::{ProcKey, ProcState, ProcessInfo, Snapshot, ThreadInfo};
@@ -20,6 +20,7 @@ use crate::fmt;
 use crate::icons::IconCache;
 use crate::panes::Panes;
 use crate::proc_table::UiCmd;
+use crate::table::{DetailTables, TableView, text_cmp};
 use crate::theme;
 use crate::tree::{Details, Group};
 use crate::widgets;
@@ -341,8 +342,15 @@ pub struct HandleView {
     by_name: bool,
     /// The handle in the side pane, by value.
     pub selected: Option<u64>,
-    /// Entry indices passing `type_filter`.
+    /// Sort and filter of the handle list; `groups` sorts the name groups.
+    /// Both are applied in `refilter`, not every frame: a process can hold
+    /// hundreds of thousands of handles.
+    table: TableView,
+    groups: TableView,
+    /// Entry indices passing the filters, in order.
     rows: Vec<u32>,
+    /// Indices into `name_groups` passing the filters, in order.
+    group_rows: Vec<u32>,
 }
 
 impl HandleView {
@@ -363,14 +371,64 @@ impl HandleView {
         self.refilter();
     }
 
+    /// The command line's filter and order for the list of handles.
+    pub fn set_table(&mut self, filter: &str, sort: Option<(usize, bool)>) {
+        self.table.set_filter(filter);
+        if sort.is_some() {
+            self.table.sort = sort;
+        }
+        self.refilter();
+    }
+
     fn refilter(&mut self) {
         let Some(report) = &self.report else { return };
-        self.rows = (0..report.entries.len() as u32)
+        let type_ok = |t: u16| self.type_filter.is_none_or(|f| f == t);
+        let name = |i: usize| report.names.get(i).and_then(|n| n.as_deref()).unwrap_or("");
+        let entry = |i: u32| &report.entries[i as usize];
+        let mut rows: Vec<u32> = (0..report.entries.len() as u32)
             .filter(|&i| {
-                self.type_filter
-                    .is_none_or(|t| report.entries[i as usize].type_index == t)
+                let e = entry(i);
+                type_ok(e.type_index)
+                    && (!self.table.filtering()
+                        || self.table.matches(&[
+                            &format!("{:X}", e.value),
+                            &report.type_name(e.type_index),
+                            name(i as usize),
+                        ]))
             })
             .collect();
+        if let Some((column, descending)) = self.table.sort {
+            match column {
+                0 => rows.sort_by_key(|&i| entry(i).value),
+                1 => rows
+                    .sort_by_cached_key(|&i| report.type_name(entry(i).type_index).to_lowercase()),
+                2 => rows.sort_by_key(|&i| entry(i).access),
+                _ => rows.sort_by_cached_key(|&i| name(i as usize).to_lowercase()),
+            }
+            if descending {
+                rows.reverse();
+            }
+        }
+        self.rows = rows;
+
+        let mut groups: Vec<u32> = (0..report.name_groups.len() as u32)
+            .filter(|&i| {
+                let (t, n, _) = &report.name_groups[i as usize];
+                type_ok(*t) && self.table.matches(&[&report.type_name(*t), n])
+            })
+            .collect();
+        if let Some((column, descending)) = self.groups.sort {
+            let group = |i: u32| &report.name_groups[i as usize];
+            match column {
+                0 => groups.sort_by_key(|&i| group(i).2),
+                1 => groups.sort_by_cached_key(|&i| report.type_name(group(i).0).to_lowercase()),
+                _ => groups.sort_by_cached_key(|&i| group(i).1.to_lowercase()),
+            }
+            if descending {
+                groups.reverse();
+            }
+        }
+        self.group_rows = groups;
     }
 }
 
@@ -413,6 +471,7 @@ pub fn show(
     handles: &mut HandleView,
     modules: &mut ModuleView,
     panes: &Panes,
+    tables: &mut DetailTables,
     waits: &WaitView,
     ends: &EndView,
     focus_thread: &mut Option<(u32, bool)>,
@@ -516,11 +575,20 @@ pub fn show(
             }
             general(ui, p, snap, details, out)
         }
-        DetailTab::Threads => threads(ui, p, snap, modules, panes, focus_thread, out),
+        DetailTab::Threads => threads(
+            ui,
+            p,
+            snap,
+            modules,
+            panes,
+            &mut tables.threads,
+            focus_thread,
+            out,
+        ),
         DetailTab::Waits => waits_tab(ui, p, snap, waits, out),
-        DetailTab::Modules => modules_tab(ui, p, modules, panes, out),
+        DetailTab::Modules => modules_tab(ui, p, modules, panes, &mut tables.modules, out),
         DetailTab::Handles => handles_tab(ui, p, snap, handles, panes, out),
-        DetailTab::Network => network_tab(ui, p, snap),
+        DetailTab::Network => network_tab(ui, p, snap, &mut tables.network),
     }
 }
 
@@ -974,7 +1042,7 @@ fn chain_view(
     }
 }
 
-fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot) {
+fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, view: &mut TableView) {
     if let Some(e) = &snap.system.net_trace_error {
         ui.label(
             RichText::new(format!("Per-process network traffic is unavailable: {e}"))
@@ -1000,6 +1068,36 @@ fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot) {
         ui.label(RichText::new("No traffic seen yet.").color(theme::TEXT_DIM));
         return;
     }
+    let remote_of = |c: &anabolic_core::Connection| match c.remote {
+        std::net::IpAddr::V6(v6) => format!("[{v6}]:{}", c.remote_port),
+        v4 => format!("{v4}:{}", c.remote_port),
+    };
+    let proto_of = |c: &anabolic_core::Connection| format!("{:?}", c.proto).to_uppercase();
+    let mut list: Vec<&anabolic_core::Connection> = sel
+        .connections
+        .iter()
+        .filter(|c| view.matches(&[&proto_of(c), &remote_of(c), &c.local_port.to_string()]))
+        .collect();
+    view.order(&mut list, |a, b, column| match column {
+        0 => proto_of(a).cmp(&proto_of(b)),
+        1 => (a.remote, a.remote_port).cmp(&(b.remote, b.remote_port)),
+        2 => a.local_port.cmp(&b.local_port),
+        3 => a.rx_rate.total_cmp(&b.rx_rate),
+        4 => a.tx_rate.total_cmp(&b.tx_rate),
+        5 => a.rx_total.cmp(&b.rx_total),
+        6 => a.tx_total.cmp(&b.tx_total),
+        _ => a.idle.cmp(&b.idle),
+    });
+    ui.horizontal(|ui| {
+        if view.filter_box(
+            ui,
+            "Filter: address, port, protocol",
+            list.len(),
+            sel.connections.len(),
+        ) {
+            ui.ctx().request_repaint();
+        }
+    });
     let columns = [
         ("Proto", 50.0, Align::Min),
         ("Remote", 290.0, Align::Min),
@@ -1010,11 +1108,24 @@ fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot) {
         ("Sent", 100.0, Align::Max),
         ("Idle", 70.0, Align::Max),
     ];
-    widgets::header(ui, &columns);
+    let header = ui.horizontal(|ui| {
+        for (i, (title, width, align)) in columns.iter().enumerate() {
+            widgets::cell(ui, *width, *align, |ui| {
+                view.header(ui, i, title, *align == Align::Max);
+            });
+        }
+    });
+    let rect = header.response.rect;
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() + 1.0,
+        Stroke::new(1.0, theme::BORDER),
+    );
+    ui.add_space(2.0);
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (i, c) in sel.connections.iter().enumerate() {
+            for (i, c) in list.into_iter().enumerate() {
                 let quiet = c.rx_rate + c.tx_rate == 0.0;
                 let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
                 widgets::row(ui, i, |ui| {
@@ -1024,10 +1135,7 @@ fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot) {
                         Align::Min,
                         RichText::new(format!("{:?}", c.proto).to_uppercase()).color(color),
                     );
-                    let remote = match c.remote {
-                        std::net::IpAddr::V6(v6) => format!("[{v6}]:{}", c.remote_port),
-                        v4 => format!("{v4}:{}", c.remote_port),
-                    };
+                    let remote = remote_of(c);
                     widgets::text(
                         ui,
                         columns[1].1,
@@ -1108,6 +1216,15 @@ fn module_loader(
     }
 }
 
+/// One row of the threads table, with what sorting and filtering read.
+struct ThreadRow<'a> {
+    t: &'a ThreadInfo,
+    tid: String,
+    name: &'a str,
+    start: String,
+    wait: &'static str,
+}
+
 /// `focus`: the selected thread, and whether it was scrolled to already.
 #[allow(clippy::too_many_arguments)]
 fn threads(
@@ -1116,6 +1233,7 @@ fn threads(
     snap: &Snapshot,
     modules: &ModuleView,
     panes: &Panes,
+    view: &mut TableView,
     focus: &mut Option<(u32, bool)>,
     out: &mut Vec<UiCmd>,
 ) {
@@ -1123,15 +1241,7 @@ fn threads(
         ui.label(RichText::new("Collecting…").color(theme::TEXT_WEAK));
         return;
     };
-    module_loader(ui, p, modules, "Resolve start addresses and names", out);
     let report = modules.for_key(p.key);
-    let mut list: Vec<&ThreadInfo> = sel.threads.iter().collect();
-    list.sort_by(|a, b| {
-        b.cpu
-            .partial_cmp(&a.cpu)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.tid.cmp(&b.tid))
-    });
     let start_of = |t: &ThreadInfo| {
         if t.win32_start_address != 0 {
             t.win32_start_address
@@ -1143,19 +1253,69 @@ fn threads(
         let address = start_of(t);
         symbol(report, address).unwrap_or_else(|| format!("0x{address:X}"))
     };
+    let names = report.map(|r| &r.thread_names);
+    let mut list: Vec<ThreadRow> = sel
+        .threads
+        .iter()
+        .map(|t| ThreadRow {
+            t,
+            tid: t.tid.to_string(),
+            name: names.and_then(|n| n.get(&t.tid)).map_or("", |s| s.as_str()),
+            start: start_name(t),
+            wait: if t.state == 5 {
+                wait_reason_name(t.wait_reason)
+            } else {
+                ""
+            },
+        })
+        .filter(|r| {
+            view.matches(&[
+                &r.tid,
+                r.name,
+                &r.start,
+                thread_state_name(r.t.state),
+                r.wait,
+            ])
+        })
+        .collect();
+    view.order(&mut list, |a, b, column| {
+        let (x, y) = (a.t, b.t);
+        match column {
+            0 => x.tid.cmp(&y.tid),
+            1 => x.cpu.total_cmp(&y.cpu),
+            2 => (x.kernel_time + x.user_time).cmp(&(y.kernel_time + y.user_time)),
+            3 => text_cmp(a.name, b.name),
+            4 => text_cmp(&a.start, &b.start),
+            5 => x.priority.cmp(&y.priority),
+            6 => x.context_switches_delta.cmp(&y.context_switches_delta),
+            7 => thread_state_name(x.state).cmp(thread_state_name(y.state)),
+            _ => a.wait.cmp(b.wait),
+        }
+        .then(x.tid.cmp(&y.tid))
+    });
+    ui.horizontal(|ui| {
+        if view.filter_box(
+            ui,
+            "Filter: TID, name, start, state",
+            list.len(),
+            sel.threads.len(),
+        ) {
+            ui.ctx().request_repaint();
+        }
+        module_loader(ui, p, modules, "Resolve start addresses and names", out);
+    });
 
     let focus_tid = focus.map(|(tid, _)| tid);
-    if let Some(t) = focus_tid.and_then(|tid| list.iter().find(|t| t.tid == tid)) {
+    if let Some(r) = focus_tid.and_then(|tid| list.iter().find(|r| r.t.tid == tid)) {
         crate::panes::side(ui, ("thread-pane", p.key), |ui| {
-            crate::panes::thread_pane(ui, p, t, report, &start_name(t), start_of(t), panes, out)
+            crate::panes::thread_pane(ui, p, r.t, report, &r.start, start_of(r.t), panes, out)
         });
     }
-    let names = report.map(|r| &r.thread_names);
     egui::CentralPanel::no_frame().show(ui, |ui| {
         let mut table = TableBuilder::new(ui);
         if let Some((tid, scrolled)) = focus
             && !*scrolled
-            && let Some(row) = list.iter().position(|t| t.tid == *tid)
+            && let Some(row) = list.iter().position(|r| r.t.tid == *tid)
         {
             table = table.scroll_to_row(row, Some(Align::Center));
             *scrolled = true;
@@ -1177,7 +1337,7 @@ fn threads(
             .column(Column::initial(90.0))
             .column(Column::remainder())
             .header(20.0, |mut h| {
-                for (t, numeric) in [
+                for (i, (t, numeric)) in [
                     ("TID", true),
                     ("CPU", true),
                     ("CPU time", true),
@@ -1187,37 +1347,37 @@ fn threads(
                     ("Ctx sw/s", true),
                     ("State", false),
                     ("Wait reason", false),
-                ] {
-                    h.col(|ui| widgets::column_header(ui, t, numeric));
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    h.col(|ui| {
+                        view.header(ui, i, t, numeric);
+                    });
                 }
             })
             .body(|body| {
                 body.rows(18.0, list.len(), |mut row| {
-                    let t = list[row.index()];
+                    let r = &list[row.index()];
+                    let t = r.t;
                     row.set_selected(focus_tid == Some(t.tid));
-                    row.col(|ui| right(ui, t.tid.to_string()));
+                    row.col(|ui| right(ui, r.tid.clone()));
                     row.col(|ui| right(ui, fmt::cpu(t.cpu)));
                     row.col(|ui| right(ui, fmt::cpu_time(t.kernel_time + t.user_time)));
                     row.col(|ui| {
-                        if let Some(name) = names.and_then(|n| n.get(&t.tid)) {
-                            ui.add(Label::new(name.as_str()).truncate());
-                        }
+                        ui.add(Label::new(r.name).truncate());
                     });
                     row.col(|ui| {
                         let address = start_of(t);
-                        match symbol(report, address) {
-                            Some(name) => {
-                                ui.add(Label::new(RichText::new(name).monospace()).truncate())
-                                    .on_hover_text(format!("0x{address:X}"));
-                            }
-                            None => {
-                                ui.label(
-                                    RichText::new(format!("0x{address:X}"))
-                                        .monospace()
-                                        .color(theme::TEXT_WEAK),
-                                );
-                            }
-                        }
+                        let known = report.is_some() && !r.start.starts_with("0x");
+                        let text = RichText::new(&r.start).monospace();
+                        let text = if known {
+                            text
+                        } else {
+                            text.color(theme::TEXT_WEAK)
+                        };
+                        ui.add(Label::new(text).truncate())
+                            .on_hover_text(format!("0x{address:X}"));
                     });
                     row.col(|ui| right(ui, format!("{} / {}", t.priority, t.base_priority)));
                     row.col(|ui| right(ui, fmt::count(t.context_switches_delta as u64)));
@@ -1225,12 +1385,7 @@ fn threads(
                         ui.label(thread_state_name(t.state));
                     });
                     row.col(|ui| {
-                        if t.state == 5 {
-                            ui.label(
-                                RichText::new(wait_reason_name(t.wait_reason))
-                                    .color(theme::TEXT_WEAK),
-                            );
-                        }
+                        ui.label(RichText::new(r.wait).color(theme::TEXT_WEAK));
                     });
                     let response = row.response();
                     if response.clicked() {
@@ -1241,7 +1396,7 @@ fn threads(
                         };
                     }
                     response.context_menu(|ui| {
-                        crate::panes::thread_menu(ui, p, t, &start_name(t), out);
+                        crate::panes::thread_menu(ui, p, t, &r.start, out);
                     });
                 });
             });
@@ -1417,8 +1572,24 @@ fn handles_tab(
     }
     let mut clicked: Option<u64> = None;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        if report.resolved > 0 {
-            ui.horizontal(|ui| {
+        let mut changed = false;
+        let grouped = view.by_name && report.resolved > 0;
+        let shown = if grouped {
+            view.group_rows.len()
+        } else {
+            view.rows.len()
+        };
+        let total = if grouped {
+            report.name_groups.len()
+        } else {
+            report.entries.len()
+        };
+        ui.horizontal(|ui| {
+            changed |= view
+                .table
+                .filter_box(ui, "Filter: handle, type, name", shown, total);
+            if report.resolved > 0 {
+                ui.add_space(8.0);
                 ui.selectable_value(&mut view.by_name, true, "Grouped by name");
                 ui.selectable_value(&mut view.by_name, false, "Every handle");
                 if report.resolved < report.entries.len() {
@@ -1431,14 +1602,10 @@ fn handles_tab(
                         .color(theme::TEXT_WEAK),
                     );
                 }
-            });
-        }
-        if view.by_name && report.resolved > 0 {
-            let groups: Vec<&(u16, Arc<str>, u32)> = report
-                .name_groups
-                .iter()
-                .filter(|g| view.type_filter.is_none_or(|t| g.0 == t))
-                .collect();
+            }
+        });
+        if grouped {
+            let groups = &view.group_rows;
             TableBuilder::new(ui)
                 .id_salt("handle-names")
                 .striped(true)
@@ -1450,14 +1617,19 @@ fn handles_tab(
                 .column(Column::initial(120.0))
                 .column(Column::remainder().clip(true))
                 .header(20.0, |mut h| {
-                    for (t, numeric) in [("Count", true), ("Type", false), ("Name / target", false)]
+                    for (i, (t, numeric)) in
+                        [("Count", true), ("Type", false), ("Name / target", false)]
+                            .into_iter()
+                            .enumerate()
                     {
-                        h.col(|ui| widgets::column_header(ui, t, numeric));
+                        h.col(|ui| {
+                            changed |= view.groups.header(ui, i, t, numeric);
+                        });
                     }
                 })
                 .body(|body| {
                     body.rows(18.0, groups.len(), |mut row| {
-                        let (t, name, count) = groups[row.index()];
+                        let (t, name, count) = &report.name_groups[groups[row.index()] as usize];
                         row.col(|ui| right(ui, fmt::count(*count as u64)));
                         row.col(|ui| {
                             ui.label(&*report.type_name(*t));
@@ -1484,8 +1656,13 @@ fn handles_tab(
                 .column(Column::initial(100.0))
                 .column(Column::remainder().clip(true))
                 .header(20.0, |mut h| {
-                    for t in ["Handle", "Type", "Access", "Name / target"] {
-                        h.col(|ui| widgets::column_header(ui, t, false));
+                    for (i, t) in ["Handle", "Type", "Access", "Name / target"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        h.col(|ui| {
+                            changed |= view.table.header(ui, i, t, false);
+                        });
                     }
                 })
                 .body(|body| {
@@ -1528,6 +1705,9 @@ fn handles_tab(
                         });
                     });
                 });
+        }
+        if changed {
+            view.refilter();
         }
     });
     if let Some(value) = clicked {
@@ -1647,10 +1827,11 @@ fn modules_tab(
     p: &ProcessInfo,
     modules: &mut ModuleView,
     panes: &Panes,
+    view: &mut TableView,
     out: &mut Vec<UiCmd>,
 ) {
-    module_loader(ui, p, modules, "Load modules", out);
     let Some(report) = modules.report.clone().filter(|r| r.key == p.key) else {
+        module_loader(ui, p, modules, "Load modules", out);
         return;
     };
     if let Some(e) = &report.error {
@@ -1659,23 +1840,61 @@ fn modules_tab(
                 .color(theme::ELEVATED_TEXT),
         );
     }
-    ui.label(
-        RichText::new(format!(
-            "{} modules  ·  {}{}  ·  click one for its signature and hash",
+    let text = |s: &Option<String>| s.clone().unwrap_or_default();
+    let mut rows: Vec<&ModuleRow> = report
+        .modules
+        .iter()
+        .filter(|m| {
+            view.matches(&[
+                &m.info.name,
+                &m.info.path,
+                &format!("{:X}", m.info.base),
+                m.description.as_deref().unwrap_or(""),
+                m.company.as_deref().unwrap_or(""),
+                m.version.as_deref().unwrap_or(""),
+            ])
+        })
+        .collect();
+    view.order(&mut rows, |a, b, column| match column {
+        0 => text_cmp(&a.info.name, &b.info.name),
+        1 => a.info.base.cmp(&b.info.base),
+        2 => a.info.size.cmp(&b.info.size),
+        3 => text_cmp(&text(&a.description), &text(&b.description)),
+        4 => text_cmp(&text(&a.company), &text(&b.company)),
+        5 => text_cmp(&text(&a.version), &text(&b.version)),
+        _ => text_cmp(&a.info.path, &b.info.path),
+    });
+    ui.horizontal(|ui| {
+        if view.filter_box(
+            ui,
+            "Filter: name, path, company, version",
+            rows.len(),
             report.modules.len(),
-            fmt::millis(report.took),
-            if p.pid == 4 {
-                "  ·  kernel image and drivers"
-            } else {
-                ""
-            }
-        ))
-        .small()
-        .color(theme::TEXT_WEAK),
-    );
-    let rows = &report.modules;
+        ) {
+            ui.ctx().request_repaint();
+        }
+        // While filtering, the box says how many there are.
+        let count = if view.filtering() {
+            String::new()
+        } else {
+            format!("{} modules  ·  ", report.modules.len())
+        };
+        ui.label(
+            RichText::new(format!(
+                "{count}{}{}  ·  click one for its signature and hash",
+                fmt::millis(report.took),
+                if p.pid == 4 {
+                    "  ·  kernel image and drivers"
+                } else {
+                    ""
+                }
+            ))
+            .small()
+            .color(theme::TEXT_WEAK),
+        );
+    });
     let selected = modules.selected;
-    if let Some(m) = selected.and_then(|base| rows.iter().find(|m| m.info.base == base)) {
+    if let Some(m) = selected.and_then(|base| report.modules.iter().find(|m| m.info.base == base)) {
         crate::panes::side(ui, ("module-pane", p.key), |ui| {
             crate::panes::module_pane(ui, m, panes, out)
         });
@@ -1696,7 +1915,7 @@ fn modules_tab(
             .column(Column::initial(110.0).clip(true))
             .column(Column::remainder().clip(true))
             .header(20.0, |mut h| {
-                for (t, numeric) in [
+                for (i, (t, numeric)) in [
                     ("Name", false),
                     ("Base", false),
                     ("Size", true),
@@ -1704,13 +1923,18 @@ fn modules_tab(
                     ("Company", false),
                     ("Version", false),
                     ("Path", false),
-                ] {
-                    h.col(|ui| widgets::column_header(ui, t, numeric));
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    h.col(|ui| {
+                        view.header(ui, i, t, numeric);
+                    });
                 }
             })
             .body(|body| {
                 body.rows(18.0, rows.len(), |mut row| {
-                    let m = &rows[row.index()];
+                    let m = rows[row.index()];
                     row.set_selected(selected == Some(m.info.base));
                     row.col(|ui| {
                         ui.add(Label::new(&*m.info.name).truncate());

@@ -585,6 +585,13 @@ fn value_cell(
     }
     let text = cell_text(c, p, d, is_group, ctx);
     if text.is_empty() {
+        if let Some(why) = unreadable(c, p, d, is_group) {
+            ui.add_space(TEXT_INSET);
+            ui.label(RichText::new("—").color(theme::TEXT_DIM))
+                .on_hover_text(format!(
+                    "Not readable: {why}. Running Anabolic as administrator reads most of these."
+                ));
+        }
         return;
     }
     let color = if p.state == ProcState::Suspended {
@@ -600,6 +607,30 @@ fn value_cell(
         ui.add_space(TEXT_INSET);
         ui.add(label);
     }
+}
+
+/// Why a text cell is empty because Windows refused to open the process,
+/// rather than because there is nothing to show.
+fn unreadable<'a>(
+    c: Col,
+    p: &ProcessInfo,
+    d: Option<&'a Arc<ProcessDetails>>,
+    is_group: bool,
+) -> Option<&'a str> {
+    if is_group || p.is_pseudo() {
+        return None;
+    }
+    let d = d?;
+    let why = d.open_error.as_deref()?;
+    let missing = match c {
+        Col::User => d.user.is_none(),
+        Col::Integrity => d.integrity.is_none(),
+        Col::Arch => d.arch.is_none(),
+        Col::Path | Col::Description | Col::Company | Col::Version => d.path.is_none(),
+        Col::CommandLine => d.command_line.is_none(),
+        _ => false,
+    };
+    missing.then_some(why)
 }
 
 /// How hot a cell is, 0..=1. Linear against what makes a machine struggle,
