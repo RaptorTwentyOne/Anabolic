@@ -29,6 +29,7 @@ use crate::memory::MemorySampler;
 use crate::model::*;
 use crate::net::NetSampler;
 use crate::nettrace::{ConnKey, NetTracer, Traffic};
+use crate::recorder::{Recorder, RecorderConfig};
 use crate::scan::{Entry, ProcessScanner};
 
 #[derive(Clone, Debug)]
@@ -37,6 +38,8 @@ pub struct CollectorConfig {
     pub history_len: usize,
     /// How many refreshes new and exited processes stay highlighted.
     pub highlight_ticks: u64,
+    /// Where the flight recorder keeps its days; None records nothing.
+    pub recorder: Option<RecorderConfig>,
 }
 
 impl Default for CollectorConfig {
@@ -45,6 +48,7 @@ impl Default for CollectorConfig {
             interval: Duration::from_secs(1),
             history_len: 600,
             highlight_ticks: 2,
+            recorder: None,
         }
     }
 }
@@ -61,6 +65,8 @@ pub enum Command {
     /// Trace disk I/O to tell who reads and writes each disk (only while a
     /// disk view is open).
     TraceDisks(bool),
+    /// Start or stop the flight recorder.
+    Record(Option<RecorderConfig>),
     Shutdown,
 }
 
@@ -225,6 +231,7 @@ struct State {
     thread_prev: HashMap<u32, (i64, u64, u32)>,
     thread_prev_for: Option<ProcKey>,
     enrich: Sender<EnrichRequest>,
+    recorder: Option<Recorder>,
 }
 
 impl State {
@@ -274,6 +281,7 @@ impl State {
             thread_prev_for: None,
             enrich,
             cpu,
+            recorder: config.recorder.clone().map(Recorder::start),
             config,
         }
     }
@@ -474,6 +482,9 @@ impl State {
         loop {
             match catch_unwind(AssertUnwindSafe(|| self.tick(scheduled))) {
                 Ok(snapshot) => {
+                    if let Some(recorder) = &mut self.recorder {
+                        recorder.observe(&snapshot);
+                    }
                     let snapshot = Arc::new(snapshot);
                     self.previous = Some(snapshot.clone());
                     publish.store(snapshot);
@@ -508,6 +519,8 @@ impl State {
                         }
                     }
                     Ok(Command::TraceDisks(on)) => self.trace_disks(on),
+                    // Dropping the old one writes what it holds.
+                    Ok(Command::Record(config)) => self.recorder = config.map(Recorder::start),
                     Ok(Command::SetInterval(interval)) => {
                         let interval = interval.max(Duration::from_millis(100));
                         next = next - self.config.interval + interval;

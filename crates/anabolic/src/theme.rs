@@ -112,6 +112,7 @@ pub mod icon {
     pub const CHEVRON_UP: &str = "\u{E70E}";
     pub const SHIELD: &str = "\u{EA18}";
     pub const SPEED: &str = "\u{EC4A}";
+    pub const HISTORY: &str = "\u{E81C}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

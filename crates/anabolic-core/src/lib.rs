@@ -28,6 +28,7 @@ pub mod modules;
 pub mod net;
 pub mod nettrace;
 pub mod ntapi;
+pub mod recorder;
 pub mod scan;
 pub mod sysinfo;
 pub mod taskmgr;

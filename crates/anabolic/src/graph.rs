@@ -1,6 +1,8 @@
 //! Lightweight history graphs painted straight onto egui's painter. Never draws
 //! more points than the graph has pixels.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use anabolic_core::history::Ring;
 use eframe::egui::{self, Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2};
 
@@ -100,14 +102,25 @@ impl<'a> Graph<'a> {
     }
 }
 
+/// Samples every graph spans when the user picked a fixed window (new
+/// samples flow in from the right); 0 fits the span to the history instead.
+static WINDOW: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_window(samples: usize) {
+    WINDOW.store(samples, Ordering::Relaxed);
+}
+
 /// How many samples a graph `width` wide shows: at most one per pixel and
-/// the ring's capacity, and while the ring is still filling, what it holds
-/// (at least a minute's worth, so the first seconds do not fill the width).
+/// the ring's capacity; then either the fixed window, or while the ring is
+/// still filling, what it holds (at least a minute's worth, so the first
+/// seconds do not fill the width).
 pub fn visible_samples(ring: &Ring, width: f32) -> usize {
-    ring.capacity()
-        .min(width.max(2.0) as usize)
-        .min(ring.len().max(60))
-        .max(2)
+    let most = ring.capacity().min(width.max(2.0) as usize);
+    match WINDOW.load(Ordering::Relaxed) {
+        0 => most.min(ring.len().max(60)),
+        window => most.min(window),
+    }
+    .max(2)
 }
 
 fn tail_max(ring: &Ring, n: usize) -> f32 {
@@ -167,7 +180,26 @@ pub fn nice_ceiling(v: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::nice_ceiling;
+    use super::{nice_ceiling, set_window, visible_samples};
+    use anabolic_core::history::Ring;
+
+    #[test]
+    fn fitted_span_grows_fixed_window_stays() {
+        let mut ring = Ring::new(600);
+        for _ in 0..200 {
+            ring.push(1.0);
+        }
+        // The only test that touches the window; set back before returning.
+        set_window(0);
+        assert_eq!(visible_samples(&ring, 1000.0), 200);
+        set_window(60);
+        assert_eq!(visible_samples(&ring, 1000.0), 60);
+        // Never more than one sample per pixel or than the ring holds.
+        assert_eq!(visible_samples(&ring, 40.0), 40);
+        set_window(10_000);
+        assert_eq!(visible_samples(&ring, 1000.0), 600);
+        set_window(0);
+    }
 
     #[test]
     fn ceilings() {

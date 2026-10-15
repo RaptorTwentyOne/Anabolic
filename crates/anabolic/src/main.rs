@@ -12,6 +12,7 @@ mod details;
 mod dialogs;
 mod fmt;
 mod graph;
+mod history_page;
 mod icons;
 mod perf;
 mod proc_table;
@@ -180,6 +181,15 @@ fn activated() {
         None => {
             instance::bring_to_front();
         }
+    }
+}
+
+/// Where Anabolic keeps its own files (stall log, history): the user's
+/// %LOCALAPPDATA%\Anabolic, or ANABOLIC_DATA_DIR for a test instance.
+pub fn data_dir() -> Option<std::path::PathBuf> {
+    match std::env::var_os("ANABOLIC_DATA_DIR") {
+        Some(dir) => Some(dir.into()),
+        None => Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Anabolic")),
     }
 }
 

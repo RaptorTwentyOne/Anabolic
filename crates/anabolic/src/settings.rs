@@ -164,10 +164,50 @@ impl Col {
     }
 }
 
+/// How much time a history graph spans.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum GraphSpan {
+    /// Stretch over what has been collected so far, up to the full history.
+    #[default]
+    Fit,
+    /// A fixed window: new samples flow in from the right.
+    Minute,
+    FiveMinutes,
+    TenMinutes,
+}
+
+impl GraphSpan {
+    pub const ALL: [GraphSpan; 4] = [
+        GraphSpan::Fit,
+        GraphSpan::Minute,
+        GraphSpan::FiveMinutes,
+        GraphSpan::TenMinutes,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GraphSpan::Fit => "Fit",
+            GraphSpan::Minute => "1 min",
+            GraphSpan::FiveMinutes => "5 min",
+            GraphSpan::TenMinutes => "10 min",
+        }
+    }
+
+    pub fn seconds(self) -> Option<u64> {
+        match self {
+            GraphSpan::Fit => None,
+            GraphSpan::Minute => Some(60),
+            GraphSpan::FiveMinutes => Some(300),
+            GraphSpan::TenMinutes => Some(600),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Tab {
     Processes,
     Performance,
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -219,6 +259,11 @@ pub struct Settings {
     pub memory_alert_pct: f32,
     /// The navigation rail shows icons only.
     pub nav_collapsed: bool,
+    pub graph_span: GraphSpan,
+    /// Keep the flight recorder's history.
+    pub record_history: bool,
+    /// Days of history kept.
+    pub history_days: u32,
 }
 
 impl Default for Settings {
@@ -248,6 +293,9 @@ impl Default for Settings {
             show_details: true,
             memory_alert_pct: 90.0,
             nav_collapsed: false,
+            graph_span: GraphSpan::Fit,
+            record_history: true,
+            history_days: 7,
         }
     }
 }
@@ -279,6 +327,7 @@ impl Settings {
         self.version = VERSION;
         self.interval_ms = self.interval_ms.clamp(100, 60_000);
         self.memory_alert_pct = self.memory_alert_pct.clamp(50.0, 99.0);
+        self.history_days = self.history_days.clamp(1, 90);
         self.columns.dedup();
         if !self.columns.contains(&Col::Name) {
             self.columns.insert(0, Col::Name);

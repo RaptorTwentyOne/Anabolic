@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anabolic_core::actions::{Action, ActionRunner, Outcome, Target};
 use anabolic_core::handles::{FindReport, FoundHandle, InspectRequest, Inspection, Inspector};
 use anabolic_core::hardening::{self, HardeningItem};
+use anabolic_core::recorder::RecorderConfig;
 use anabolic_core::{
     Collector, CollectorConfig, Command, InfoLevel, ProcKey, ProcState, ProcessInfo, Snapshot,
 };
@@ -23,7 +24,7 @@ use crate::fmt;
 use crate::icons::IconCache;
 use crate::perf::{self, PerfView, ZombieView};
 use crate::proc_table::{self, ProcTable, UiCmd};
-use crate::settings::{Col, Settings, Tab, View};
+use crate::settings::{Col, GraphSpan, Settings, Tab, View};
 use crate::theme;
 use crate::tree::{self, Details};
 use crate::widgets;
@@ -86,6 +87,7 @@ pub struct App {
     focus_thread: Option<(u32, bool)>,
     handle_view: HandleView,
     perf_view: PerfView,
+    history: crate::history_page::HistoryPage,
     /// Logical processor shown in detail on the CPU view.
     perf_core: Option<usize>,
     /// Context switch tracing is on (only while the CPU view is visible).
@@ -156,6 +158,7 @@ impl App {
                     | "--pid"
                     | "--handles"
                     | "--perf"
+                    | "--history"
                     | "--core"
                     | "--alert"
                     | "--zombies"
@@ -163,6 +166,9 @@ impl App {
                     | "--find"
             )
         });
+        if args.iter().any(|a| a == "--history") {
+            settings.tab = Tab::History;
+        }
         let mut perf_view = PerfView::default();
         if args.iter().any(|a| a == "--perf") {
             settings.tab = Tab::Performance;
@@ -226,6 +232,7 @@ impl App {
         let collector = Collector::start(
             CollectorConfig {
                 interval: Duration::from_millis(settings.interval_ms),
+                recorder: recorder_config(&settings),
                 ..Default::default()
             },
             move || crate::stalls::wake(&repaint),
@@ -266,6 +273,7 @@ impl App {
             focus_thread: None,
             handle_view: HandleView::default(),
             perf_view,
+            history: Default::default(),
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
@@ -837,6 +845,9 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::Num2) {
                 self.settings.tab = Tab::Performance;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::Num3) {
+                self.settings.tab = Tab::History;
+            }
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
@@ -962,6 +973,7 @@ impl App {
                 "Performance",
                 "Ctrl+2",
             ),
+            (Tab::History, theme::icon::HISTORY, "History", "Ctrl+3"),
         ];
         for (tab, icon, label, keys) in pages {
             let selected = self.settings.tab == tab;
@@ -1114,6 +1126,31 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("Memory warning at");
                 ui.add(egui::Slider::new(&mut self.settings.memory_alert_pct, 50.0..=99.0).suffix(" %").integer());
+            });
+            ui.horizontal(|ui| {
+                let mut changed = ui
+                    .checkbox(&mut self.settings.record_history, "Keep a history for")
+                    .on_hover_text(
+                        "Every 10 seconds while Anabolic runs: the machine's totals and the processes                          that led. Look back on the History page (Ctrl+3).",
+                    )
+                    .changed();
+                let days = ui.add_enabled(
+                    self.settings.record_history,
+                    egui::DragValue::new(&mut self.settings.history_days).range(1..=90).suffix(" days"),
+                );
+                // Not on every step of a drag: each change restarts the recorder.
+                changed |= days.drag_stopped() || (days.changed() && !days.dragged());
+                if changed {
+                    self.collector.send(Command::Record(recorder_config(&self.settings)));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Graphs show").on_hover_text(
+                    "Fit stretches each graph over the history collected so far.                      A fixed window keeps its length from the start, and new values flow in from the right.",
+                );
+                for span in GraphSpan::ALL {
+                    ui.selectable_value(&mut self.settings.graph_span, span, span.label());
+                }
             });
         });
     }
@@ -1557,6 +1594,17 @@ impl App {
     }
 }
 
+/// The flight recorder's setup; None while the history is off.
+fn recorder_config(settings: &Settings) -> Option<RecorderConfig> {
+    if !settings.record_history {
+        return None;
+    }
+    Some(RecorderConfig {
+        dir: crate::data_dir()?.join("history"),
+        keep_days: settings.history_days,
+    })
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
@@ -1564,6 +1612,7 @@ impl eframe::App for App {
         let page = match self.settings.tab {
             Tab::Processes => "Processes".to_string(),
             Tab::Performance => format!("Performance/{:?}", self.perf_view),
+            Tab::History => "History".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
         if !self.title_bar_styled {
@@ -1573,6 +1622,10 @@ impl eframe::App for App {
         }
         let ctx = ui.ctx().clone();
         self.pump(&ctx);
+        // Every graph reads its time span from here, in samples.
+        crate::graph::set_window(self.settings.graph_span.seconds().map_or(0, |s| {
+            (s * 1000 / self.settings.interval_ms.max(1)) as usize
+        }));
 
         let mut cmds = Vec::new();
         self.shortcuts(&ctx, &mut cmds);
@@ -1669,6 +1722,25 @@ impl eframe::App for App {
                         &self.zombie_view,
                         &mut cmds,
                     );
+                });
+            }
+            Tab::History => {
+                let recording = self.settings.record_history;
+                let days = self.settings.history_days;
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            crate::history_page::show(
+                                ui,
+                                &mut self.history,
+                                &self.snapshot,
+                                crate::data_dir().map(|d| d.join("history")),
+                                recording,
+                                days,
+                                &mut cmds,
+                            );
+                        });
                 });
             }
         }

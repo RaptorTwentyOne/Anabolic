@@ -12,7 +12,13 @@ use eframe::egui::{self, ColorImage};
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
 static REQUESTED: AtomicBool = AtomicBool::new(false);
-const AFTER: Duration = Duration::from_secs(5);
+/// ANABOLIC_SCREENSHOT_AFTER=<seconds> waits longer, for pages that fill slowly.
+fn after() -> Duration {
+    std::env::var("ANABOLIC_SCREENSHOT_AFTER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(5), Duration::from_secs_f32)
+}
 
 pub fn frame(ctx: &egui::Context) {
     let Some(path) = std::env::var_os("ANABOLIC_SCREENSHOT") else {
@@ -28,7 +34,7 @@ pub fn frame(ctx: &egui::Context) {
         Instant::now()
     });
     if !REQUESTED.load(Ordering::Relaxed) {
-        if started.elapsed() >= AFTER {
+        if started.elapsed() >= after() {
             REQUESTED.store(true, Ordering::Relaxed);
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
