@@ -52,6 +52,19 @@ pub fn strong(text: impl Into<String>, size: f32) -> RichText {
     RichText::new(text).font(theme::semibold(size))
 }
 
+/// A table's column title, alike in every table: right-aligned over numbers
+/// so it sits above them.
+pub fn column_header(ui: &mut Ui, title: &str, numeric: bool) {
+    let text = Label::new(strong(title, theme::META).color(theme::TEXT_WEAK)).truncate();
+    if numeric {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(text);
+        });
+    } else {
+        ui.add(text);
+    }
+}
+
 /// The keyboard focus ring for custom-painted controls.
 pub fn focus_ring(ui: &Ui, response: &egui::Response) {
     if response.has_focus() {
@@ -195,6 +208,20 @@ pub fn rail_icon(ui: &mut Ui, icon: &str, label: &str) -> egui::Response {
 /// An icon glyph inline with text.
 pub fn icon(glyph: &str, size: f32) -> RichText {
     RichText::new(glyph).font(theme::icon_font(size))
+}
+
+/// A button caption: an icon, then its label.
+pub fn icon_text(ui: &Ui, glyph: &str, label: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let style = ui.style();
+    icon(glyph, 12.0).append_to(&mut job, style, egui::FontSelection::Default, Align::Center);
+    RichText::new(format!("  {label}")).append_to(
+        &mut job,
+        style,
+        egui::FontSelection::Default,
+        Align::Center,
+    );
+    job
 }
 
 /// A small caption above a big value, in a fixed-size block.

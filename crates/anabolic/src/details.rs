@@ -1,7 +1,6 @@
 //! Bottom panel: the selected process (identity, counters, threads, handles)
 //! or the selected app group (totals and members).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use anabolic_core::actions::Priority;
@@ -68,21 +67,12 @@ pub struct HandleView {
     by_name: bool,
     /// Entry indices passing `type_filter`.
     rows: Vec<u32>,
-    /// (type, name, count) over the resolved names, largest first.
-    name_groups: Vec<(u16, Arc<str>, u32)>,
 }
 
 impl HandleView {
     pub fn set_report(&mut self, report: Arc<HandleReport>) {
         self.pending = None;
         self.error = None;
-        let mut counts: HashMap<(u16, Arc<str>), u32> = HashMap::new();
-        for (e, name) in report.entries.iter().zip(&report.names) {
-            let name = name.clone().unwrap_or_else(|| Arc::from("<unnamed>"));
-            *counts.entry((e.type_index, name)).or_default() += 1;
-        }
-        self.name_groups = counts.into_iter().map(|((t, n), c)| (t, n, c)).collect();
-        self.name_groups.sort_by_key(|g| std::cmp::Reverse(g.2));
         self.by_name = report.resolved > 0;
         if self
             .type_filter
@@ -186,6 +176,34 @@ pub fn show(
         ui.selectable_value(tab, DetailTab::Modules, "Modules");
         ui.selectable_value(tab, DetailTab::Threads, format!("Threads ({})", p.threads));
         ui.selectable_value(tab, DetailTab::General, "General");
+        // Right to left: these end up left of the tabs.
+        if !p.is_pseudo() && p.state != ProcState::Exited {
+            ui.separator();
+            let terminate =
+                egui::Button::new(widgets::icon_text(ui, theme::icon::CLOSE, "Terminate"));
+            if ui
+                .add(terminate)
+                .on_hover_text("End the process (Del)")
+                .clicked()
+            {
+                out.push(UiCmd::Kill {
+                    key: p.key,
+                    tree: false,
+                });
+            }
+            let (glyph, label, cmd): (_, _, fn(ProcKey) -> UiCmd) =
+                if p.state == ProcState::Suspended {
+                    (theme::icon::PLAY, "Resume", UiCmd::Resume)
+                } else {
+                    (theme::icon::PAUSE, "Suspend", UiCmd::Suspend)
+                };
+            if ui
+                .add(egui::Button::new(widgets::icon_text(ui, glyph, label)))
+                .clicked()
+            {
+                out.push(cmd(p.key));
+            }
+        }
     });
 
     match tab {
@@ -604,19 +622,17 @@ fn threads(
         .column(Column::initial(90.0))
         .column(Column::remainder())
         .header(20.0, |mut h| {
-            for t in [
-                "TID",
-                "CPU",
-                "CPU time",
-                "Start address",
-                "Priority",
-                "Ctx sw/s",
-                "State",
-                "Wait reason",
+            for (t, numeric) in [
+                ("TID", true),
+                ("CPU", true),
+                ("CPU time", true),
+                ("Start address", false),
+                ("Priority", true),
+                ("Ctx sw/s", true),
+                ("State", false),
+                ("Wait reason", false),
             ] {
-                h.col(|ui| {
-                    ui.label(RichText::new(t).color(theme::TEXT_WEAK));
-                });
+                h.col(|ui| widgets::column_header(ui, t, numeric));
             }
         })
         .body(|body| {
@@ -840,7 +856,7 @@ fn handles_tab(
             });
         }
         if view.by_name && report.resolved > 0 {
-            let groups: Vec<&(u16, Arc<str>, u32)> = view
+            let groups: Vec<&(u16, Arc<str>, u32)> = report
                 .name_groups
                 .iter()
                 .filter(|g| view.type_filter.is_none_or(|t| g.0 == t))
@@ -855,10 +871,9 @@ fn handles_tab(
                 .column(Column::initial(120.0))
                 .column(Column::remainder().clip(true))
                 .header(20.0, |mut h| {
-                    for t in ["Count", "Type", "Name / target"] {
-                        h.col(|ui| {
-                            ui.label(RichText::new(t).color(theme::TEXT_WEAK));
-                        });
+                    for (t, numeric) in [("Count", true), ("Type", false), ("Name / target", false)]
+                    {
+                        h.col(|ui| widgets::column_header(ui, t, numeric));
                     }
                 })
                 .body(|body| {
@@ -887,9 +902,7 @@ fn handles_tab(
                 .column(Column::remainder().clip(true))
                 .header(20.0, |mut h| {
                     for t in ["Handle", "Type", "Access", "Name / target"] {
-                        h.col(|ui| {
-                            ui.label(RichText::new(t).color(theme::TEXT_WEAK));
-                        });
+                        h.col(|ui| widgets::column_header(ui, t, false));
                     }
                 })
                 .body(|body| {
@@ -1063,18 +1076,16 @@ fn modules_tab(ui: &mut Ui, p: &ProcessInfo, modules: &ModuleView, out: &mut Vec
         .column(Column::initial(110.0).clip(true))
         .column(Column::remainder().clip(true))
         .header(20.0, |mut h| {
-            for t in [
-                "Name",
-                "Base",
-                "Size",
-                "Description",
-                "Company",
-                "Version",
-                "Path",
+            for (t, numeric) in [
+                ("Name", false),
+                ("Base", false),
+                ("Size", true),
+                ("Description", false),
+                ("Company", false),
+                ("Version", false),
+                ("Path", false),
             ] {
-                h.col(|ui| {
-                    ui.label(RichText::new(t).color(theme::TEXT_WEAK));
-                });
+                h.col(|ui| widgets::column_header(ui, t, numeric));
             }
         })
         .body(|body| {

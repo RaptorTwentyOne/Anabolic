@@ -56,6 +56,8 @@ pub struct HandleReport {
     /// Parallel to `entries` (prefix of length `resolved`) when names were requested.
     pub names: Vec<Option<Arc<str>>>,
     pub resolved: usize,
+    /// (type, name, count) over the resolved names, largest first.
+    pub name_groups: Vec<(u16, Arc<str>, u32)>,
     pub name_error: Option<String>,
     /// Handles open in the whole system at the time.
     pub system_total: usize,
@@ -912,6 +914,7 @@ fn inspect_handles(
         by_type: count_by_type(&entries, types),
         type_names: types.clone(),
         resolved: names.len(),
+        name_groups: name_groups(&entries, &names),
         names,
         name_error,
         process_targets: process_targets(&entries, process_type, &live_map),
@@ -919,6 +922,19 @@ fn inspect_handles(
         system_total,
         took: started.elapsed(),
     })
+}
+
+/// Up to `NAME_LIMIT` names: counted here, not on the UI thread.
+fn name_groups(entries: &[HandleEntry], names: &[Option<Arc<str>>]) -> Vec<(u16, Arc<str>, u32)> {
+    let unnamed: Arc<str> = Arc::from("<unnamed>");
+    let mut counts: HashMap<(u16, Arc<str>), u32> = HashMap::new();
+    for (e, name) in entries.iter().zip(names) {
+        let name = name.clone().unwrap_or_else(|| unnamed.clone());
+        *counts.entry((e.type_index, name)).or_default() += 1;
+    }
+    let mut groups: Vec<_> = counts.into_iter().map(|((t, n), c)| (t, n, c)).collect();
+    groups.sort_by_key(|g| std::cmp::Reverse(g.2));
+    groups
 }
 
 impl Inspector {

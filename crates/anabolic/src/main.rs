@@ -28,6 +28,15 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     attach_parent_console();
+    // "Restart as admin" starts us while the instance it replaces closes.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pid) = args
+        .iter()
+        .position(|a| a == "--after")
+        .and_then(|i| args.get(i + 1)?.parse().ok())
+    {
+        instance::await_exit(pid, std::time::Duration::from_secs(10));
+    }
     // One Anabolic per session: a second start brings the first to the front.
     // `--new` opts out (and leaves activation requests to someone else).
     let activation = if std::env::args().any(|a| a == "--new") {
@@ -58,6 +67,10 @@ fn main() -> eframe::Result {
             .with_active(!(bench::enabled() || std::env::var_os("ANABOLIC_SCREENSHOT").is_some())),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: wgpu_options(),
+        // Test instances keep their state elsewhere, away from the user's.
+        // (eframe wants the file here, not the folder its docs mention.)
+        persistence_path: std::env::var_os("ANABOLIC_DATA_DIR")
+            .map(|dir| std::path::Path::new(&dir).join("app.ron")),
         ..Default::default()
     };
     eframe::run_native(
@@ -85,7 +98,17 @@ fn wgpu_options() -> eframe::WgpuConfiguration {
     use eframe::egui_wgpu::{WgpuSetup, WgpuSetupCreateNew};
     let mut setup = WgpuSetupCreateNew::without_display_handle();
     setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+    // Debug builds are what the user runs every day: no D3D12 debug layer
+    // (WGPU_VALIDATION=1 brings it back).
+    setup.instance_descriptor.flags = eframe::wgpu::InstanceFlags::empty().with_env();
     setup.native_adapter_selector = Some(std::sync::Arc::new(pick_adapter));
+    // The default sizes memory blocks for games: 128 MB on the GPU, 64 MB in
+    // system memory, some 260 MB of private bytes for a few MB of egui.
+    let device = setup.device_descriptor.clone();
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| eframe::wgpu::DeviceDescriptor {
+        memory_hints: eframe::wgpu::MemoryHints::MemoryUsage,
+        ..device(adapter)
+    });
     eframe::WgpuConfiguration {
         surface: eframe::SurfaceConfig::LOW_LATENCY,
         wgpu_setup: WgpuSetup::CreateNew(setup),

@@ -80,19 +80,25 @@ fn set_debugger(image: &str, command: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// The anabolic.exe Ctrl+Shift+Esc starts, if it is registered: the second
-/// quoted path of the launcher's command line.
-pub fn registered_app() -> Option<String> {
-    let command = debugger("taskmgr.exe")?;
-    if !command.to_lowercase().contains(LAUNCHER) {
-        return None;
-    }
-    command.split('"').nth(3).map(str::to_string)
+/// What Ctrl+Shift+Esc starts at the moment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Registration {
+    /// taskmgr.exe starts our launcher.
+    pub replaced: bool,
+    /// The anabolic.exe the launcher starts: the second quoted path of its
+    /// command line.
+    pub app: Option<String>,
 }
 
-/// Whether taskmgr.exe currently starts our launcher.
-pub fn is_replaced() -> bool {
-    debugger("taskmgr.exe").is_some_and(|d| d.to_lowercase().contains(LAUNCHER))
+/// A registry read: do it off the UI thread.
+pub fn registration() -> Registration {
+    match debugger("taskmgr.exe") {
+        Some(command) if command.to_lowercase().contains(LAUNCHER) => Registration {
+            replaced: true,
+            app: command.split('"').nth(3).map(str::to_string),
+        },
+        _ => Registration::default(),
+    }
 }
 
 fn xml_escape(s: &str) -> String {

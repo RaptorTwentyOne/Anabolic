@@ -81,6 +81,8 @@ pub struct ProcTable {
     pub filter: String,
     pub dirty: bool,
     pub scroll_to_selected: bool,
+    /// Shift+F10: open the selected row's menu once the row is drawn.
+    pub open_menu: std::cell::Cell<bool>,
 }
 
 impl ProcTable {
@@ -234,6 +236,8 @@ pub fn show(
                             out.push(UiCmd::ToggleGroup(g.id.clone()));
                         }
                         response.context_menu(|ui| group_menu(ui, g, d, out));
+                        let open = selected && table.open_menu.replace(false);
+                        keyboard_menu(&response, open, |ui| group_menu(ui, g, d, out));
                     }
                     None => {
                         if response.clicked() || response.secondary_clicked() {
@@ -243,9 +247,37 @@ pub fn show(
                             out.push(UiCmd::ToggleCollapse(p.key));
                         }
                         response.context_menu(|ui| context_menu(ui, p, d, out));
+                        let open = selected && table.open_menu.replace(false);
+                        keyboard_menu(&response, open, |ui| context_menu(ui, p, d, out));
                     }
                 }
             });
+        });
+}
+
+/// The row's menu opened from the keyboard (Shift+F10): under the row, with
+/// its first item focused so the arrows and Enter work from there.
+fn keyboard_menu(response: &egui::Response, open: bool, add_contents: impl FnOnce(&mut Ui)) {
+    let id = response.id.with("keyboard menu");
+    if open {
+        egui::Popup::open_id(&response.ctx, id);
+    }
+    egui::Popup::menu(response)
+        .id(id)
+        .open_memory(None)
+        .anchor(egui::PopupAnchor::Position(
+            response.rect.left_bottom() + vec2(24.0, 2.0),
+        ))
+        .show(|ui| {
+            if open {
+                ui.memory_mut(|m| {
+                    if let Some(focused) = m.focused() {
+                        m.surrender_focus(focused);
+                    }
+                    m.move_focus(egui::FocusDirection::Next);
+                });
+            }
+            add_contents(ui);
         });
 }
 
@@ -327,6 +359,32 @@ fn text_color(p: &ProcessInfo, d: Option<&Arc<ProcessDetails>>) -> Color32 {
     }
 }
 
+/// Tree lines: from each parent's toggle down to its children, ending at
+/// the last one.
+fn guides(ui: &Ui, r: Row) {
+    if r.depth == 0 {
+        return;
+    }
+    let cell = ui.max_rect();
+    let painter = ui.painter();
+    let stroke = Stroke::new(1.0, theme::BORDER_STRONG);
+    // A level's line runs under the toggle of the parent at that depth.
+    let x_at =
+        |depth: u16| painter.round_to_pixel_center(cell.left() + (depth - 1) as f32 * INDENT + 6.0);
+    // One past the row on both ends so consecutive rows join up.
+    let (top, bottom, mid) = (cell.top() - 1.0, cell.bottom() + 1.0, cell.center().y);
+    for depth in 1..r.depth.min(64) {
+        if r.rails & (1 << depth) != 0 {
+            painter.vline(x_at(depth), top..=bottom, stroke);
+        }
+    }
+    let x = x_at(r.depth);
+    painter.vline(x, top..=if r.last { mid } else { bottom }, stroke);
+    let toggle = cell.left() + r.depth as f32 * INDENT;
+    let end = toggle + if r.has_children { 1.0 } else { 11.0 };
+    painter.hline(x..=end, painter.round_to_pixel_center(mid), stroke);
+}
+
 fn name_cell(
     ui: &mut Ui,
     p: &ProcessInfo,
@@ -337,6 +395,7 @@ fn name_cell(
     out: &mut Vec<UiCmd>,
 ) {
     ui.spacing_mut().item_spacing.x = 4.0;
+    guides(ui, r);
     ui.add_space(r.depth as f32 * INDENT);
     let (rect, toggle) = ui.allocate_exact_size(vec2(12.0, ROW_HEIGHT), Sense::click());
     if r.has_children {
@@ -543,7 +602,7 @@ fn cell_text(
             .map_or_else(|| p.base_priority.to_string(), |pr| pr.label().into()),
         Col::Session if pseudo => String::new(),
         Col::Session => p.session_id.to_string(),
-        Col::User => text(|d| d.user.as_deref()),
+        Col::User => text(|d| d.user.as_deref().map(fmt::account)),
         Col::Integrity => d
             .and_then(|d| d.integrity)
             .map(|i| i.label().to_string())

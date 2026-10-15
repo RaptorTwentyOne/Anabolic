@@ -19,7 +19,9 @@ use windows::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    CreateEventW, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, SetEvent, WaitForSingleObject,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW, SetForegroundWindow,
@@ -92,6 +94,17 @@ fn claim_named(name: &str) -> Claim {
         }
         Ok(handle) => Claim::First(OwnedHandle(handle)),
         Err(_) => Claim::Unavailable,
+    }
+}
+
+/// Waits up to `timeout` for process `pid` to exit: the instance that
+/// started us elevated and is closing to make room.
+pub fn await_exit(pid: u32, timeout: Duration) {
+    if let Ok(process) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        let process = OwnedHandle(process);
+        unsafe {
+            WaitForSingleObject(process.raw(), timeout.as_millis() as u32);
+        }
     }
 }
 

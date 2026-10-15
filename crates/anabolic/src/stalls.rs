@@ -34,7 +34,11 @@ pub struct Stalls {
 }
 
 pub fn log_path() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Anabolic");
+    // Test instances log beside their own state, not into the user's log.
+    let dir = match std::env::var_os("ANABOLIC_DATA_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Anabolic"),
+    };
     Some(dir.join("stalls.log"))
 }
 

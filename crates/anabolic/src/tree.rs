@@ -23,6 +23,11 @@ pub struct Row {
     pub dim: bool,
     /// Set on group header rows (Apps view): index into `Built::groups`.
     pub group: Option<u32>,
+    /// The last of its siblings shown: its guide line ends at this row.
+    pub last: bool,
+    /// Bit n: the guide line of depth n runs on past this row, to a later
+    /// sibling of this row's ancestor at that depth.
+    pub rails: u64,
 }
 
 /// Several processes of the same executable, with summed counters.
@@ -65,6 +70,8 @@ fn row(idx: u32, depth: u16) -> Row {
         expanded: false,
         dim: false,
         group: None,
+        last: false,
+        rails: 0,
     }
 }
 
@@ -133,7 +140,7 @@ fn build_tree(input: &BuildInput<'_>, matched: &[bool], filtering: bool) -> Buil
         filtering,
     };
     for &r in &roots {
-        walk.walk(r, 0, &mut rows);
+        walk.walk(r, 0, 0, true, &mut rows);
     }
     Built {
         rows,
@@ -194,9 +201,15 @@ fn build_apps(input: &BuildInput<'_>, shown: &dyn Fn(u32) -> bool, filtering: bo
                     expanded,
                     dim: false,
                     group: Some(g as u32),
+                    last: false,
+                    rails: 0,
                 });
                 if expanded {
-                    rows.extend(group.members.iter().map(|&m| row(m, 1)));
+                    let n = group.members.len();
+                    rows.extend(group.members.iter().enumerate().map(|(i, &m)| Row {
+                        last: i + 1 == n,
+                        ..row(m, 1)
+                    }));
                 }
             }
         }
@@ -318,7 +331,7 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    fn walk(&self, i: u32, depth: u16, rows: &mut Vec<Row>) {
+    fn walk(&self, i: u32, depth: u16, rails: u64, last: bool, rows: &mut Vec<Row>) {
         let iu = i as usize;
         if self.filtering && !self.visible[iu] {
             return;
@@ -335,10 +348,23 @@ impl Walk<'_> {
             expanded,
             dim: self.filtering && !self.matched[iu],
             group: None,
+            last,
+            rails,
         });
         if expanded && depth < MAX_DEPTH {
-            for &c in kids {
-                self.walk(c, depth + 1, rows);
+            let shown: Vec<u32> = kids
+                .iter()
+                .copied()
+                .filter(|&c| !self.filtering || self.visible[c as usize])
+                .collect();
+            // Our own line continues past our children to our next sibling.
+            let rails = if last || depth == 0 {
+                rails
+            } else {
+                rails | 1u64.checked_shl(depth.into()).unwrap_or(0)
+            };
+            for (n, &c) in shown.iter().enumerate() {
+                self.walk(c, depth + 1, rails, n + 1 == shown.len(), rows);
             }
         }
     }
@@ -374,7 +400,8 @@ fn matches(p: &ProcessInfo, d: Option<&Arc<ProcessDetails>>, filter: &str) -> bo
 fn text<'a>(details: &'a Details, p: &ProcessInfo, col: Col) -> Option<&'a str> {
     let d = details.get(&p.key)?;
     match col {
-        Col::User => d.user.as_deref(),
+        // As shown: by account, not by domain first.
+        Col::User => d.user.as_deref().map(crate::fmt::account),
         Col::Integrity => d.integrity.map(|i| i.label()),
         Col::Arch => d.arch.map(|a| a.label()),
         Col::Description => d.description.as_deref(),

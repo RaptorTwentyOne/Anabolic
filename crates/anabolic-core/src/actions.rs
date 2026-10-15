@@ -123,14 +123,22 @@ pub enum Action {
         on: bool,
         launcher: &'static [u8],
     },
+    /// Read what Ctrl+Shift+Esc starts now.
+    QueryTaskManager,
+    /// Put text on the clipboard, which another program may be holding.
+    Copy(String),
+    /// Start this program again elevated. Waits on the UAC prompt.
+    RelaunchElevated,
 }
 
 #[derive(Clone, Debug)]
 pub enum Outcome {
     Info(String),
     Error(String),
-    /// Whether Task Manager is now replaced, after an attempt to change it.
-    TaskManagerReplaced(bool),
+    /// What Ctrl+Shift+Esc starts, read at startup and after every change.
+    TaskManager(crate::taskmgr::Registration),
+    /// The elevated instance is starting: this one should close.
+    Relaunched,
     Affinity {
         target: Target,
         process_mask: u64,
@@ -174,10 +182,23 @@ fn perform(action: Action) -> Option<Outcome> {
     let result = match action {
         Action::ReplaceTaskManager { on, launcher } => {
             return Some(match crate::taskmgr::set_replaced(on, launcher) {
-                Ok(()) => Outcome::TaskManagerReplaced(crate::taskmgr::is_replaced()),
+                Ok(()) => Outcome::TaskManager(crate::taskmgr::registration()),
                 Err(e) => Outcome::Error(format!(
                     "Could not change the Task Manager replacement: {e}"
                 )),
+            });
+        }
+        Action::QueryTaskManager => {
+            return Some(Outcome::TaskManager(crate::taskmgr::registration()));
+        }
+        Action::Copy(text) => arboard::Clipboard::new()
+            .and_then(|mut c| c.set_text(text))
+            .map(|_| String::new())
+            .map_err(|e| format!("Could not copy: {e}")),
+        Action::RelaunchElevated => {
+            return Some(match relaunch_elevated() {
+                Ok(()) => Outcome::Relaunched,
+                Err(e) => Outcome::Error(e),
             });
         }
         Action::Terminate(targets) => return Some(terminate(&targets)),
@@ -368,15 +389,18 @@ fn shell_open(target: &str) {
 }
 
 /// Starts a new elevated instance of the current executable (UAC prompt).
-pub fn relaunch_elevated() -> Result<(), String> {
+/// It waits for this one to exit before taking over as the session's
+/// Anabolic (`--after`), or it would find us still running and hand over.
+fn relaunch_elevated() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = wide(&exe.to_string_lossy());
+    let args = wide(&format!("--after {}", std::process::id()));
     let result = unsafe {
         ShellExecuteW(
             None,
             w!("runas"),
             PCWSTR(exe.as_ptr()),
-            PCWSTR::null(),
+            PCWSTR(args.as_ptr()),
             PCWSTR::null(),
             SW_SHOWNORMAL,
         )

@@ -161,6 +161,7 @@ dependencies = [
 name = "anabolic-core"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "arc-swap",
  "crossbeam-channel",
  "windows",

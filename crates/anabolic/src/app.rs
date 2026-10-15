@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anabolic_core::actions::{self, Action, ActionRunner, Outcome, Target};
+use anabolic_core::actions::{Action, ActionRunner, Outcome, Target};
 use anabolic_core::handles::{FindReport, FoundHandle, InspectRequest, Inspection, Inspector};
 use anabolic_core::hardening::{self, HardeningItem};
 use anabolic_core::{
@@ -114,8 +114,12 @@ pub struct App {
     title_bar_styled: bool,
     pinned: Option<Result<u64, String>>,
     focus_search: bool,
-    /// taskmgr.exe is redirected to Anabolic's launcher.
-    taskmgr_replaced: bool,
+    /// What Ctrl+Shift+Esc starts; None until the action thread has read it.
+    taskmgr: Option<anabolic_core::taskmgr::Registration>,
+    /// This build's anabolic.exe, to compare with the registered one.
+    this_app: Option<String>,
+    /// "Restart as admin" is waiting on the UAC prompt.
+    relaunching: bool,
     /// `--pid N` on the command line: select it once it shows up.
     pending_pid: Option<u32>,
     /// Started with command line overrides: do not persist settings.
@@ -228,6 +232,7 @@ impl App {
         );
         let repaint = cc.egui_ctx.clone();
         let (actions, outcomes) = ActionRunner::start(move || crate::stalls::wake(&repaint));
+        actions.run(Action::QueryTaskManager);
         let repaint = cc.egui_ctx.clone();
         let (inspector, inspections) = Inspector::start(move || crate::stalls::wake(&repaint));
         if let Some(query) = &find_query {
@@ -297,13 +302,15 @@ impl App {
             pinned: None,
             focus_search: false,
             pending_pid,
-            taskmgr_replaced: anabolic_core::taskmgr::is_replaced(),
+            taskmgr: None,
+            this_app: anabolic_core::taskmgr::app_path().map(|p| p.display().to_string()),
+            relaunching: false,
             session_only,
         }
     }
 
     /// Pulls everything the background threads produced since the last frame.
-    fn pump(&mut self) {
+    fn pump(&mut self, ctx: &egui::Context) {
         let mut new_details = false;
         for e in self.collector.details().try_iter() {
             self.details.insert(e.key, e.details);
@@ -317,15 +324,26 @@ impl App {
         for outcome in self.outcomes.try_iter() {
             match outcome {
                 Outcome::Info(msg) => self.toasts.info(msg),
-                Outcome::Error(msg) => self.toasts.error(msg),
-                Outcome::TaskManagerReplaced(on) => {
-                    self.taskmgr_replaced = on;
-                    self.toasts.info(if on {
-                        "Ctrl+Shift+Esc now opens Anabolic"
-                    } else {
-                        "Ctrl+Shift+Esc opens Task Manager again"
-                    });
+                Outcome::Error(msg) => {
+                    self.relaunching = false;
+                    self.toasts.error(msg);
                 }
+                Outcome::TaskManager(now) => {
+                    // The first answer is the startup read, not a change.
+                    if self
+                        .taskmgr
+                        .as_ref()
+                        .is_some_and(|t| t.replaced != now.replaced)
+                    {
+                        self.toasts.info(if now.replaced {
+                            "Ctrl+Shift+Esc now opens Anabolic"
+                        } else {
+                            "Ctrl+Shift+Esc opens Task Manager again"
+                        });
+                    }
+                    self.taskmgr = Some(now);
+                }
+                Outcome::Relaunched => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 Outcome::Affinity {
                     target,
                     process_mask,
@@ -626,7 +644,7 @@ impl App {
         self.confirm_kill(title, subject, detail, targets);
     }
 
-    fn handle(&mut self, ctx: &egui::Context, cmds: Vec<UiCmd>) {
+    fn handle(&mut self, cmds: Vec<UiCmd>) {
         for cmd in cmds {
             match cmd {
                 UiCmd::Select(key) => {
@@ -670,7 +688,7 @@ impl App {
                 UiCmd::OpenLocation(path) => self.actions.run(Action::OpenFileLocation(path)),
                 UiCmd::Properties(path) => self.actions.run(Action::FileProperties(path)),
                 UiCmd::SearchOnline(query) => self.actions.run(Action::SearchOnline(query)),
-                UiCmd::Copy(text) => ctx.copy_text(text),
+                UiCmd::Copy(text) => self.actions.run(Action::Copy(text)),
                 UiCmd::Sort(col) => {
                     if self.settings.sort == col {
                         self.settings.descending = !self.settings.descending;
@@ -792,6 +810,8 @@ impl App {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
+        // An open menu or list takes the arrows, Space, Enter and Escape.
+        let popup_open = egui::Popup::is_any_open(ctx);
         let rows = self.table.rows.len();
         let current = self.table.selected_row(&self.snapshot);
         let current_row = current.map(|r| self.table.rows[r]);
@@ -820,7 +840,7 @@ impl App {
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
-            if typing {
+            if typing || popup_open {
                 return;
             }
             // The Pause button promises Space on every page.
@@ -829,6 +849,13 @@ impl App {
             }
             if self.settings.tab != Tab::Processes {
                 return;
+            }
+            // Shift+F10 opens the selected row's menu, as in Explorer.
+            if (group_id.is_some() || self.table.selected.is_some())
+                && i.consume_key(Modifiers::SHIFT, Key::F10)
+            {
+                self.table.open_menu.set(true);
+                self.table.scroll_to_selected = true;
             }
             if let Some(id) = &group_id {
                 if i.consume_key(Modifiers::NONE, Key::Delete) {
@@ -1021,14 +1048,16 @@ impl App {
                     ui.label(widgets::icon(theme::icon::SHIELD, 13.0).color(theme::GOOD));
                     ui.add_space(6.0);
                 } else if ui
-                    .button(RichText::new("Restart as admin").color(theme::ELEVATED_TEXT))
+                    .add_enabled(
+                        !self.relaunching,
+                        egui::Button::new(RichText::new("Restart as admin").color(theme::ELEVATED_TEXT)),
+                    )
                     .on_hover_text("Without elevation protected processes, disk counters and some owners are hidden.")
+                    .on_disabled_hover_text("Waiting for the UAC prompt.")
                     .clicked()
                 {
-                    match actions::relaunch_elevated() {
-                        Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
-                        Err(e) => self.toasts.error(e),
-                    }
+                    self.relaunching = true;
+                    self.actions.run(Action::RelaunchElevated);
                 }
 
                 let label = INTERVALS.iter().find(|(ms, _)| *ms == self.settings.interval_ms).map_or("custom", |(_, l)| *l);
@@ -1040,10 +1069,7 @@ impl App {
                     }
                 });
                 let (glyph, label) = if self.paused { (theme::icon::PLAY, "Resume") } else { (theme::icon::PAUSE, "Pause") };
-                let mut job = egui::text::LayoutJob::default();
-                widgets::icon(glyph, 12.0).append_to(&mut job, ui.style(), egui::FontSelection::Default, Align::Center);
-                RichText::new(format!("  {label}")).append_to(&mut job, ui.style(), egui::FontSelection::Default, Align::Center);
-                let button = egui::Button::new(job).selected(self.paused);
+                let button = egui::Button::new(widgets::icon_text(ui, glyph, label)).selected(self.paused);
                 if ui.add(button).on_hover_text("Freeze the view (Space)").clicked() {
                     self.paused = !self.paused;
                 }
@@ -1058,9 +1084,12 @@ impl App {
             ui.set_min_width(340.0);
             ui.label(widgets::strong("Settings", theme::BODY));
             ui.separator();
-            let mut replaced = self.taskmgr_replaced;
+            let mut replaced = self.taskmgr.as_ref().is_some_and(|t| t.replaced);
             let toggle = ui
-                .add_enabled(self.elevated, egui::Checkbox::new(&mut replaced, "Open Anabolic with Ctrl+Shift+Esc"))
+                .add_enabled(
+                    self.elevated && self.taskmgr.is_some(),
+                    egui::Checkbox::new(&mut replaced, "Open Anabolic with Ctrl+Shift+Esc"),
+                )
                 .on_hover_text(
                     "Replaces Task Manager everywhere (Ctrl+Shift+Esc, the taskbar menu, taskmgr). Starts elevated \
                      without a UAC prompt through a scheduled task. Turn it off to get Task Manager back.",
@@ -1069,13 +1098,11 @@ impl App {
             if toggle.changed() {
                 self.actions.run(Action::ReplaceTaskManager { on: replaced, launcher: LAUNCHER });
             }
-            if self.taskmgr_replaced {
-                let registered = anabolic_core::taskmgr::registered_app();
-                let current = anabolic_core::taskmgr::app_path().map(|p| p.display().to_string());
-                if let Some(path) = &registered {
+            if let Some(registered) = self.taskmgr.as_ref().filter(|t| t.replaced) {
+                if let Some(path) = &registered.app {
                     ui.label(RichText::new(format!("Starts {path}")).size(theme::CAPTION).color(theme::TEXT_WEAK));
                 }
-                if registered.is_some() && registered != current {
+                if registered.app.is_some() && registered.app != self.this_app {
                     ui.label(
                         RichText::new("That is another build than this one: turn it off and on to switch.")
                             .size(theme::CAPTION)
@@ -1419,9 +1446,7 @@ impl App {
                     .column(egui_extras::Column::remainder().clip(true))
                     .header(22.0, |mut h| {
                         for t in ["Process", "PID", "Type", "Handle", "Name"] {
-                            h.col(|ui| {
-                                ui.label(widgets::strong(t, theme::META).color(theme::TEXT_WEAK));
-                            });
+                            h.col(|ui| widgets::column_header(ui, t, false));
                         }
                     })
                     .body(|body| {
@@ -1547,7 +1572,7 @@ impl eframe::App for App {
                 anabolic_core::instance::style_title_bar(rgb(theme::PANEL), rgb(theme::BORDER));
         }
         let ctx = ui.ctx().clone();
-        self.pump();
+        self.pump(&ctx);
 
         let mut cmds = Vec::new();
         self.shortcuts(&ctx, &mut cmds);
@@ -1649,7 +1674,7 @@ impl eframe::App for App {
         }
 
         self.find_window(&ctx, &mut cmds);
-        self.handle(&ctx, cmds);
+        self.handle(cmds);
         // Context switch tracing costs CPU; run it only while it is on screen.
         let want = self.settings.tab == Tab::Performance && self.perf_view == PerfView::Cpu;
         if want != self.cores_traced {

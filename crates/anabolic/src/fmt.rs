@@ -82,9 +82,22 @@ pub fn millis(d: Duration) -> String {
     format!("{:.1} ms", d.as_secs_f64() * 1000.0)
 }
 
+/// An account without its domain, as Task Manager shows it: `SYSTEM`, not
+/// `NT AUTHORITY\SYSTEM`. The details pane keeps the whole name.
+pub fn account(user: &str) -> &str {
+    user.rsplit_once('\\').map_or(user, |(_, name)| name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accounts_lose_their_domain() {
+        assert_eq!(account(r"DESKTOP-1\alice"), "alice");
+        assert_eq!(account(r"NT AUTHORITY\LOCAL SERVICE"), "LOCAL SERVICE");
+        assert_eq!(account("S-1-5-18"), "S-1-5-18");
+    }
 
     #[test]
     fn formats() {
