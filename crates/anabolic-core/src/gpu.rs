@@ -15,14 +15,13 @@ use windows::Wdk::Graphics::Direct3D::{
     D3DKMT_QUERYSTATISTICS_SEGMENT, D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTCloseAdapter,
     D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, KMTQAITYPE_NODEMETADATA,
 };
-use windows::Win32::Foundation::{HANDLE, LUID, STILL_ACTIVE};
+use windows::Win32::Foundation::{HANDLE, LUID};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
 };
 use windows::Win32::System::ProcessStatus::K32EnumProcesses;
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION,
-    THREAD_PRIORITY_BELOW_NORMAL,
+    GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION, THREAD_PRIORITY_BELOW_NORMAL,
 };
 
 use crate::model::ProcKey;
@@ -340,12 +339,13 @@ pub(crate) fn spawn_process_sampler(
                     .filter(|&p| p > 4)
                     .collect();
                 let alive: std::collections::HashSet<u32> = live.iter().copied().collect();
-                tracked.retain(|pid, t| {
-                    let mut code = 0u32;
-                    alive.contains(pid)
-                        && unsafe { GetExitCodeProcess(t.handle.raw(), &mut code) }.is_ok()
-                        && code == STILL_ACTIVE.0 as u32
-                });
+                // A handle kept to a process that is ending would itself keep
+                // it from going away.
+                let running = |h: &OwnedHandle| {
+                    crate::ending::flags(h.raw())
+                        .is_some_and(|f| !f.deleting && crate::ending::still_active(f.exit_status))
+                };
+                tracked.retain(|pid, t| alive.contains(pid) && running(&t.handle));
                 for pid in live {
                     if tracked.contains_key(&pid) {
                         continue;
@@ -356,6 +356,9 @@ pub(crate) fn spawn_process_sampler(
                         continue;
                     };
                     let handle = OwnedHandle(h);
+                    if !running(&handle) {
+                        continue;
+                    }
                     let (mut created, mut exited, mut kernel, mut user) = Default::default();
                     if unsafe {
                         GetProcessTimes(

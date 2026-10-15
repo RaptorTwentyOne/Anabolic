@@ -198,13 +198,15 @@ impl Symbolizer {
             .or_insert_with(|| read_exports(&m.path))
             .clone();
         let i = exports.partition_point(|(rva, _)| (*rva as u64) <= offset);
+        // Debugger style: the module without its extension.
+        let module = m.name.rsplit_once('.').map_or(&*m.name, |(stem, _)| stem);
         Some(match i.checked_sub(1).map(|i| &exports[i]) {
             // Only trust exports reasonably close; otherwise it is some private function.
             Some((rva, export)) if offset - *rva as u64 <= 0x1000 => match offset - *rva as u64 {
-                0 => format!("{}!{export}", m.name),
-                delta => format!("{}!{export}+0x{delta:X}", m.name),
+                0 => format!("{module}!{export}"),
+                delta => format!("{module}!{export}+0x{delta:X}"),
             },
-            _ => format!("{}+0x{offset:X}", m.name),
+            _ => format!("{module}+0x{offset:X}"),
         })
     }
 }
@@ -235,7 +237,7 @@ mod tests {
         let mut symbols = Symbolizer::default();
         assert_eq!(
             symbols.name(&modules, proc_addr).as_deref(),
-            Some("ntdll.dll!NtQuerySystemInformation")
+            Some("ntdll!NtQuerySystemInformation")
         );
         assert!(
             symbols

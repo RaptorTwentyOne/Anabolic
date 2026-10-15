@@ -6,6 +6,7 @@
 // console is attached below.
 #![windows_subsystem = "windows"]
 
+mod access;
 mod app;
 mod bench;
 mod details;
@@ -14,6 +15,7 @@ mod fmt;
 mod graph;
 mod history_page;
 mod icons;
+mod panes;
 mod perf;
 mod proc_table;
 mod rules;
@@ -61,7 +63,7 @@ fn main() -> eframe::Result {
             } else {
                 "Anabolic"
             })
-            .with_inner_size([1400.0, 860.0])
+            .with_inner_size(window_size())
             .with_min_inner_size([760.0, 420.0])
             .with_icon(app_icon())
             // Benchmarks and self-screenshots run beside someone's work: do
@@ -186,6 +188,21 @@ fn activated() {
 }
 
 /// Where Anabolic keeps its own files (stall log, history): the user's
+/// The first window size; debug builds take ANABOLIC_SCREENSHOT_SIZE=WxH,
+/// so a self-screenshot can show a tall details pane.
+fn window_size() -> [f32; 2] {
+    let wanted = || {
+        let size = std::env::var("ANABOLIC_SCREENSHOT_SIZE").ok()?;
+        let (w, h) = size.split_once('x')?;
+        Some([w.parse().ok()?, h.parse().ok()?])
+    };
+    if cfg!(debug_assertions) {
+        wanted().unwrap_or([1400.0, 860.0])
+    } else {
+        [1400.0, 860.0]
+    }
+}
+
 /// %LOCALAPPDATA%\Anabolic, or ANABOLIC_DATA_DIR for a test instance.
 pub fn data_dir() -> Option<std::path::PathBuf> {
     match std::env::var_os("ANABOLIC_DATA_DIR") {

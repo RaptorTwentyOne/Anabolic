@@ -111,6 +111,22 @@ pub enum Action {
     OpenFileLocation(String),
     FileProperties(String),
     SearchOnline(String),
+    /// Open a web page in the default browser.
+    OpenUrl(String),
+    /// Suspend, resume or end one thread, or set its priority.
+    Thread {
+        pid: u32,
+        tid: u32,
+        op: crate::threads::ThreadOp,
+    },
+    /// Closes handles inside another process at once; `what` names what
+    /// they point at, for the report.
+    CloseHandles {
+        pid: u32,
+        process: Arc<str>,
+        handles: Vec<u64>,
+        what: String,
+    },
     /// Closes a handle inside another process (what "unlock file" tools do).
     CloseHandle {
         pid: u32,
@@ -138,6 +154,12 @@ pub enum Action {
 pub enum Outcome {
     Info(String),
     Error(String),
+    /// Some processes could not be ended: `keys` are those, so their
+    /// details can say why.
+    Refused {
+        keys: Vec<ProcKey>,
+        message: String,
+    },
     /// What Ctrl+Shift+Esc starts, read at startup and after every change.
     TaskManager(crate::taskmgr::Registration),
     /// The elevated instance is starting: this one should close.
@@ -270,6 +292,35 @@ fn perform(action: Action) -> Option<Outcome> {
                 Err(format!("Could not show properties of {path}"))
             }
         }
+        Action::Thread { pid, tid, op } => crate::threads::apply(pid, tid, op),
+        Action::CloseHandles {
+            pid,
+            process,
+            handles,
+            what,
+        } => {
+            let failed: Vec<String> = handles
+                .iter()
+                .filter_map(|&h| {
+                    close_remote_handle(pid, h)
+                        .err()
+                        .map(|e| format!("0x{h:X}: {e}"))
+                })
+                .collect();
+            if failed.is_empty() {
+                Ok(format!(
+                    "Closed {} handles to {what} in {process} ({pid})",
+                    handles.len()
+                ))
+            } else {
+                Err(format!(
+                    "Could not close {} of {} handles to {what} in {process} ({pid}): {}",
+                    failed.len(),
+                    handles.len(),
+                    failed.join("; ")
+                ))
+            }
+        }
         Action::CloseHandle {
             pid,
             process,
@@ -278,6 +329,10 @@ fn perform(action: Action) -> Option<Outcome> {
         } => close_remote_handle(pid, handle)
             .map(|_| format!("Closed handle 0x{handle:X} ({name}) in {process} ({pid})"))
             .map_err(|e| format!("Could not close handle 0x{handle:X} in {process} ({pid}): {e}")),
+        Action::OpenUrl(url) => {
+            shell_open(&url);
+            return None;
+        }
         Action::SearchOnline(query) => {
             shell_open(&format!(
                 "https://www.google.com/search?q={}",
@@ -295,17 +350,40 @@ fn perform(action: Action) -> Option<Outcome> {
 
 fn terminate(targets: &[Target]) -> Outcome {
     let mut failures = Vec::new();
+    let mut refused = Vec::new();
     let mut done = 0;
     for t in targets {
         match open_process(t.key, PROCESS_TERMINATE)
             .and_then(|h| unsafe { TerminateProcess(h.raw(), 1) })
         {
             Ok(()) => done += 1,
-            Err(e) => failures.push(format!("{}: {}", t.label(), error_text(&e))),
+            Err(e) => {
+                // "Access is denied" is what Windows also answers for a
+                // process that is ending already; say which it is.
+                let ending = crate::ending::is_ending(t.key.pid);
+                let why = if ending {
+                    "it is ending already and Windows cannot finish".to_string()
+                } else {
+                    error_text(&e)
+                };
+                failures.push(format!("{}: {why}", t.label()));
+                refused.push(t.key);
+            }
         }
     }
     match (done, failures.is_empty()) {
-        (_, false) => Outcome::Error(format!("Could not terminate {}", failures.join("; "))),
+        (_, false) => Outcome::Refused {
+            keys: refused,
+            message: format!(
+                "Could not terminate {}{}. The details say why.",
+                failures.join("; "),
+                if done > 0 {
+                    format!(" (ended {done} others)")
+                } else {
+                    String::new()
+                }
+            ),
+        },
         (1, true) => Outcome::Info(format!("Terminated {}", targets[0].label())),
         (n, true) => Outcome::Info(format!("Terminated {n} processes")),
     }

@@ -63,6 +63,46 @@ pub enum UiCmd {
     ConfirmWaitChain(ProcKey),
     /// Drop the wait chain analysis under way.
     StopWaitChain,
+    /// Find out why the process does not go away.
+    WhyAlive(ProcKey),
+    /// Suspend, resume or end one thread, or set its priority.
+    Thread {
+        key: ProcKey,
+        tid: u32,
+        op: anabolic_core::threads::ThreadOp,
+    },
+    /// Ask before ending one thread.
+    ConfirmEndThread {
+        key: ProcKey,
+        tid: u32,
+    },
+    /// Read a thread's call stack (asks once per process).
+    ConfirmStack {
+        key: ProcKey,
+        tid: u32,
+    },
+    /// Ask before following what one thread waits for.
+    ConfirmThreadWaitChain {
+        key: ProcKey,
+        tid: u32,
+    },
+    /// Signature, hash and build facts of a file.
+    FileFacts(Arc<str>),
+    /// Who else holds a kernel object.
+    Holders {
+        key: ProcKey,
+        object: u64,
+    },
+    OpenUrl(String),
+    /// Open the find window and search for this text.
+    FindText(String),
+    /// Ask before closing handles inside another process.
+    ConfirmCloseHandles {
+        pid: u32,
+        process: Arc<str>,
+        handles: Vec<u64>,
+        what: String,
+    },
     /// Open the rule editor for this program, at its current priority.
     NewRule {
         image: Arc<str>,
@@ -461,13 +501,34 @@ fn name_cell(
             );
     }
     let mut text = RichText::new(&*p.name).color(text_color(p, d));
-    if r.dim {
+    if r.dim || p.ending {
         text = text.color(theme::TEXT_DIM);
     }
     if p.state == ProcState::Suspended {
         text = text.italics();
     }
     ui.add(Label::new(text).truncate());
+    // Gone in all but name: say so, the details say why.
+    if p.ending || (p.threads == 0 && !p.is_pseudo()) {
+        let (label, tip) = if p.ending {
+            (
+                "ending",
+                "Windows is ending it but cannot finish: something still holds it. \
+                 The details say what.",
+            )
+        } else {
+            (
+                "no threads",
+                "It has no threads, so it does nothing. The details say more.",
+            )
+        };
+        ui.label(
+            RichText::new(label)
+                .size(theme::META)
+                .color(theme::ELEVATED_TEXT),
+        )
+        .on_hover_text(tip);
+    }
     if let Some(g) = group {
         ui.label(RichText::new(format!("({})", g.members.len())).color(theme::TEXT_WEAK));
     }
@@ -636,7 +697,7 @@ fn cell_text(
     }
 }
 
-fn item(ui: &mut Ui, out: &mut Vec<UiCmd>, text: &str, shortcut: &str, cmd: UiCmd) {
+pub(crate) fn item(ui: &mut Ui, out: &mut Vec<UiCmd>, text: &str, shortcut: &str, cmd: UiCmd) {
     if ui
         .add(egui::Button::new(text).shortcut_text(shortcut))
         .clicked()

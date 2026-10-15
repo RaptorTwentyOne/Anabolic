@@ -47,6 +47,15 @@ enum Pending {
     LoadModules(ProcKey),
     WaitChain(ProcKey),
     CloseHandle(FoundHandle),
+    CloseHandles {
+        pid: u32,
+        process: Arc<str>,
+        handles: Vec<u64>,
+        what: String,
+    },
+    EndThread(ProcKey, u32),
+    Stack(ProcKey, u32),
+    WaitChainFrom(ProcKey, u32),
 }
 
 /// The "find handles" window.
@@ -90,6 +99,8 @@ pub struct App {
     perf_view: PerfView,
     history: crate::history_page::HistoryPage,
     wait_view: crate::details::WaitView,
+    end_view: crate::details::EndView,
+    panes: crate::panes::Panes,
     rules_page: crate::rules::RulesPage,
     rule_engine: crate::rules::Engine,
     /// Logical processor shown in detail on the CPU view.
@@ -131,6 +142,12 @@ pub struct App {
     /// `--waits`: analyze the wait chain of `--pid` once it shows up (the
     /// person who typed the flag asked for it; no dialog).
     pending_waits: bool,
+    /// `--pane [NAME]`: once `--pid` is selected, open the side pane of the
+    /// detail tab on its first thread, the module NAME, or the first handle
+    /// of type NAME. `--stack` also reads that thread's call stack. Both
+    /// skip the dialogs: the person who typed them asked.
+    pending_pane: Option<String>,
+    pending_stack: bool,
     /// Started with command line overrides: do not persist settings.
     session_only: bool,
 }
@@ -290,6 +307,8 @@ impl App {
             perf_view,
             history: Default::default(),
             wait_view: Default::default(),
+            end_view: Default::default(),
+            panes: Default::default(),
             rules_page,
             rule_engine: Default::default(),
             zombie_view,
@@ -329,6 +348,13 @@ impl App {
             focus_search: false,
             pending_pid,
             pending_waits: args.iter().any(|a| a == "--waits"),
+            pending_pane: args.iter().any(|a| a == "--pane").then(|| {
+                value("--pane")
+                    .filter(|v| !v.starts_with("--"))
+                    .unwrap_or_default()
+                    .to_string()
+            }),
+            pending_stack: args.iter().any(|a| a == "--stack"),
             taskmgr: None,
             this_app: anabolic_core::taskmgr::app_path().map(|p| p.display().to_string()),
             relaunching: false,
@@ -354,6 +380,14 @@ impl App {
                 Outcome::Error(msg) => {
                     self.relaunching = false;
                     self.toasts.error(msg);
+                }
+                Outcome::Refused { keys, message } => {
+                    self.toasts.error(message);
+                    // The selected one shows why at once.
+                    if self.table.selected.is_some_and(|k| keys.contains(&k)) {
+                        self.detail_tab = DetailTab::General;
+                    }
+                    self.end_view.refused.extend(keys);
                 }
                 Outcome::TaskManager(now) => {
                     // The first answer is the startup read, not a change.
@@ -391,6 +425,46 @@ impl App {
                 Inspection::Modules(report) => {
                     self.module_view.pending = None;
                     self.module_view.report = Some(report);
+                }
+                Inspection::WhyAlive { key, report } => {
+                    if self.end_view.pending == Some(key) {
+                        self.end_view.pending = None;
+                    }
+                    match report {
+                        Ok(report) => {
+                            self.end_view.report = Some((report, std::time::Instant::now()));
+                            self.end_view.error = None;
+                        }
+                        Err(e) => self.end_view.error = Some((key, e)),
+                    }
+                }
+                Inspection::Stack { key, tid, report } => {
+                    if self.panes.stack_pending == Some((key, tid)) {
+                        self.panes.stack_pending = None;
+                    }
+                    match report {
+                        Ok(report) => {
+                            self.panes.stack = Some(report);
+                            self.panes.stack_error = None;
+                        }
+                        Err(e) => self.panes.stack_error = Some(((key, tid), e)),
+                    }
+                }
+                Inspection::FileFacts { path, facts } => {
+                    if self.panes.facts_pending.as_ref() == Some(&path) {
+                        self.panes.facts_pending = None;
+                    }
+                    self.panes.facts.insert(path, facts);
+                }
+                Inspection::Holders {
+                    key,
+                    object,
+                    holders,
+                } => {
+                    if self.panes.holders_pending == Some((key, object)) {
+                        self.panes.holders_pending = None;
+                    }
+                    self.panes.holders = Some((key, object, holders));
                 }
                 Inspection::WaitProgress { key, done, total } => {
                     if self.wait_view.pending == Some(key) {
@@ -461,6 +535,9 @@ impl App {
                     }
                 }
             }
+        }
+        if self.pending_pane.is_some() && self.pending_pid.is_none() {
+            self.open_pending_pane();
         }
         if self.table.dirty {
             self.table
@@ -737,6 +814,96 @@ impl App {
                 UiCmd::Properties(path) => self.actions.run(Action::FileProperties(path)),
                 UiCmd::SearchOnline(query) => self.actions.run(Action::SearchOnline(query)),
                 UiCmd::Copy(text) => self.actions.run(Action::Copy(text)),
+                UiCmd::OpenUrl(url) => self.actions.run(Action::OpenUrl(url)),
+                UiCmd::FindText(text) => {
+                    self.find.open = true;
+                    self.find.query = text.clone();
+                    self.find.pending = true;
+                    self.inspector.request(InspectRequest::FindHandles {
+                        query: text,
+                        exclude: Vec::new(),
+                    });
+                }
+                UiCmd::Thread { key, tid, op } => self.actions.run(Action::Thread {
+                    pid: key.pid,
+                    tid,
+                    op,
+                }),
+                UiCmd::FileFacts(path) => {
+                    self.panes.facts_pending = Some(path.clone());
+                    self.inspector.request(InspectRequest::FileFacts { path });
+                }
+                UiCmd::Holders { key, object } => {
+                    self.panes.holders_pending = Some((key, object));
+                    self.inspector
+                        .request(InspectRequest::Holders { key, object });
+                }
+                UiCmd::ConfirmStack { key, tid } => {
+                    if self.panes.stack_ok.contains(&key) {
+                        self.read_stack(key, tid);
+                        continue;
+                    }
+                    let Some(p) = self.snapshot.find(key) else {
+                        continue;
+                    };
+                    let dialog = ConfirmDialog {
+                        title: "Read the call stack?".into(),
+                        lines: vec![
+                            format!(
+                                "Anabolic suspends thread {tid} of {} (PID {}) for a few milliseconds and reads \
+                                 its stack. The process is opened for reading; nothing is written into it. \
+                                 Other threads of it are not asked again this session.",
+                                p.name, p.pid
+                            ),
+                            "Protected programs such as anti-cheat or security software may refuse this access \
+                             or treat it as suspicious."
+                                .into(),
+                        ],
+                        confirm: "Read stack".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::Stack(key, tid)));
+                }
+                UiCmd::ConfirmEndThread { key, tid } => {
+                    let Some(p) = self.snapshot.find(key) else {
+                        continue;
+                    };
+                    let dialog = ConfirmDialog {
+                        title: format!("End thread {tid}?"),
+                        lines: vec![
+                            format!(
+                                "Ending one thread of {} (PID {}) from outside can leave it broken: locks the \
+                                 thread held stay held, data it was writing stays half-written.",
+                                p.name, p.pid
+                            ),
+                            "Use it on a runaway thread when ending the whole program is worse; expect to \
+                             restart the program afterwards."
+                                .into(),
+                        ],
+                        confirm: "End thread".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::EndThread(key, tid)));
+                }
+                UiCmd::ConfirmThreadWaitChain { key, tid } => {
+                    let Some(p) = self.snapshot.find(key) else {
+                        continue;
+                    };
+                    let dialog = ConfirmDialog {
+                        title: "Analyze the wait chain?".into(),
+                        lines: vec![
+                            format!(
+                                "Anabolic will ask Windows what thread {tid} of {} (PID {}) is waiting for, and \
+                                 follow the chain into other processes; the process' other threads come after \
+                                 it. Windows opens the threads for reading; nothing is injected or suspended.",
+                                p.name, p.pid
+                            ),
+                            "Protected programs such as anti-cheat or security software may refuse this access \
+                             or treat it as suspicious."
+                                .into(),
+                        ],
+                        confirm: "Analyze".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::WaitChainFrom(key, tid)));
+                }
                 UiCmd::Sort(col) => {
                     if self.settings.sort == col {
                         self.settings.descending = !self.settings.descending;
@@ -816,6 +983,40 @@ impl App {
                         .and_then(crate::rules::RulePriority::from_core);
                     self.rules_page.new_rule(&image, priority);
                     self.settings.tab = Tab::Rules;
+                }
+                UiCmd::WhyAlive(key) => {
+                    self.end_view.pending = Some(key);
+                    self.inspector.request(InspectRequest::WhyAlive { key });
+                }
+                UiCmd::ConfirmCloseHandles {
+                    pid,
+                    process,
+                    handles,
+                    what,
+                } => {
+                    let dialog = ConfirmDialog {
+                        title: format!("Close {} handles in {process}?", handles.len()),
+                        lines: vec![
+                            format!(
+                                "{process} (PID {pid}) holds {} handles to {what}. They are closed inside it \
+                                 without it knowing.",
+                                handles.len()
+                            ),
+                            "It may crash or misbehave if it uses them later. A game's anti-cheat may treat \
+                             this as tampering."
+                                .into(),
+                        ],
+                        confirm: "Close handles".into(),
+                    };
+                    self.confirm = Some((
+                        dialog,
+                        Pending::CloseHandles {
+                            pid,
+                            process,
+                            handles,
+                            what,
+                        },
+                    ));
                 }
                 UiCmd::StopWaitChain => {
                     self.inspector.request(InspectRequest::StopWaitChain);
@@ -1482,6 +1683,11 @@ impl App {
             .iter()
             .find(|h| h.pid == key.pid)
             .map(|h| h.tid);
+        self.analyze_waits_from(key, first);
+    }
+
+    /// Like `analyze_waits`, with `first` analysed and listed first.
+    fn analyze_waits_from(&mut self, key: ProcKey, first: Option<u32>) {
         self.wait_view.pending = Some(key);
         self.wait_view.started = Some(std::time::Instant::now());
         self.wait_view.progress = None;
@@ -1491,6 +1697,65 @@ impl App {
         self.go_to(key);
         self.detail_tab = DetailTab::Waits;
         self.settings.show_details = true;
+    }
+
+    /// `--pane`: waits for what the tab needs, then selects the row.
+    fn open_pending_pane(&mut self) {
+        let Some(key) = self.table.selected else {
+            return;
+        };
+        let name = self.pending_pane.clone().unwrap_or_default().to_lowercase();
+        match self.detail_tab {
+            DetailTab::Threads => {
+                let Some(first) = self
+                    .snapshot
+                    .selected
+                    .as_ref()
+                    .filter(|s| s.key == key)
+                    .and_then(|s| s.threads.iter().min_by_key(|t| t.create_time))
+                    .map(|t| t.tid)
+                else {
+                    return;
+                };
+                self.focus_thread = Some((first, false));
+                self.load_modules(key);
+                if self.pending_stack {
+                    self.panes.stack_ok.insert(key);
+                    self.read_stack(key, first);
+                }
+            }
+            DetailTab::Modules => {
+                let Some(report) = self.module_view.report.clone().filter(|r| r.key == key) else {
+                    self.load_modules(key);
+                    return;
+                };
+                self.module_view.selected = report
+                    .modules
+                    .iter()
+                    .find(|m| m.info.name.to_lowercase() == name)
+                    .or(report.modules.get(1))
+                    .map(|m| m.info.base);
+            }
+            DetailTab::Handles => {
+                let Some(report) = self.handle_view.report.clone().filter(|r| r.key == key) else {
+                    return;
+                };
+                self.handle_view.selected = report
+                    .entries
+                    .iter()
+                    .find(|e| report.type_name(e.type_index).to_lowercase() == name)
+                    .or(report.entries.first())
+                    .map(|e| e.value);
+            }
+            _ => {}
+        }
+        self.pending_pane = None;
+    }
+
+    fn read_stack(&mut self, key: ProcKey, tid: u32) {
+        self.panes.stack_pending = Some((key, tid));
+        self.panes.stack_error = None;
+        self.inspector.request(InspectRequest::Stack { key, tid });
     }
 
     fn load_modules(&mut self, key: ProcKey) {
@@ -1515,9 +1780,19 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
+        let tids = self
+            .snapshot
+            .selected
+            .as_ref()
+            .filter(|s| s.key == key)
+            .map(|s| s.threads.iter().map(|t| t.tid).collect())
+            .unwrap_or_default();
         self.module_view.pending = Some(key);
-        self.inspector
-            .request(InspectRequest::Modules { key, addresses });
+        self.inspector.request(InspectRequest::Modules {
+            key,
+            addresses,
+            tids,
+        });
     }
 
     fn open_find(&mut self) {
@@ -1654,6 +1929,33 @@ impl App {
                             Pending::ResolveNames(key) => self.inspect_handles(key, true),
                             Pending::LoadModules(key) => self.load_modules(key),
                             Pending::WaitChain(key) => self.analyze_waits(key),
+                            Pending::WaitChainFrom(key, tid) => {
+                                self.analyze_waits_from(key, Some(tid))
+                            }
+                            Pending::Stack(key, tid) => {
+                                self.panes.stack_ok.insert(key);
+                                self.read_stack(key, tid);
+                            }
+                            Pending::EndThread(key, tid) => self.actions.run(Action::Thread {
+                                pid: key.pid,
+                                tid,
+                                op: anabolic_core::threads::ThreadOp::Terminate,
+                            }),
+                            Pending::CloseHandles {
+                                pid,
+                                process,
+                                handles,
+                                what,
+                            } => {
+                                self.actions.run(Action::CloseHandles {
+                                    pid,
+                                    process,
+                                    handles,
+                                    what,
+                                });
+                                // Read the holders again once that is done.
+                                self.end_view.report = None;
+                            }
                             Pending::CloseHandle(found) => self.actions.run(Action::CloseHandle {
                                 pid: found.pid,
                                 process: found.process.clone(),
@@ -1793,7 +2095,8 @@ impl eframe::App for App {
                 {
                     egui::Panel::bottom("details")
                         .resizable(true)
-                        .default_size(260.0)
+                        // The side panes of the tabs want room; a stored size wins.
+                        .default_size((ui.available_height() * 0.42).max(260.0))
                         .min_size(110.0)
                         .show(ui, |ui| {
                             // Fill the panel whatever the tab holds, so
@@ -1816,8 +2119,10 @@ impl eframe::App for App {
                                     &self.details,
                                     &mut self.icons,
                                     &mut self.handle_view,
-                                    &self.module_view,
+                                    &mut self.module_view,
+                                    &self.panes,
                                     &self.wait_view,
+                                    &self.end_view,
                                     &mut self.focus_thread,
                                     &mut cmds,
                                 ),

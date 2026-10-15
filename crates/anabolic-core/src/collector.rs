@@ -734,6 +734,9 @@ impl State {
                 net_tx_total: tracked.net_tx_total,
                 user_sid: tracked.sid.clone(),
                 not_responding: false,
+                // Only threadless processes are asked: rare, and one
+                // limited query each.
+                ending: spi.NumberOfThreads == 0 && pid > 4 && crate::ending::is_ending(pid),
             };
 
             if self.selected == Some(key) {

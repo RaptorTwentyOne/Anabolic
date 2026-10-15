@@ -1,10 +1,12 @@
 //! Bottom panel: the selected process (identity, counters, threads, handles)
 //! or the selected app group (totals and members).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anabolic_core::actions::Priority;
+use anabolic_core::ending::EndReport;
 use anabolic_core::handles::{HandleReport, ModuleReport};
 use anabolic_core::sysinfo::{local_time, now_filetime, thread_state_name, wait_reason_name};
 use anabolic_core::waits::{Chain, Link, Status, WaitReport};
@@ -16,6 +18,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::fmt;
 use crate::icons::IconCache;
+use crate::panes::Panes;
 use crate::proc_table::UiCmd;
 use crate::theme;
 use crate::tree::{Details, Group};
@@ -44,11 +47,267 @@ pub struct WaitView {
     pub error: Option<(ProcKey, String)>,
 }
 
+/// Why a process does not go away; reports arrive from the inspector.
+#[derive(Default)]
+pub struct EndView {
+    /// The latest report, and when it arrived.
+    pub report: Option<(Arc<EndReport>, Instant)>,
+    pub pending: Option<ProcKey>,
+    pub error: Option<(ProcKey, String)>,
+    /// Processes Windows refused to end when asked.
+    pub refused: HashSet<ProcKey>,
+}
+
+/// While the card is on screen, the report is read again this often: the
+/// holders come and go.
+const END_REFRESH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether the card has something to explain about `p`.
+fn needs_end_card(p: &ProcessInfo, view: &EndView) -> bool {
+    p.ending || (p.threads == 0 && !p.is_pseudo()) || view.refused.contains(&p.key)
+}
+
+/// Rights of Process handles, the ones worth naming.
+fn process_access(access: u32) -> String {
+    if access & 0x1F_FFFF == 0x1F_FFFF {
+        return "full access".into();
+    }
+    let names: Vec<&str> = [
+        (0x0001, "end"),
+        (0x0002, "create threads"),
+        (0x0020, "write memory"),
+        (0x0010, "read memory"),
+        (0x0040, "duplicate handles"),
+        (0x0800, "suspend"),
+        (0x0200, "set information"),
+        (0x1400, "query"),
+    ]
+    .iter()
+    .filter(|(bit, _)| access & bit != 0)
+    .map(|(_, name)| *name)
+    .collect();
+    if names.is_empty() {
+        format!("access 0x{access:X}")
+    } else {
+        names.join(", ")
+    }
+}
+
+/// "It does not go away, and this is why", with what can be done.
+fn end_card(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, view: &EndView, out: &mut Vec<UiCmd>) {
+    let report = view
+        .report
+        .as_ref()
+        .filter(|(r, _)| r.key == p.key)
+        .map(|(r, at)| (r.clone(), *at));
+    let fresh = report
+        .as_ref()
+        .is_some_and(|(_, at)| at.elapsed() < END_REFRESH);
+    if !fresh && view.pending != Some(p.key) {
+        out.push(UiCmd::WhyAlive(p.key));
+    }
+    ui.ctx().request_repaint_after(END_REFRESH);
+    let report = report.map(|(r, _)| r);
+
+    let (title, color) = match &report {
+        Some(r) if r.flags.deleting => ("Windows is ending it but cannot finish", theme::BAD),
+        Some(r) if r.protection != 0 => ("Windows protects it", theme::ELEVATED_TEXT),
+        Some(r) if r.can_end == Some(false) => {
+            ("The right to end it is withheld", theme::ELEVATED_TEXT)
+        }
+        Some(r) if r.open_error.is_some() => {
+            ("Windows does not let Anabolic end it", theme::ELEVATED_TEXT)
+        }
+        _ if p.ending => ("Windows is ending it but cannot finish", theme::BAD),
+        _ if p.threads == 0 => ("It has no threads", theme::ELEVATED_TEXT),
+        _ => ("It could not be ended", theme::ELEVATED_TEXT),
+    };
+    Frame::new()
+        .fill(theme::RAISED)
+        .stroke(Stroke::new(1.0, color))
+        .inner_margin(Margin::symmetric(12, 8))
+        .corner_radius(4)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(widgets::icon(theme::icon::WARNING, 14.0).color(color));
+                ui.label(widgets::strong(title, theme::BODY).color(color));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if view.pending == Some(p.key) {
+                        ui.spinner();
+                    } else if ui
+                        .small_button("Check again")
+                        .on_hover_text("Reads its state and the system handle table again.")
+                        .clicked()
+                    {
+                        out.push(UiCmd::WhyAlive(p.key));
+                    }
+                });
+            });
+            if let Some((key, e)) = &view.error
+                && *key == p.key
+            {
+                ui.label(
+                    RichText::new(format!("Its state could not be read: {e}"))
+                        .color(theme::ELEVATED_TEXT),
+                );
+            }
+            let Some(r) = report else {
+                ui.label(RichText::new("Reading its state\u{2026}").color(theme::TEXT_WEAK));
+                return;
+            };
+            let weak = |ui: &mut Ui, text: String| {
+                ui.add(Label::new(RichText::new(text).color(theme::TEXT_WEAK)).wrap());
+            };
+            let size = fmt::bytes(p.private_bytes);
+            if r.flags.deleting && r.threads == 0 {
+                weak(
+                    ui,
+                    format!(
+                        "It has no threads left and does nothing (0 % CPU, {size}). Every new attempt to end it \
+                         is answered \u{201c}the process is terminating\u{201d}: there is nothing left to end. \
+                         Windows removes it once the last handle to it is closed."
+                    ),
+                );
+            } else if r.flags.deleting {
+                weak(
+                    ui,
+                    format!(
+                        "{} threads are still unwinding inside Windows. A thread that does not finish is \
+                         usually waiting for a driver to complete an I/O request (graphics, anti-cheat, \
+                         antivirus, a device that went away). The Threads tab shows what they wait for.",
+                        r.threads
+                    ),
+                );
+            } else if r.threads == 0 {
+                weak(
+                    ui,
+                    format!(
+                        "It never started, or all its threads are gone: it does nothing (0 % CPU, {size}). \
+                         Ending it should work."
+                    ),
+                );
+            }
+            if r.protection != 0 {
+                weak(
+                    ui,
+                    format!(
+                        "It runs as a protected process ({}): not even an administrator may end it. \
+                         Windows itself ends it, or the program that owns it.",
+                        anabolic_core::ending::protection_label(r.protection)
+                    ),
+                );
+            }
+            if r.can_end == Some(false) && r.protection == 0 {
+                let guards: Vec<String> = r
+                    .guards
+                    .iter()
+                    .map(|(file, product)| format!("{product} ({file})"))
+                    .collect();
+                weak(
+                    ui,
+                    format!(
+                        "Windows gave Anabolic a handle to it without the right to end it: a driver strips \
+                         that right from every handle opened to it.{} It can be ended once that driver lets \
+                         go, usually when the program it guards closes.",
+                        if guards.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" Loaded drivers that do this: {}.", guards.join(", "))
+                        }
+                    ),
+                );
+            }
+            if let Some(e) = &r.open_error {
+                weak(
+                    ui,
+                    format!(
+                        "Opening it to end it was refused: {e}. If Anabolic is not running as administrator, \
+                         restarting it so may help."
+                    ),
+                );
+            }
+            if !r.flags.deleting && r.can_end == Some(true) && r.protection == 0 && r.threads > 0 {
+                weak(
+                    ui,
+                    "Windows grants the right to end it and sees no protection; the refusal may have been \
+                     momentary."
+                        .into(),
+                );
+            }
+            if !r.flags.deleting
+                && r.can_end != Some(false)
+                && r.protection == 0
+                && ui.button("End it").clicked()
+            {
+                out.push(UiCmd::Kill {
+                    key: p.key,
+                    tree: false,
+                });
+            }
+
+            ui.add_space(6.0);
+            if r.holders.is_empty() {
+                weak(
+                    ui,
+                    if r.flags.deleting {
+                        "No program holds a handle to it, so only Windows itself does (a driver). If it stays, \
+                         only a restart removes it; it does no harm meanwhile."
+                            .into()
+                    } else {
+                        "No other program holds a handle to it.".into()
+                    },
+                );
+                return;
+            }
+            ui.label(widgets::strong("Programs holding it", theme::META).color(theme::TEXT_WEAK));
+            for h in &r.holders {
+                ui.horizontal(|ui| {
+                    process_link(ui, h.pid, p.pid, snap, out);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}  \u{b7}  {}",
+                            h.handles.len(),
+                            if h.handles.len() == 1 { "handle" } else { "handles" },
+                            process_access(h.access)
+                        ))
+                        .color(theme::TEXT_WEAK),
+                    );
+                    if ui
+                        .small_button("Close them\u{2026}")
+                        .on_hover_text(
+                            "Closes these handles inside that program, without it knowing.",
+                        )
+                        .clicked()
+                    {
+                        out.push(UiCmd::ConfirmCloseHandles {
+                            pid: h.pid,
+                            process: h.name.clone(),
+                            handles: h.handles.clone(),
+                            what: format!("{} ({})", p.name, p.pid),
+                        });
+                    }
+                });
+            }
+            if r.flags.deleting {
+                weak(
+                    ui,
+                    "While they hold it, Windows cannot remove it. It goes away when they close these \
+                     handles, at the latest when they exit."
+                        .into(),
+                );
+            }
+        });
+    ui.add_space(8.0);
+}
+
 /// Modules of the selected process; also used to name thread start addresses.
 #[derive(Default)]
 pub struct ModuleView {
     pub report: Option<Arc<ModuleReport>>,
     pub pending: Option<ProcKey>,
+    /// The module in the side pane, by base address.
+    pub selected: Option<u64>,
 }
 
 impl ModuleView {
@@ -80,12 +339,17 @@ pub struct HandleView {
     pub error: Option<String>,
     type_filter: Option<u16>,
     by_name: bool,
+    /// The handle in the side pane, by value.
+    pub selected: Option<u64>,
     /// Entry indices passing `type_filter`.
     rows: Vec<u32>,
 }
 
 impl HandleView {
     pub fn set_report(&mut self, report: Arc<HandleReport>) {
+        if self.report.as_ref().is_none_or(|r| r.key != report.key) {
+            self.selected = None;
+        }
         self.pending = None;
         self.error = None;
         self.by_name = report.resolved > 0;
@@ -147,8 +411,10 @@ pub fn show(
     details: &Details,
     icons: &mut IconCache,
     handles: &mut HandleView,
-    modules: &ModuleView,
+    modules: &mut ModuleView,
+    panes: &Panes,
     waits: &WaitView,
+    ends: &EndView,
     focus_thread: &mut Option<(u32, bool)>,
     out: &mut Vec<UiCmd>,
 ) {
@@ -168,6 +434,11 @@ pub fn show(
     }
     if p.not_responding {
         badge.push_str("  ·  NOT RESPONDING");
+    }
+    if p.ending {
+        badge.push_str("  ·  ENDING, STUCK");
+    } else if p.threads == 0 && !p.is_pseudo() {
+        badge.push_str("  ·  NO THREADS");
     }
     if d.is_some_and(|d| d.critical) {
         badge.push_str("  ·  CRITICAL");
@@ -206,7 +477,8 @@ pub fn show(
         ui.selectable_value(tab, DetailTab::Threads, format!("Threads ({})", p.threads));
         ui.selectable_value(tab, DetailTab::General, "General");
         // Right to left: these end up left of the tabs.
-        if !p.is_pseudo() && p.state != ProcState::Exited {
+        // Nothing to end once it is ending, nothing to suspend without threads.
+        if !p.is_pseudo() && p.state != ProcState::Exited && !p.ending {
             ui.separator();
             let terminate =
                 egui::Button::new(widgets::icon_text(ui, theme::icon::CLOSE, "Terminate"));
@@ -220,6 +492,8 @@ pub fn show(
                     tree: false,
                 });
             }
+        }
+        if !p.is_pseudo() && p.state != ProcState::Exited && p.threads > 0 {
             let (glyph, label, cmd): (_, _, fn(ProcKey) -> UiCmd) =
                 if p.state == ProcState::Suspended {
                     (theme::icon::PLAY, "Resume", UiCmd::Resume)
@@ -236,11 +510,16 @@ pub fn show(
     });
 
     match tab {
-        DetailTab::General => general(ui, p, snap, details, out),
-        DetailTab::Threads => threads(ui, p, snap, modules, focus_thread, out),
+        DetailTab::General => {
+            if needs_end_card(p, ends) {
+                end_card(ui, p, snap, ends, out);
+            }
+            general(ui, p, snap, details, out)
+        }
+        DetailTab::Threads => threads(ui, p, snap, modules, panes, focus_thread, out),
         DetailTab::Waits => waits_tab(ui, p, snap, waits, out),
-        DetailTab::Modules => modules_tab(ui, p, modules, out),
-        DetailTab::Handles => handles_tab(ui, p, snap, handles, out),
+        DetailTab::Modules => modules_tab(ui, p, modules, panes, out),
+        DetailTab::Handles => handles_tab(ui, p, snap, handles, panes, out),
         DetailTab::Network => network_tab(ui, p, snap),
     }
 }
@@ -496,6 +775,15 @@ fn process_link(ui: &mut Ui, pid: u32, own: u32, snap: &Snapshot, out: &mut Vec<
 }
 
 fn waits_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, view: &WaitView, out: &mut Vec<UiCmd>) {
+    if p.threads == 0 && !p.is_pseudo() {
+        ui.label(
+            RichText::new(
+                "It has no threads: nothing in it can wait. General says why it is still here.",
+            )
+            .color(theme::TEXT_WEAK),
+        );
+        return;
+    }
     let hung: Vec<_> = snap.system.hung.iter().filter(|h| h.pid == p.pid).collect();
     let report = view.report.as_deref().filter(|r| r.key == p.key);
     ScrollArea::vertical()
@@ -820,12 +1108,14 @@ fn module_loader(
     }
 }
 
-/// `focus`: a thread to highlight, and whether it was scrolled to already.
+/// `focus`: the selected thread, and whether it was scrolled to already.
+#[allow(clippy::too_many_arguments)]
 fn threads(
     ui: &mut Ui,
     p: &ProcessInfo,
     snap: &Snapshot,
     modules: &ModuleView,
+    panes: &Panes,
     focus: &mut Option<(u32, bool)>,
     out: &mut Vec<UiCmd>,
 ) {
@@ -833,7 +1123,7 @@ fn threads(
         ui.label(RichText::new("Collecting…").color(theme::TEXT_WEAK));
         return;
     };
-    module_loader(ui, p, modules, "Resolve start addresses", out);
+    module_loader(ui, p, modules, "Resolve start addresses and names", out);
     let report = modules.for_key(p.key);
     let mut list: Vec<&ThreadInfo> = sel.threads.iter().collect();
     list.sort_by(|a, b| {
@@ -842,85 +1132,120 @@ fn threads(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.tid.cmp(&b.tid))
     });
+    let start_of = |t: &ThreadInfo| {
+        if t.win32_start_address != 0 {
+            t.win32_start_address
+        } else {
+            t.start_address
+        }
+    };
+    let start_name = |t: &ThreadInfo| {
+        let address = start_of(t);
+        symbol(report, address).unwrap_or_else(|| format!("0x{address:X}"))
+    };
 
     let focus_tid = focus.map(|(tid, _)| tid);
-    let mut table = TableBuilder::new(ui);
-    if let Some((tid, scrolled)) = focus
-        && !*scrolled
-        && let Some(row) = list.iter().position(|t| t.tid == *tid)
-    {
-        table = table.scroll_to_row(row, Some(Align::Center));
-        *scrolled = true;
+    if let Some(t) = focus_tid.and_then(|tid| list.iter().find(|t| t.tid == tid)) {
+        crate::panes::side(ui, ("thread-pane", p.key), |ui| {
+            crate::panes::thread_pane(ui, p, t, report, &start_name(t), start_of(t), panes, out)
+        });
     }
-    table
-        .id_salt("threads")
-        .striped(true)
-        .resizable(true)
-        .auto_shrink([false, false])
-        .cell_layout(Layout::left_to_right(Align::Center))
-        .column(Column::initial(70.0))
-        .column(Column::initial(60.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(300.0).clip(true))
-        .column(Column::initial(70.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(90.0))
-        .column(Column::remainder())
-        .header(20.0, |mut h| {
-            for (t, numeric) in [
-                ("TID", true),
-                ("CPU", true),
-                ("CPU time", true),
-                ("Start address", false),
-                ("Priority", true),
-                ("Ctx sw/s", true),
-                ("State", false),
-                ("Wait reason", false),
-            ] {
-                h.col(|ui| widgets::column_header(ui, t, numeric));
-            }
-        })
-        .body(|body| {
-            body.rows(18.0, list.len(), |mut row| {
-                let t = list[row.index()];
-                row.set_selected(focus_tid == Some(t.tid));
-                row.col(|ui| right(ui, t.tid.to_string()));
-                row.col(|ui| right(ui, fmt::cpu(t.cpu)));
-                row.col(|ui| right(ui, fmt::cpu_time(t.kernel_time + t.user_time)));
-                row.col(|ui| {
-                    let addr = if t.win32_start_address != 0 {
-                        t.win32_start_address
-                    } else {
-                        t.start_address
-                    };
-                    match symbol(report, addr) {
-                        Some(name) => {
-                            ui.add(Label::new(RichText::new(name).monospace()).truncate())
-                                .on_hover_text(format!("0x{addr:X}"));
+    let names = report.map(|r| &r.thread_names);
+    egui::CentralPanel::no_frame().show(ui, |ui| {
+        let mut table = TableBuilder::new(ui);
+        if let Some((tid, scrolled)) = focus
+            && !*scrolled
+            && let Some(row) = list.iter().position(|t| t.tid == *tid)
+        {
+            table = table.scroll_to_row(row, Some(Align::Center));
+            *scrolled = true;
+        }
+        table
+            .id_salt("threads")
+            .striped(true)
+            .resizable(true)
+            .auto_shrink([false, false])
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .column(Column::initial(70.0))
+            .column(Column::initial(60.0))
+            .column(Column::initial(100.0))
+            .column(Column::initial(150.0).clip(true))
+            .column(Column::initial(280.0).clip(true))
+            .column(Column::initial(70.0))
+            .column(Column::initial(90.0))
+            .column(Column::initial(90.0))
+            .column(Column::remainder())
+            .header(20.0, |mut h| {
+                for (t, numeric) in [
+                    ("TID", true),
+                    ("CPU", true),
+                    ("CPU time", true),
+                    ("Name", false),
+                    ("Start address", false),
+                    ("Priority", true),
+                    ("Ctx sw/s", true),
+                    ("State", false),
+                    ("Wait reason", false),
+                ] {
+                    h.col(|ui| widgets::column_header(ui, t, numeric));
+                }
+            })
+            .body(|body| {
+                body.rows(18.0, list.len(), |mut row| {
+                    let t = list[row.index()];
+                    row.set_selected(focus_tid == Some(t.tid));
+                    row.col(|ui| right(ui, t.tid.to_string()));
+                    row.col(|ui| right(ui, fmt::cpu(t.cpu)));
+                    row.col(|ui| right(ui, fmt::cpu_time(t.kernel_time + t.user_time)));
+                    row.col(|ui| {
+                        if let Some(name) = names.and_then(|n| n.get(&t.tid)) {
+                            ui.add(Label::new(name.as_str()).truncate());
                         }
-                        None => {
+                    });
+                    row.col(|ui| {
+                        let address = start_of(t);
+                        match symbol(report, address) {
+                            Some(name) => {
+                                ui.add(Label::new(RichText::new(name).monospace()).truncate())
+                                    .on_hover_text(format!("0x{address:X}"));
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new(format!("0x{address:X}"))
+                                        .monospace()
+                                        .color(theme::TEXT_WEAK),
+                                );
+                            }
+                        }
+                    });
+                    row.col(|ui| right(ui, format!("{} / {}", t.priority, t.base_priority)));
+                    row.col(|ui| right(ui, fmt::count(t.context_switches_delta as u64)));
+                    row.col(|ui| {
+                        ui.label(thread_state_name(t.state));
+                    });
+                    row.col(|ui| {
+                        if t.state == 5 {
                             ui.label(
-                                RichText::new(format!("0x{addr:X}"))
-                                    .monospace()
+                                RichText::new(wait_reason_name(t.wait_reason))
                                     .color(theme::TEXT_WEAK),
                             );
                         }
+                    });
+                    let response = row.response();
+                    if response.clicked() {
+                        *focus = if focus_tid == Some(t.tid) {
+                            None
+                        } else {
+                            Some((t.tid, true))
+                        };
                     }
-                });
-                row.col(|ui| right(ui, format!("{} / {}", t.priority, t.base_priority)));
-                row.col(|ui| right(ui, fmt::count(t.context_switches_delta as u64)));
-                row.col(|ui| {
-                    ui.label(thread_state_name(t.state));
-                });
-                row.col(|ui| {
-                    if t.state == 5 {
-                        ui.label(
-                            RichText::new(wait_reason_name(t.wait_reason)).color(theme::TEXT_WEAK),
-                        );
-                    }
+                    response.context_menu(|ui| {
+                        crate::panes::thread_menu(ui, p, t, &start_name(t), out);
+                    });
                 });
             });
-        });
+    });
 }
 
 fn handles_tab(
@@ -928,6 +1253,7 @@ fn handles_tab(
     p: &ProcessInfo,
     snap: &Snapshot,
     view: &mut HandleView,
+    panes: &Panes,
     out: &mut Vec<UiCmd>,
 ) {
     let current = view.report.as_ref().filter(|r| r.key == p.key).cloned();
@@ -1083,6 +1409,13 @@ fn handles_tab(
                 });
         });
 
+    let selected = view.selected;
+    if let Some(i) = selected.and_then(|v| report.entries.iter().position(|e| e.value == v)) {
+        crate::panes::side(ui, ("handle-pane", p.key), |ui| {
+            crate::panes::handle_pane(ui, p, &report, i, snap, panes, out)
+        });
+    }
+    let mut clicked: Option<u64> = None;
     egui::CentralPanel::no_frame().show(ui, |ui| {
         if report.resolved > 0 {
             ui.horizontal(|ui| {
@@ -1111,6 +1444,7 @@ fn handles_tab(
                 .striped(true)
                 .resizable(true)
                 .auto_shrink([false, false])
+                .sense(Sense::click())
                 .cell_layout(Layout::left_to_right(Align::Center))
                 .column(Column::initial(80.0))
                 .column(Column::initial(120.0))
@@ -1131,6 +1465,9 @@ fn handles_tab(
                         row.col(|ui| {
                             ui.add(Label::new(&**name).truncate());
                         });
+                        row.response().context_menu(|ui| {
+                            crate::panes::group_menu(ui, &report.type_name(*t), name, out);
+                        });
                     });
                 });
         } else {
@@ -1140,6 +1477,7 @@ fn handles_tab(
                 .striped(true)
                 .resizable(true)
                 .auto_shrink([false, false])
+                .sense(Sense::click())
                 .cell_layout(Layout::left_to_right(Align::Center))
                 .column(Column::initial(90.0))
                 .column(Column::initial(120.0))
@@ -1154,6 +1492,7 @@ fn handles_tab(
                     body.rows(18.0, rows.len(), |mut row| {
                         let i = rows[row.index()] as usize;
                         let e = &report.entries[i];
+                        row.set_selected(selected == Some(e.value));
                         row.col(|ui| {
                             ui.label(RichText::new(format!("0x{:X}", e.value)).monospace());
                         });
@@ -1172,10 +1511,32 @@ fn handles_tab(
                                 ui.add(Label::new(&**name).truncate());
                             }
                         });
+                        let response = row.response();
+                        if response.clicked() {
+                            clicked = Some(e.value);
+                        }
+                        response.context_menu(|ui| {
+                            let name = report.names.get(i).cloned().flatten();
+                            crate::panes::handle_menu(
+                                ui,
+                                p,
+                                &report.type_name(e.type_index),
+                                e,
+                                name.as_deref(),
+                                out,
+                            );
+                        });
                     });
                 });
         }
     });
+    if let Some(value) = clicked {
+        view.selected = if selected == Some(value) {
+            None
+        } else {
+            Some(value)
+        };
+    }
 }
 
 /// Summary for an app group (Apps view).
@@ -1281,9 +1642,15 @@ fn short_cmd(cmd: &str) -> String {
     }
 }
 
-fn modules_tab(ui: &mut Ui, p: &ProcessInfo, modules: &ModuleView, out: &mut Vec<UiCmd>) {
+fn modules_tab(
+    ui: &mut Ui,
+    p: &ProcessInfo,
+    modules: &mut ModuleView,
+    panes: &Panes,
+    out: &mut Vec<UiCmd>,
+) {
     module_loader(ui, p, modules, "Load modules", out);
-    let Some(report) = modules.for_key(p.key) else {
+    let Some(report) = modules.report.clone().filter(|r| r.key == p.key) else {
         return;
     };
     if let Some(e) = &report.error {
@@ -1294,7 +1661,7 @@ fn modules_tab(ui: &mut Ui, p: &ProcessInfo, modules: &ModuleView, out: &mut Vec
     }
     ui.label(
         RichText::new(format!(
-            "{} modules  ·  {}{}",
+            "{} modules  ·  {}{}  ·  click one for its signature and hash",
             report.modules.len(),
             fmt::millis(report.took),
             if p.pid == 4 {
@@ -1307,73 +1674,99 @@ fn modules_tab(ui: &mut Ui, p: &ProcessInfo, modules: &ModuleView, out: &mut Vec
         .color(theme::TEXT_WEAK),
     );
     let rows = &report.modules;
-    TableBuilder::new(ui)
-        .id_salt("modules")
-        .striped(true)
-        .resizable(true)
-        .auto_shrink([false, false])
-        .cell_layout(Layout::left_to_right(Align::Center))
-        .column(Column::initial(170.0).clip(true))
-        .column(Column::initial(150.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(220.0).clip(true))
-        .column(Column::initial(150.0).clip(true))
-        .column(Column::initial(110.0).clip(true))
-        .column(Column::remainder().clip(true))
-        .header(20.0, |mut h| {
-            for (t, numeric) in [
-                ("Name", false),
-                ("Base", false),
-                ("Size", true),
-                ("Description", false),
-                ("Company", false),
-                ("Version", false),
-                ("Path", false),
-            ] {
-                h.col(|ui| widgets::column_header(ui, t, numeric));
-            }
-        })
-        .body(|body| {
-            body.rows(18.0, rows.len(), |mut row| {
-                let m = &rows[row.index()];
-                row.col(|ui| {
-                    ui.add(Label::new(&*m.info.name).truncate());
-                });
-                row.col(|ui| {
-                    ui.label(
-                        RichText::new(format!("0x{:X}", m.info.base))
-                            .monospace()
-                            .color(theme::TEXT_WEAK),
-                    );
-                });
-                row.col(|ui| right(ui, fmt::bytes(m.info.size)));
-                row.col(|ui| {
-                    ui.add(Label::new(m.description.clone().unwrap_or_default()).truncate());
-                });
-                row.col(|ui| {
-                    ui.add(
-                        Label::new(
-                            RichText::new(m.company.clone().unwrap_or_default())
+    let selected = modules.selected;
+    if let Some(m) = selected.and_then(|base| rows.iter().find(|m| m.info.base == base)) {
+        crate::panes::side(ui, ("module-pane", p.key), |ui| {
+            crate::panes::module_pane(ui, m, panes, out)
+        });
+    }
+    egui::CentralPanel::no_frame().show(ui, |ui| {
+        TableBuilder::new(ui)
+            .id_salt("modules")
+            .striped(true)
+            .resizable(true)
+            .auto_shrink([false, false])
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .column(Column::initial(170.0).clip(true))
+            .column(Column::initial(150.0))
+            .column(Column::initial(80.0))
+            .column(Column::initial(220.0).clip(true))
+            .column(Column::initial(150.0).clip(true))
+            .column(Column::initial(110.0).clip(true))
+            .column(Column::remainder().clip(true))
+            .header(20.0, |mut h| {
+                for (t, numeric) in [
+                    ("Name", false),
+                    ("Base", false),
+                    ("Size", true),
+                    ("Description", false),
+                    ("Company", false),
+                    ("Version", false),
+                    ("Path", false),
+                ] {
+                    h.col(|ui| widgets::column_header(ui, t, numeric));
+                }
+            })
+            .body(|body| {
+                body.rows(18.0, rows.len(), |mut row| {
+                    let m = &rows[row.index()];
+                    row.set_selected(selected == Some(m.info.base));
+                    row.col(|ui| {
+                        ui.add(Label::new(&*m.info.name).truncate());
+                    });
+                    row.col(|ui| {
+                        ui.label(
+                            RichText::new(format!("0x{:X}", m.info.base))
+                                .monospace()
                                 .color(theme::TEXT_WEAK),
-                        )
-                        .truncate(),
-                    );
-                });
-                row.col(|ui| {
-                    ui.add(
-                        Label::new(
-                            RichText::new(m.version.clone().unwrap_or_default())
-                                .color(theme::TEXT_WEAK),
-                        )
-                        .truncate(),
-                    );
-                });
-                row.col(|ui| {
-                    ui.add(
-                        Label::new(RichText::new(&*m.info.path).small().color(theme::TEXT_DIM))
+                        );
+                    });
+                    row.col(|ui| right(ui, fmt::bytes(m.info.size)));
+                    row.col(|ui| {
+                        ui.add(Label::new(m.description.clone().unwrap_or_default()).truncate());
+                    });
+                    row.col(|ui| {
+                        ui.add(
+                            Label::new(
+                                RichText::new(m.company.clone().unwrap_or_default())
+                                    .color(theme::TEXT_WEAK),
+                            )
                             .truncate(),
-                    );
+                        );
+                    });
+                    row.col(|ui| {
+                        ui.add(
+                            Label::new(
+                                RichText::new(m.version.clone().unwrap_or_default())
+                                    .color(theme::TEXT_WEAK),
+                            )
+                            .truncate(),
+                        );
+                    });
+                    row.col(|ui| {
+                        ui.add(
+                            Label::new(RichText::new(&*m.info.path).small().color(theme::TEXT_DIM))
+                                .truncate(),
+                        );
+                    });
+                    let response = row.response();
+                    if response.clicked() {
+                        modules.selected = if selected == Some(m.info.base) {
+                            None
+                        } else {
+                            Some(m.info.base)
+                        };
+                    }
+                    response.context_menu(|ui| {
+                        let facts = panes
+                            .facts
+                            .get(&m.info.path)
+                            .and_then(|f| f.as_ref().ok())
+                            .map(|f| &**f);
+                        crate::panes::module_menu(ui, m, facts, out);
+                    });
                 });
             });
-        });
+    });
 }

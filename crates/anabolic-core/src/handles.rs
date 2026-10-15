@@ -774,6 +774,22 @@ pub enum InspectRequest {
     Modules {
         key: ProcKey,
         addresses: Vec<u64>,
+        /// Threads whose names (SetThreadDescription) to read.
+        tids: Vec<u32>,
+    },
+    /// The call stack of a thread (suspends it for a few milliseconds).
+    Stack {
+        key: ProcKey,
+        tid: u32,
+    },
+    /// Signature, hash and build facts of a file.
+    FileFacts {
+        path: Arc<str>,
+    },
+    /// Processes holding handles to a kernel object, `key`'s left out.
+    Holders {
+        key: ProcKey,
+        object: u64,
     },
     FindHandles {
         query: String,
@@ -788,6 +804,10 @@ pub enum InspectRequest {
     },
     /// Drops the wait chain analysis under way.
     StopWaitChain,
+    /// Why the process does not go away (`ending::why_alive`).
+    WhyAlive {
+        key: ProcKey,
+    },
 }
 
 pub enum Inspection {
@@ -798,6 +818,24 @@ pub enum Inspection {
     WaitChain {
         key: ProcKey,
         report: Result<Arc<crate::waits::WaitReport>, String>,
+    },
+    WhyAlive {
+        key: ProcKey,
+        report: Result<Arc<crate::ending::EndReport>, String>,
+    },
+    Stack {
+        key: ProcKey,
+        tid: u32,
+        report: Result<Arc<crate::threads::StackReport>, String>,
+    },
+    FileFacts {
+        path: Arc<str>,
+        facts: Result<Arc<crate::filefacts::FileFacts>, String>,
+    },
+    Holders {
+        key: ProcKey,
+        object: u64,
+        holders: Result<Vec<crate::ending::Holder>, String>,
     },
     /// How far the wait chain analysis of `key` got.
     WaitProgress {
@@ -828,6 +866,8 @@ pub struct ModuleReport {
     /// The process' own modules could not be read (kernel ones still resolve).
     pub error: Option<String>,
     pub symbols: HashMap<u64, String>,
+    /// Names programs gave their threads.
+    pub thread_names: HashMap<u32, String>,
     pub took: Duration,
 }
 
@@ -840,7 +880,13 @@ struct ModuleInspector {
 }
 
 impl ModuleInspector {
-    fn inspect(&mut self, key: ProcKey, addresses: &[u64], devices: &DeviceMap) -> ModuleReport {
+    fn inspect(
+        &mut self,
+        key: ProcKey,
+        addresses: &[u64],
+        tids: &[u32],
+        devices: &DeviceMap,
+    ) -> ModuleReport {
         let started = Instant::now();
         let kernel = kernel_modules(devices);
         let (modules, error) = if key.pid == 4 {
@@ -883,6 +929,7 @@ impl ModuleInspector {
             modules,
             error,
             symbols,
+            thread_names: crate::threads::names(key.pid, tids),
             took: started.elapsed(),
         }
     }
@@ -1005,9 +1052,31 @@ impl Inspector {
                                     },
                                 }
                             }
-                            InspectRequest::Modules { key, addresses } => Inspection::Modules(
-                                Arc::new(modules.inspect(key, &addresses, &devices)),
-                            ),
+                            InspectRequest::Modules {
+                                key,
+                                addresses,
+                                tids,
+                            } => Inspection::Modules(Arc::new(
+                                modules.inspect(key, &addresses, &tids, &devices),
+                            )),
+                            InspectRequest::Stack { key, tid } => Inspection::Stack {
+                                key,
+                                tid,
+                                report: crate::threads::call_stack(key, tid, &mut modules.symbols)
+                                    .map(Arc::new),
+                            },
+                            InspectRequest::FileFacts { path } => Inspection::FileFacts {
+                                facts: crate::filefacts::file_facts(&path).map(Arc::new),
+                                path,
+                            },
+                            InspectRequest::Holders { key, object } => Inspection::Holders {
+                                key,
+                                object,
+                                holders: crate::ending::object_holders(
+                                    object,
+                                    &[key.pid, std::process::id()],
+                                ),
+                            },
                             InspectRequest::FindHandles { query, exclude } => {
                                 match find_handles(&query, &exclude, &types, &devices) {
                                     Ok(report) => Inspection::Found(Arc::new(report)),
@@ -1018,6 +1087,10 @@ impl Inspector {
                                     },
                                 }
                             }
+                            InspectRequest::WhyAlive { key } => Inspection::WhyAlive {
+                                key,
+                                report: crate::ending::why_alive(key).map(Arc::new),
+                            },
                             // Sent to their own thread by `request`.
                             InspectRequest::WaitChain { .. } | InspectRequest::StopWaitChain => {
                                 continue;
