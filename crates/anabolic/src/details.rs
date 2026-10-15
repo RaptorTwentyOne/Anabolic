@@ -9,8 +9,7 @@ use anabolic_core::handles::{HandleReport, ModuleReport};
 use anabolic_core::sysinfo::{local_time, now_filetime, thread_state_name, wait_reason_name};
 use anabolic_core::{ProcKey, ProcState, ProcessInfo, Snapshot, ThreadInfo};
 use eframe::egui::{
-    self, Align, Color32, Frame, Grid, Label, Layout, Margin, RichText, ScrollArea, Sense, Stroke,
-    Ui, vec2,
+    self, Align, Frame, Grid, Label, Layout, Margin, RichText, ScrollArea, Sense, Stroke, Ui, vec2,
 };
 use egui_extras::{Column, TableBuilder};
 
@@ -120,7 +119,7 @@ fn header(
         }
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(title).heading().strong());
+                ui.label(widgets::strong(title, theme::SUBTITLE));
                 if let Some(badge) = badge {
                     ui.label(RichText::new(badge).color(theme::TEXT_WEAK));
                 }
@@ -720,8 +719,8 @@ fn handles_tab(
     if let Some(t) = &report.process_targets {
         let alarming = t.exited > 100;
         Frame::new()
-            .fill(if alarming { Color32::from_rgb(0x33, 0x1A, 0x10) } else { theme::RAISED })
-            .stroke(Stroke::new(1.0, if alarming { theme::ACCENT } else { theme::BORDER }))
+            .fill(theme::RAISED)
+            .stroke(Stroke::new(1.0, if alarming { theme::ELEVATED_TEXT } else { theme::BORDER }))
             .inner_margin(Margin::symmetric(10, 6))
             .corner_radius(4)
             .show(ui, |ui| {
@@ -739,7 +738,7 @@ fn handles_tab(
                              (zombies). They are released when it closes those handles or exits.",
                             fmt::count(t.exited as u64)
                         ))
-                        .color(if alarming { theme::ACCENT } else { theme::TEXT_WEAK }),
+                        .color(if alarming { theme::ELEVATED_TEXT } else { theme::TEXT_WEAK }),
                     );
                 }
                 if let Some((pid, n)) = t.top_running.first()

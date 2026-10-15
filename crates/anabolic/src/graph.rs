@@ -50,9 +50,10 @@ impl<'a> Graph<'a> {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 2.0, theme::BG);
 
-        let capacity = self.series.first().map_or(1, |s| s.ring.capacity()).max(2);
-        // Samples visible across the width, at most one per pixel.
-        let visible = capacity.min(rect.width().max(2.0) as usize);
+        let visible = self
+            .series
+            .first()
+            .map_or(2, |s| visible_samples(s.ring, rect.width()));
         let max = self.max.unwrap_or_else(|| {
             let m = self
                 .series
@@ -63,7 +64,7 @@ impl<'a> Graph<'a> {
         });
 
         if self.grid {
-            let grid = Stroke::new(1.0, Color32::from_rgb(0x1E, 0x23, 0x2C));
+            let grid = Stroke::new(1.0, theme::GRID);
             for i in 1..4 {
                 let y = rect.top() + rect.height() * i as f32 / 4.0;
                 painter.hline(rect.x_range(), y, grid);
@@ -97,6 +98,16 @@ impl<'a> Graph<'a> {
         );
         max
     }
+}
+
+/// How many samples a graph `width` wide shows: at most one per pixel and
+/// the ring's capacity, and while the ring is still filling, what it holds
+/// (at least a minute's worth, so the first seconds do not fill the width).
+pub fn visible_samples(ring: &Ring, width: f32) -> usize {
+    ring.capacity()
+        .min(width.max(2.0) as usize)
+        .min(ring.len().max(60))
+        .max(2)
 }
 
 fn tail_max(ring: &Ring, n: usize) -> f32 {

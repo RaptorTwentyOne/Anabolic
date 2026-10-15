@@ -14,6 +14,7 @@ use crate::icons::IconCache;
 use crate::settings::{Col, Settings};
 use crate::theme;
 use crate::tree::{self, BuildInput, Details, Group, Row};
+use crate::widgets;
 
 pub const ROW_HEIGHT: f32 = 20.0;
 const INDENT: f32 = 14.0;
@@ -191,10 +192,11 @@ pub fn show(
                 let first = &snap.processes[r.idx as usize];
                 let p = group.map_or(first, |g| &g.agg);
                 let d = details.get(&first.key);
-                row.set_selected(match group {
+                let selected = match group {
                     Some(g) => table.selected_group.as_deref() == Some(&*g.id),
                     None => table.selected_group.is_none() && table.selected == Some(p.key),
-                });
+                };
+                row.set_selected(selected);
                 let tint = if group.is_some() {
                     None
                 } else {
@@ -212,7 +214,7 @@ pub fn show(
                         if c == Col::Name {
                             name_cell(ui, p, d, r, group, icons, out);
                         } else {
-                            value_cell(ui, c, p, d, group.is_some(), &ctx);
+                            value_cell(ui, c, p, d, group.is_some(), selected, &ctx);
                         }
                     });
                     if c == Col::Name
@@ -248,27 +250,45 @@ pub fn show(
 }
 
 fn header_cell(ui: &mut Ui, c: Col, settings: &Settings) {
-    let arrow = match (settings.sort == c, settings.descending) {
-        (false, _) => "",
-        (true, true) => " ▼",
-        (true, false) => " ▲",
-    };
-    let text = RichText::new(format!("{}{arrow}", c.title())).color(if settings.sort == c {
+    let sorted = settings.sort == c;
+    let text = widgets::strong(c.title(), theme::META).color(if sorted {
         theme::TEXT
     } else {
         theme::TEXT_WEAK
     });
+    // The arrow sits beside the title, never inside it, so the title does
+    // not move when the sort column changes.
+    let arrow = sorted.then(|| {
+        let glyph = if settings.descending {
+            theme::icon::CHEVRON_DOWN
+        } else {
+            theme::icon::CHEVRON_UP
+        };
+        widgets::icon(glyph, 9.0).color(theme::ACCENT)
+    });
     if c.numeric() {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add(Label::new(text).truncate())
+            ui.add(Label::new(text).truncate());
+            if let Some(arrow) = arrow {
+                ui.label(arrow);
+            }
         });
     } else {
+        if c != Col::Name {
+            ui.add_space(TEXT_INSET);
+        }
         ui.add(Label::new(text).truncate());
+        if let Some(arrow) = arrow {
+            ui.label(arrow);
+        }
     }
 }
 
+/// Left inset of text columns, so they do not touch a right-aligned number.
+const TEXT_INSET: f32 = 8.0;
+
 fn column_chooser(ui: &mut Ui, settings: &Settings, out: &mut Vec<UiCmd>) {
-    ui.label(RichText::new("Columns").color(theme::TEXT_WEAK));
+    ui.label(widgets::strong("Columns", theme::BODY));
     for c in Col::ALL {
         if c == Col::Name {
             continue;
@@ -381,7 +401,7 @@ fn name_cell(
 fn name_tooltip(ui: &mut Ui, p: &ProcessInfo, d: &ProcessDetails) {
     ui.set_max_width(520.0);
     if let Some(desc) = &d.description {
-        ui.label(RichText::new(desc).strong());
+        ui.label(widgets::strong(desc, theme::BODY));
     }
     if let Some(company) = &d.company {
         ui.label(RichText::new(company).color(theme::TEXT_WEAK));
@@ -391,44 +411,42 @@ fn name_tooltip(ui: &mut Ui, p: &ProcessInfo, d: &ProcessDetails) {
     }
     if let Some(cmd) = &d.command_line {
         ui.separator();
-        ui.label(RichText::new(cmd).monospace().size(11.5));
+        ui.label(RichText::new(cmd).monospace().size(theme::META));
     }
     if p.state == ProcState::Suspended {
         ui.label(RichText::new("Suspended").color(theme::SUSPENDED_TEXT));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn value_cell(
     ui: &mut Ui,
     c: Col,
     p: &ProcessInfo,
     d: Option<&Arc<ProcessDetails>>,
     is_group: bool,
+    selected: bool,
     ctx: &Ctx<'_>,
 ) {
-    // A full core lights the CPU cell up; an eighth of RAM lights a memory cell.
-    let memory_heat = |bytes: u64| ((bytes as f64 / (ctx.total_memory / 8.0)) as f32).sqrt();
-    let heat = match c {
-        Col::Cpu => (p.cpu * ctx.cores / 100.0).sqrt(),
-        Col::Private => memory_heat(p.private_bytes),
-        Col::WorkingSet => memory_heat(p.working_set),
-        Col::PrivateWs => memory_heat(p.private_working_set),
-        Col::Disk => rate_heat(p.disk_total_rate()),
-        Col::Io => rate_heat(p.io_total_rate()),
-        Col::Gpu => (p.gpu / 100.0).sqrt(),
-        Col::Net => rate_heat(p.net_total_rate()),
-        Col::HandleTrend => (p.handles_per_min / 1000.0).clamp(0.0, 1.0),
-        _ => 0.0,
-    };
-    // The idle process "uses" idle time; shading it would read as load.
-    if heat > 0.05 && p.state != ProcState::Exited && p.pid != 0 {
+    let heat = cell_heat(c, p, ctx);
+    // Only real load shows; the idle process "uses" idle time and the
+    // selection carries its own highlight.
+    if heat > 0.15 && p.state != ProcState::Exited && p.pid != 0 && !selected {
         ui.painter().rect_filled(
-            ui.max_rect().expand2(vec2(4.0, 1.0)),
+            ui.max_rect().shrink2(vec2(0.0, 1.0)),
             0.0,
             theme::heat(heat),
         );
     }
 
+    // Blank means zero; data that needs elevation says so instead.
+    if c == Col::Disk && ctx.snap.info_level != InfoLevel::Full && !p.is_pseudo() {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(widgets::icon(theme::icon::LOCK, 10.0).color(theme::TEXT_DIM))
+                .on_hover_text("Disk counters need administrator rights");
+        });
+        return;
+    }
     let text = cell_text(c, p, d, is_group, ctx);
     if text.is_empty() {
         return;
@@ -442,16 +460,48 @@ fn value_cell(
     if c.numeric() {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.add(label));
     } else {
+        // Clear of the right-aligned number in the column before.
+        ui.add_space(TEXT_INSET);
         ui.add(label);
     }
 }
 
-/// 1 KB/s maps to nothing, 100 MB/s to full heat, logarithmic in between.
+/// How hot a cell is, 0..=1. Linear against what makes a machine struggle,
+/// so peaks stand out instead of every busy row: a quarter of all CPU time,
+/// a quarter of RAM, 1 GB/s of transfer.
+fn cell_heat(c: Col, p: &ProcessInfo, ctx: &Ctx<'_>) -> f32 {
+    let memory = |bytes: u64| (bytes as f64 / (ctx.total_memory / 4.0)) as f32;
+    let heat = match c {
+        Col::Cpu => {
+            let share = p.cpu / 25.0;
+            // A process that keeps a whole core busy is worth a glance even
+            // on a machine with many of them.
+            if p.cpu * ctx.cores / 100.0 >= 0.9 {
+                share.max(0.35)
+            } else {
+                share
+            }
+        }
+        Col::Private => memory(p.private_bytes),
+        Col::WorkingSet => memory(p.working_set),
+        Col::PrivateWs => memory(p.private_working_set),
+        Col::Disk => rate_heat(p.disk_total_rate()),
+        Col::Io => rate_heat(p.io_total_rate()),
+        Col::Gpu => p.gpu / 100.0,
+        Col::Net => rate_heat(p.net_total_rate()),
+        Col::HandleTrend => p.handles_per_min / 1000.0,
+        _ => 0.0,
+    };
+    heat.clamp(0.0, 1.0)
+}
+
+/// 1 MB/s maps to nothing, 1 GB/s to full heat, logarithmic in between.
 fn rate_heat(rate: f64) -> f32 {
-    if rate < 1024.0 {
+    const MB: f64 = 1024.0 * 1024.0;
+    if rate < MB {
         0.0
     } else {
-        ((rate / 1024.0).log10() / 5.0).min(1.0) as f32
+        ((rate / MB).log10() / 3.0).min(1.0) as f32
     }
 }
 

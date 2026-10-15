@@ -9,14 +9,19 @@ rust-version.workspace = true
 anabolic-core.workspace = true
 crossbeam-channel.workspace = true
 serde.workspace = true
-eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"] }
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "persistence", "wgpu_no_default_features"] }
 egui_extras = { version = "0.36", default-features = false }
+# Direct3D 12 only: see wgpu_options in main.rs.
+wgpu = { version = "30", default-features = false, features = ["dx12"] }
 
 [dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Gdi",
     "Win32_System_Console",
+    "Win32_System_SystemInformation",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]

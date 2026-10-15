@@ -51,6 +51,8 @@ enum Pending {
 #[derive(Default)]
 struct FindView {
     open: bool,
+    /// Put the cursor in the query field on the next frame.
+    focus: bool,
     query: String,
     exclude: String,
     pending: bool,
@@ -105,6 +107,11 @@ pub struct App {
     cpu_name: String,
     started: Instant,
     ui_time: Duration,
+    stalls: crate::stalls::Stalls,
+    /// The logo mark beside the wordmark in the rail.
+    mark: egui::TextureHandle,
+    /// The title bar has been painted to match (tries until the window exists).
+    title_bar_styled: bool,
     pinned: Option<Result<u64, String>>,
     focus_search: bool,
     /// taskmgr.exe is redirected to Anabolic's launcher.
@@ -217,12 +224,12 @@ impl App {
                 interval: Duration::from_millis(settings.interval_ms),
                 ..Default::default()
             },
-            move || repaint.request_repaint(),
+            move || crate::stalls::wake(&repaint),
         );
         let repaint = cc.egui_ctx.clone();
-        let (actions, outcomes) = ActionRunner::start(move || repaint.request_repaint());
+        let (actions, outcomes) = ActionRunner::start(move || crate::stalls::wake(&repaint));
         let repaint = cc.egui_ctx.clone();
-        let (inspector, inspections) = Inspector::start(move || repaint.request_repaint());
+        let (inspector, inspections) = Inspector::start(move || crate::stalls::wake(&repaint));
         if let Some(query) = &find_query {
             inspector.request(InspectRequest::FindHandles {
                 query: query.clone(),
@@ -277,6 +284,16 @@ impl App {
             hardware: anabolic_core::hwinfo::hardware_info(),
             started: Instant::now(),
             ui_time: Duration::ZERO,
+            stalls: Default::default(),
+            mark: cc.egui_ctx.load_texture(
+                "anabolic-mark",
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [64, 64],
+                    include_bytes!("../assets/logo/mark-64.rgba"),
+                ),
+                egui::TextureOptions::LINEAR,
+            ),
+            title_bar_styled: false,
             pinned: None,
             focus_search: false,
             pending_pid,
@@ -725,7 +742,7 @@ impl App {
                     self.confirm = Some((dialog, Pending::LoadModules(key)));
                 }
                 UiCmd::LoadModules(key) => self.load_modules(key),
-                UiCmd::OpenFind => self.find.open = true,
+                UiCmd::OpenFind => self.open_find(),
                 UiCmd::FindHandles { query, exclude } => {
                     self.find.pending = true;
                     self.inspector
@@ -803,11 +820,15 @@ impl App {
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
-            if typing || self.settings.tab != Tab::Processes {
+            if typing {
                 return;
             }
+            // The Pause button promises Space on every page.
             if i.consume_key(Modifiers::NONE, Key::Space) {
                 self.paused = !self.paused;
+            }
+            if self.settings.tab != Tab::Processes {
+                return;
             }
             if let Some(id) = &group_id {
                 if i.consume_key(Modifiers::NONE, Key::Delete) {
@@ -880,27 +901,40 @@ impl App {
         let collapsed = self.settings.nav_collapsed;
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let toggle = widgets::rail_icon(ui, "☰").on_hover_text(if collapsed {
-                "Show labels"
-            } else {
-                "Icons only"
-            });
+            let toggle = widgets::rail_icon(ui, theme::icon::MENU, "Navigation").on_hover_text(
+                if collapsed {
+                    "Show labels"
+                } else {
+                    "Icons only"
+                },
+            );
             if toggle.clicked() {
                 self.settings.nav_collapsed = !collapsed;
             }
             if !collapsed {
+                ui.add(egui::Image::new(&self.mark).fit_to_exact_size(egui::vec2(20.0, 20.0)));
                 ui.label(
                     RichText::new("ANABOLIC")
-                        .size(15.0)
-                        .strong()
+                        .font(theme::brand(theme::BODY))
+                        .extra_letter_spacing(1.2)
                         .color(theme::ACCENT),
                 );
             }
         });
         ui.add_space(10.0);
         let pages = [
-            (Tab::Processes, "📋", "Processes", "Ctrl+1"),
-            (Tab::Performance, "📈", "Performance", "Ctrl+2"),
+            (
+                Tab::Processes,
+                theme::icon::PROCESSES,
+                "Processes",
+                "Ctrl+1",
+            ),
+            (
+                Tab::Performance,
+                theme::icon::PERFORMANCE,
+                "Performance",
+                "Ctrl+2",
+            ),
         ];
         for (tab, icon, label, keys) in pages {
             let selected = self.settings.tab == tab;
@@ -914,15 +948,17 @@ impl App {
         ui.add_space(4.0);
         ui.separator();
         ui.add_space(4.0);
-        if widgets::rail_item(ui, "🔍", "Find handle", self.find.open, collapsed)
+        // A tool, not a page: it opens a window over the current page.
+        if widgets::rail_item(ui, theme::icon::SEARCH, "Find handle", false, collapsed)
             .on_hover_text("Who has this file, key or object open? (Ctrl+H)")
             .clicked()
         {
-            self.find.open = !self.find.open;
+            self.open_find();
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.add_space(8.0);
-            let settings = widgets::rail_item(ui, "⚙", "Settings", false, collapsed);
+            let settings =
+                widgets::rail_item(ui, theme::icon::SETTINGS, "Settings", false, collapsed);
             self.settings_menu(&settings);
         });
     }
@@ -940,7 +976,7 @@ impl App {
     fn list_controls(&mut self, ui: &mut egui::Ui) {
         let search = ui.add(
             TextEdit::singleline(&mut self.table.filter)
-                .hint_text("Filter: name, PID, path, user…  (Ctrl+F)")
+                .hint_text("Filter by name, PID, path or user  (Ctrl+F)")
                 .desired_width(300.0),
         );
         if std::mem::take(&mut self.focus_search) {
@@ -978,9 +1014,12 @@ impl App {
     /// Elevation, refresh rate, pause: right-aligned on every page.
     fn global_controls(&mut self, ui: &mut egui::Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(6.0);
                 if self.elevated {
-                    ui.label(RichText::new("ADMIN").small().strong().color(theme::GOOD))
+                    ui.label(RichText::new("Administrator").size(theme::META).color(theme::TEXT_WEAK))
                         .on_hover_text("Running elevated: every process, disk counters and owners are visible.");
+                    ui.label(widgets::icon(theme::icon::SHIELD, 13.0).color(theme::GOOD));
+                    ui.add_space(6.0);
                 } else if ui
                     .button(RichText::new("Restart as admin").color(theme::ELEVATED_TEXT))
                     .on_hover_text("Without elevation protected processes, disk counters and some owners are hidden.")
@@ -1000,12 +1039,16 @@ impl App {
                         }
                     }
                 });
-                let pause_text = if self.paused { RichText::new("▶ Resume").color(theme::ACCENT) } else { RichText::new("⏸ Pause") };
-                if ui.button(pause_text).on_hover_text("Freeze the view (Space)").clicked() {
+                let (glyph, label) = if self.paused { (theme::icon::PLAY, "Resume") } else { (theme::icon::PAUSE, "Pause") };
+                let mut job = egui::text::LayoutJob::default();
+                widgets::icon(glyph, 12.0).append_to(&mut job, ui.style(), egui::FontSelection::Default, Align::Center);
+                RichText::new(format!("  {label}")).append_to(&mut job, ui.style(), egui::FontSelection::Default, Align::Center);
+                let button = egui::Button::new(job).selected(self.paused);
+                if ui.add(button).on_hover_text("Freeze the view (Space)").clicked() {
                     self.paused = !self.paused;
                 }
                 if self.paused {
-                    ui.label(RichText::new("PAUSED").strong().color(theme::ACCENT));
+                    ui.label(widgets::strong("Paused", theme::META).color(theme::ACCENT));
                 }
             });
     }
@@ -1013,7 +1056,7 @@ impl App {
     fn settings_menu(&mut self, button: &egui::Response) {
         egui::Popup::menu(button).align(egui::RectAlign::RIGHT_END).show(|ui| {
             ui.set_min_width(340.0);
-            ui.label(RichText::new("Settings").strong());
+            ui.label(widgets::strong("Settings", theme::BODY));
             ui.separator();
             let mut replaced = self.taskmgr_replaced;
             let toggle = ui
@@ -1030,12 +1073,12 @@ impl App {
                 let registered = anabolic_core::taskmgr::registered_app();
                 let current = anabolic_core::taskmgr::app_path().map(|p| p.display().to_string());
                 if let Some(path) = &registered {
-                    ui.label(RichText::new(format!("Starts {path}")).small().color(theme::TEXT_WEAK));
+                    ui.label(RichText::new(format!("Starts {path}")).size(theme::CAPTION).color(theme::TEXT_WEAK));
                 }
                 if registered.is_some() && registered != current {
                     ui.label(
                         RichText::new("That is another build than this one: turn it off and on to switch.")
-                            .small()
+                            .size(theme::CAPTION)
                             .color(theme::ELEVATED_TEXT),
                     );
                 }
@@ -1052,11 +1095,11 @@ impl App {
         let Some(alert) = &self.alert else { return };
         let mut dismiss = false;
         let mut show_apps = false;
-        let white = Color32::from_rgb(0xFF, 0xF2, 0xEC);
+        let white = theme::TEXT;
         // Buttons first, anchored right, so they stay put while the text changes.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
-                .small_button("✕")
+                .small_button(widgets::icon(theme::icon::CLOSE, 10.0))
                 .on_hover_text("Hide until memory drops")
                 .clicked()
             {
@@ -1077,13 +1120,16 @@ impl App {
                 }
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(widgets::icon(theme::icon::WARNING, 13.0).color(theme::ELEVATED_TEXT));
                 widgets::text(
                     ui,
-                    150.0,
+                    130.0,
                     Align::Min,
-                    RichText::new(format!("⚠  {} {:.0}% full", alert.what, alert.pct))
-                        .strong()
-                        .color(white),
+                    widgets::strong(
+                        format!("{} {:.0}% full", alert.what, alert.pct),
+                        theme::BODY,
+                    )
+                    .color(white),
                 );
                 let mut message = String::new();
                 if let Some((name, bytes, count)) = &alert.app {
@@ -1134,68 +1180,43 @@ impl App {
         let s = &snap.system;
         let m = &s.memory;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            let small = |t: String, color| RichText::new(t).small().color(color);
-            // Fixed widths: the numbers change every refresh.
-            widgets::text(
-                ui,
-                290.0,
-                Align::Min,
-                small(
-                    format!(
-                        "{} processes · {} threads · {} handles",
-                        fmt::count(s.processes as u64),
-                        fmt::count(s.threads as u64),
-                        fmt::count(s.handles as u64)
-                    ),
-                    theme::TEXT_WEAK,
-                ),
-            );
-            widgets::text(
-                ui,
-                80.0,
-                Align::Min,
-                small(format!("CPU {:.1}%", s.cpu.total), theme::CPU),
-            );
-            widgets::text(
-                ui,
-                190.0,
-                Align::Min,
-                small(
-                    format!(
-                        "RAM {} / {} ({:.0}%)",
-                        fmt::bytes(m.used()),
-                        fmt::bytes(m.total),
-                        m.used() as f64 * 100.0 / m.total.max(1) as f64
-                    ),
-                    theme::MEMORY,
-                ),
-            );
-            widgets::text(
+            ui.spacing_mut().item_spacing.x = 4.0;
+            // Label weak, value strong; fixed widths, the numbers change every refresh.
+            let pair = |ui: &mut egui::Ui, width: f32, label: &str, value: String| {
+                widgets::cell(ui, width, Align::Min, |ui| {
+                    ui.label(
+                        RichText::new(label)
+                            .size(theme::META)
+                            .color(theme::TEXT_WEAK),
+                    );
+                    ui.label(RichText::new(value).size(theme::META));
+                });
+            };
+            pair(ui, 96.0, "Processes", fmt::count(s.processes as u64));
+            pair(ui, 96.0, "Threads", fmt::count(s.threads as u64));
+            pair(ui, 120.0, "Handles", fmt::count(s.handles as u64));
+            pair(ui, 74.0, "CPU", format!("{:.0} %", s.cpu.total));
+            pair(
                 ui,
                 170.0,
-                Align::Min,
-                small(
-                    format!(
-                        "Commit {} / {}",
-                        fmt::bytes(m.commit),
-                        fmt::bytes(m.commit_limit)
-                    ),
-                    theme::TEXT_WEAK,
-                ),
+                "Memory",
+                format!("{} / {}", fmt::bytes(m.used()), fmt::bytes(m.total)),
+            );
+            pair(
+                ui,
+                160.0,
+                "Commit",
+                format!("{} / {}", fmt::bytes(m.commit), fmt::bytes(m.commit_limit)),
             );
             if snap.info_level == InfoLevel::Full {
-                widgets::text(
+                pair(
                     ui,
-                    190.0,
-                    Align::Min,
-                    small(
-                        format!(
-                            "Disk R {} W {}",
-                            fmt::rate_always(s.disk_read_rate),
-                            fmt::rate_always(s.disk_write_rate)
-                        ),
-                        theme::TEXT_WEAK,
+                    200.0,
+                    "Disk",
+                    format!(
+                        "R {}  W {}",
+                        fmt::rate_always(s.disk_read_rate),
+                        fmt::rate_always(s.disk_write_rate)
                     ),
                 );
             }
@@ -1206,50 +1227,79 @@ impl App {
                     .iter()
                     .find(|p| p.pid == snap.own_pid && p.state != ProcState::Exited);
                 let text = format!(
-                    "⚡ scan {} · ui {} · self {:.2}% · {}",
+                    "scan {}  ·  ui {}  ·  self {:.1} %  ·  {}",
                     fmt::millis(snap.collect_time),
                     fmt::millis(self.ui_time),
                     own.map_or(0.0, |p| p.cpu),
                     fmt::bytes(own.map_or(0, |p| p.working_set))
                 );
-                widgets::cell(ui, 300.0, Align::Max, |ui| {
-                    ui.label(RichText::new(text).small().color(theme::TEXT_DIM))
-                        .on_hover_ui(|ui| self.hardening_report(ui));
+                ui.add_space(6.0);
+                widgets::cell(ui, 290.0, Align::Max, |ui| {
+                    ui.label(
+                        RichText::new(text)
+                            .size(theme::META)
+                            .color(theme::TEXT_WEAK),
+                    )
+                    .on_hover_ui(|ui| self.hardening_report(ui));
+                    ui.label(widgets::icon(theme::icon::SPEED, 12.0).color(theme::TEXT_WEAK));
                 });
             });
         });
     }
 
     fn hardening_report(&self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Staying responsive under load").strong());
+        ui.label(widgets::strong(
+            "Staying responsive under load",
+            theme::BODY,
+        ));
         ui.label(
             RichText::new(format!("Information level: {:?}", self.snapshot.info_level))
                 .color(theme::TEXT_WEAK),
         );
-        for item in &self.hardening {
-            let (mark, color) = match &item.result {
-                Ok(()) => ("✔", theme::GOOD),
-                Err(_) => ("✘", theme::BAD),
+        let mark = |ui: &mut egui::Ui, ok: bool| {
+            let (glyph, color) = if ok {
+                (theme::icon::CHECK, theme::GOOD)
+            } else {
+                (theme::icon::CLOSE, theme::BAD)
             };
+            ui.label(widgets::icon(glyph, 11.0).color(color));
+        };
+        for item in &self.hardening {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(mark).color(color));
+                mark(ui, item.result.is_ok());
                 ui.label(item.what);
                 if let Err(e) = &item.result {
-                    ui.label(RichText::new(e).small().color(theme::TEXT_DIM));
+                    ui.label(
+                        RichText::new(e)
+                            .size(theme::CAPTION)
+                            .color(theme::TEXT_WEAK),
+                    );
                 }
             });
         }
+        ui.horizontal(|ui| {
+            mark(ui, self.stalls.count == 0);
+            if self.stalls.count == 0 {
+                ui.label("No UI stalls this session");
+            } else {
+                ui.label(format!(
+                    "{} UI stalls, longest {:.0} ms (stalls.log)",
+                    self.stalls.count,
+                    self.stalls.longest * 1000.0
+                ));
+            }
+        });
         ui.horizontal(|ui| match &self.pinned {
             Some(Ok(bytes)) => {
-                ui.label(RichText::new("✔").color(theme::GOOD));
+                mark(ui, true);
                 ui.label(format!("Working set pinned at {}", fmt::bytes(*bytes)));
             }
             Some(Err(e)) => {
-                ui.label(RichText::new("✘").color(theme::BAD));
+                mark(ui, false);
                 ui.label(format!("Working set pin: {e}"));
             }
             None => {
-                ui.label(RichText::new("…").color(theme::TEXT_DIM));
+                ui.label(RichText::new("·").color(theme::TEXT_WEAK));
                 ui.label("Working set pin pending");
             }
         });
@@ -1296,20 +1346,29 @@ impl App {
             .request(InspectRequest::Modules { key, addresses });
     }
 
+    fn open_find(&mut self) {
+        self.find.open = true;
+        self.find.focus = true;
+    }
+
     fn find_window(&mut self, ctx: &egui::Context, out: &mut Vec<UiCmd>) {
         if !self.find.open {
             return;
         }
         let mut open = true;
         let snapshot = self.snapshot.clone();
-        egui::Window::new("Find handles")
+        egui::Window::new(widgets::strong("Find handle", theme::BODY))
             .open(&mut open)
+            .collapsible(false)
             .default_size([1000.0, 520.0])
             .show(ctx, |ui| {
                 let find = &mut self.find;
                 ui.horizontal(|ui| {
                     ui.label("Name contains");
                     let query = ui.add(TextEdit::singleline(&mut find.query).hint_text("file, key or object name").desired_width(340.0));
+                    if std::mem::take(&mut find.focus) {
+                        query.request_focus();
+                    }
                     ui.label("Skip");
                     ui.add(TextEdit::singleline(&mut find.exclude).hint_text("e.g. BlackDesert64.exe, avp.exe").desired_width(260.0));
                     let go = query.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
@@ -1358,10 +1417,10 @@ impl App {
                     .column(egui_extras::Column::initial(90.0))
                     .column(egui_extras::Column::initial(80.0))
                     .column(egui_extras::Column::remainder().clip(true))
-                    .header(20.0, |mut h| {
+                    .header(22.0, |mut h| {
                         for t in ["Process", "PID", "Type", "Handle", "Name"] {
                             h.col(|ui| {
-                                ui.label(RichText::new(t).color(theme::TEXT_WEAK));
+                                ui.label(widgets::strong(t, theme::META).color(theme::TEXT_WEAK));
                             });
                         }
                     })
@@ -1477,6 +1536,16 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
         crate::bench::frame(ui.ctx(), frame.info().cpu_usage, self.ui_time);
+        let page = match self.settings.tab {
+            Tab::Processes => "Processes".to_string(),
+            Tab::Performance => format!("Performance/{:?}", self.perf_view),
+        };
+        self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
+        if !self.title_bar_styled {
+            let rgb = |c: Color32| u32::from_be_bytes([0, c.r(), c.g(), c.b()]);
+            self.title_bar_styled =
+                anabolic_core::instance::style_title_bar(rgb(theme::PANEL), rgb(theme::BORDER));
+        }
         let ctx = ui.ctx().clone();
         self.pump();
 
@@ -1507,7 +1576,7 @@ impl eframe::App for App {
             egui::Panel::top("memory-alert")
                 .frame(
                     Frame::new()
-                        .fill(Color32::from_rgb(0x8C, 0x2A, 0x1C))
+                        .fill(theme::BAD_FILL)
                         .inner_margin(Margin::symmetric(10, 5)),
                 )
                 .show(ui, |ui| self.alert_bar(ui, &mut cmds));
@@ -1605,7 +1674,7 @@ impl eframe::App for App {
         crate::bench::inject(raw_input);
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         // Stops the ETW session before the process goes away.
         self.collector.shutdown();
     }

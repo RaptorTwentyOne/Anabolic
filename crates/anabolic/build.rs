@@ -46,6 +46,7 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     build_launcher(&out);
     println!("cargo:rerun-if-changed=anabolic.exe.manifest");
+    println!("cargo:rerun-if-changed=assets/logo/anabolic.ico");
     println!("cargo:rerun-if-changed=build.rs");
 
     let level = match env::var("PROFILE").as_deref() {
@@ -70,6 +71,7 @@ fn main() {
     let rc = format!(
         r#"#include <winver.h>
 1 24 "{manifest}"
+1 ICON "{icon}"
 1 VERSIONINFO
 FILEVERSION {numeric}
 PRODUCTVERSION {numeric}
@@ -94,6 +96,11 @@ BEGIN
 END
 "#,
         manifest = manifest_path.display().to_string().replace('\\', "\\\\"),
+        icon = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("assets/logo/anabolic.ico")
+            .display()
+            .to_string()
+            .replace('\\', "\\\\"),
     );
     let rc_path = out.join("anabolic.rc");
     fs::write(&rc_path, rc).unwrap();

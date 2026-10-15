@@ -2,7 +2,9 @@
 //! Performance page scrolls itself and per-frame costs are written to the
 //! report. ANABOLIC_BENCH_MODE=wheel scrolls with injected mouse wheel notches
 //! and the pointer over the page (hover effects, wheel smoothing), otherwise
-//! the scroll offset is set directly. Inert unless the variable is set.
+//! the scroll offset is set directly. ANABOLIC_BENCH_MODE=soak runs until
+//! closed: a short scroll burst every minute, one report line per burst, so
+//! costs that grow with uptime show up. Inert unless the variable is set.
 
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -18,10 +20,16 @@ const DEPTH: f32 = 2400.0;
 /// Wheel mode: one notch this often, this many down then as many up.
 const NOTCH_EVERY: Duration = Duration::from_millis(60);
 const NOTCHES: u32 = 30;
+/// Soak mode: a burst this long every this many seconds.
+const SOAK_EVERY: f32 = 60.0;
+const SOAK_BURST: f32 = 3.0;
 
 struct Bench {
     path: std::path::PathBuf,
     wheel: bool,
+    soak: bool,
+    /// Soak mode: (frame cpu ms, frame interval ms) of the current burst.
+    burst: Vec<[f32; 2]>,
     started: Instant,
     notches: u32,
     last_notch: Option<Instant>,
@@ -44,6 +52,8 @@ fn bench() -> Option<&'static Mutex<Bench>> {
                 Mutex::new(Bench {
                     path: path.into(),
                     wheel: std::env::var("ANABOLIC_BENCH_MODE").is_ok_and(|m| m == "wheel"),
+                    soak: std::env::var("ANABOLIC_BENCH_MODE").is_ok_and(|m| m == "soak"),
+                    burst: Vec::new(),
                     started: Instant::now(),
                     notches: 0,
                     last_notch: None,
@@ -66,6 +76,21 @@ pub fn enabled() -> bool {
 /// Where the page should be scrolled to this frame (offset mode).
 pub fn scroll_offset(ctx: &egui::Context) -> Option<f32> {
     let b = bench()?.lock().ok()?;
+    if b.soak {
+        let t = b.started.elapsed().as_secs_f32();
+        let into = t % SOAK_EVERY;
+        if t < SOAK_EVERY || into >= SOAK_BURST {
+            ctx.request_repaint_after(Duration::from_secs_f32(SOAK_EVERY - into));
+            return None;
+        }
+        ctx.request_repaint();
+        let phase = (into * SPEED) % (2.0 * DEPTH);
+        return Some(if phase < DEPTH {
+            phase
+        } else {
+            2.0 * DEPTH - phase
+        });
+    }
     if b.done || b.wheel {
         return None;
     }
@@ -134,6 +159,10 @@ pub fn scrolled_to(offset: f32, height: f32) {
 pub fn frame(ctx: &egui::Context, cpu: Option<f32>, ui: Duration) {
     let Some(bench) = bench() else { return };
     let Ok(mut b) = bench.lock() else { return };
+    if b.soak {
+        soak_frame(&mut b, ctx, cpu);
+        return;
+    }
     if b.done {
         return;
     }
@@ -198,4 +227,44 @@ pub fn frame(ctx: &egui::Context, cpu: Option<f32>, ui: Duration) {
         b.height_changes.1,
     );
     let _ = std::fs::write(&b.path, report);
+}
+
+/// Soak mode: collect frames during a burst, append one line when it ends.
+fn soak_frame(b: &mut Bench, ctx: &egui::Context, cpu: Option<f32>) {
+    let t = b.started.elapsed().as_secs_f32();
+    let in_burst = t >= SOAK_EVERY && t % SOAK_EVERY < SOAK_BURST;
+    if in_burst {
+        let interval = ctx.input(|i| i.unstable_dt) * 1000.0;
+        b.burst.push([cpu.unwrap_or(0.0) * 1000.0, interval]);
+        return;
+    }
+    if b.burst.len() < 2 {
+        b.burst.clear();
+        return;
+    }
+    // The first frame's interval spans the idle gap before the burst.
+    let samples: Vec<[f32; 2]> = b.burst.drain(..).skip(1).collect();
+    let pick = |i: usize| {
+        let mut v: Vec<f32> = samples.iter().map(|s| s[i]).collect();
+        v.sort_by(f32::total_cmp);
+        let at = |q: f32| v[((v.len() - 1) as f32 * q) as usize];
+        (at(0.5), at(0.95), at(1.0))
+    };
+    let (c50, c95, cmax) = pick(0);
+    let (_, i95, imax) = pick(1);
+    let line = format!(
+        "{:>4.0} min  frames {:>4}  cpu ms p50 {c50:6.2} p95 {c95:6.2} max {cmax:6.2}  interval ms p95 {i95:6.2} max {imax:7.2}  ws {} MB
+",
+        t / 60.0,
+        samples.len(),
+        anabolic_core::hardening::own_working_set() / (1024 * 1024),
+    );
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&b.path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
 }

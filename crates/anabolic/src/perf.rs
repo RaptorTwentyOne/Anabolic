@@ -22,7 +22,7 @@ pub struct ZombieView {
     pub pending: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum PerfView {
     #[default]
     Cpu,
@@ -283,16 +283,21 @@ fn nav(ui: &mut Ui, view: &mut PerfView, snap: &Snapshot, hw: &HardwareInfo) {
         };
         // Clip the text to the card.
         let painter = ui.painter_at(rect.shrink(2.0));
-        let (title_size, value_size, title_y, value_y) = if card.child {
-            (13.0, 11.0, 6.0, 25.0)
+        let (title_font, value_size, title_y, value_y) = if card.child {
+            (FontId::proportional(theme::BODY), theme::CAPTION, 6.0, 25.0)
         } else {
-            (15.0, 11.5, 12.0, 34.0)
+            (
+                theme::semibold(theme::BODY + 1.0),
+                theme::CAPTION,
+                12.0,
+                33.0,
+            )
         };
         painter.text(
             egui::pos2(text_x, rect.top() + title_y),
             Align2::LEFT_TOP,
             &card.title,
-            FontId::proportional(title_size),
+            title_font,
             theme::TEXT,
         );
         painter.text(
@@ -365,15 +370,19 @@ fn mini_graphs(
                     label_rect.left_center(),
                     Align2::LEFT_CENTER,
                     label,
-                    FontId::proportional(10.5),
+                    FontId::proportional(theme::CAPTION),
                     theme::TEXT_DIM,
                 );
                 painter.text(
                     label_rect.right_center(),
                     Align2::RIGHT_CENTER,
                     format!("{value:.0}%"),
-                    FontId::proportional(10.5),
-                    theme::TEXT_WEAK,
+                    FontId::proportional(theme::CAPTION),
+                    if *value >= 90.0 {
+                        theme::ELEVATED_TEXT
+                    } else {
+                        theme::TEXT_WEAK
+                    },
                 );
                 let graph_rect = Rect::from_min_max(rect.min + vec2(0.0, 15.0), rect.max);
                 Graph::new(Some(100.0))
@@ -385,7 +394,7 @@ fn mini_graphs(
                         graph_rect.left_top() + vec2(4.0, 3.0),
                         Align2::LEFT_TOP,
                         caption,
-                        FontId::proportional(10.0),
+                        FontId::proportional(theme::CAPTION),
                         theme::TEXT_WEAK,
                     );
                 }
@@ -422,9 +431,13 @@ fn pct(part: u64, whole: u64) -> f64 {
 
 fn title(ui: &mut Ui, name: &str, right: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(name).size(22.0).strong());
+        ui.label(RichText::new(name).font(theme::brand(theme::TITLE)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(right).size(14.0).color(theme::TEXT_WEAK));
+            ui.label(
+                RichText::new(right)
+                    .size(theme::BODY)
+                    .color(theme::TEXT_WEAK),
+            );
         });
     });
     ui.add_space(4.0);
@@ -443,13 +456,13 @@ fn big_graph(
     let (response, max) = graph.show(ui, vec2(width, height));
     let rect = response.rect;
     let interval = (snap.interval.as_secs_f32() * 4.0).round().max(1.0) / 4.0;
-    let span = interval * ring.capacity().min(rect.width() as usize) as f32;
+    let span = interval * crate::graph::visible_samples(ring, rect.width()) as f32;
     let span = if span >= 120.0 {
         format!("{:.0} min", span / 60.0)
     } else {
         format!("{span:.0} s")
     };
-    let small = FontId::proportional(11.0);
+    let small = FontId::proportional(theme::CAPTION);
     ui.painter().text(
         rect.left_top() + vec2(6.0, 4.0),
         Align2::LEFT_TOP,
@@ -482,7 +495,12 @@ fn stats(ui: &mut Ui, items: &[(&str, String)]) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 18.0;
             for (caption, value) in chunk {
-                widgets::stat(ui, 160.0, caption, RichText::new(value).size(16.0));
+                widgets::stat(
+                    ui,
+                    160.0,
+                    caption,
+                    RichText::new(value).size(theme::SUBTITLE),
+                );
             }
         });
     }
@@ -506,7 +524,7 @@ fn top(
         .collect();
     procs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     ui.add_space(10.0);
-    ui.label(RichText::new(label).color(theme::TEXT_WEAK));
+    widgets::section(ui, label);
     let shown = procs.len().min(TOP_ROWS);
     for (i, (p, v)) in procs.into_iter().take(TOP_ROWS).enumerate() {
         widgets::row(ui, i, |ui| {
@@ -545,10 +563,10 @@ fn zombies_section(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut
     // The idle process has a process object too.
     let estimate = s.process_objects.saturating_sub(s.processes + 1);
     ui.add_space(14.0);
-    ui.label(RichText::new("Zombie processes").color(theme::TEXT_WEAK));
+    widgets::section(ui, "Zombie processes");
     ui.horizontal(|ui| {
-        let color = if estimate > 1000 { theme::ACCENT } else { theme::TEXT };
-        ui.label(RichText::new(fmt::count(estimate as u64)).size(20.0).color(color));
+        let color = if estimate > 1000 { theme::ELEVATED_TEXT } else { theme::TEXT };
+        ui.label(widgets::strong(fmt::count(estimate as u64), theme::TITLE).color(color));
         ui.label(
             RichText::new("exited processes the kernel cannot free because someone still holds a handle to them")
                 .small()
@@ -645,6 +663,41 @@ fn cpu(
     );
     legend(ui, &[(theme::CPU, "Total"), (theme::KERNEL, "Kernel")]);
     ui.add_space(8.0);
+    band(
+        ui,
+        |ui| {
+            stats(
+                ui,
+                &[
+                    ("Utilization", format!("{:.1} %", s.cpu.total)),
+                    ("Speed", ghz(s.cpu.mhz)),
+                    ("Kernel", format!("{:.1} %", s.cpu.kernel)),
+                    ("DPC", format!("{:.2} %", s.cpu.dpc)),
+                    ("Interrupts", format!("{:.2} %", s.cpu.interrupt)),
+                    ("Processes", fmt::count(s.processes as u64)),
+                    ("Threads", fmt::count(s.threads as u64)),
+                    ("Handles", fmt::count(s.handles as u64)),
+                    ("Up time", fmt::duration(s.uptime)),
+                    (
+                        "Context switches/s",
+                        fmt::count(s.cpu.context_switch_rate as u64),
+                    ),
+                    ("Interrupts/s", fmt::count(s.cpu.interrupt_rate as u64)),
+                ],
+            )
+        },
+        |ui| {
+            top(
+                ui,
+                snap,
+                "Top CPU",
+                |p| p.cpu as f64,
+                |v| format!("{v:.2} %"),
+                out,
+            )
+        },
+    );
+    ui.add_space(10.0);
 
     // One small graph per logical processor.
     let activity = &s.core_activity;
@@ -695,35 +748,25 @@ fn cpu(
     {
         core_detail(ui, snap, topology, core, out);
     }
+}
 
-    ui.add_space(10.0);
-    stats(
-        ui,
-        &[
-            ("Utilization", format!("{:.1} %", s.cpu.total)),
-            ("Speed", ghz(s.cpu.mhz)),
-            ("Kernel", format!("{:.1} %", s.cpu.kernel)),
-            ("DPC", format!("{:.2} %", s.cpu.dpc)),
-            ("Interrupts", format!("{:.2} %", s.cpu.interrupt)),
-            ("Processes", fmt::count(s.processes as u64)),
-            ("Threads", fmt::count(s.threads as u64)),
-            ("Handles", fmt::count(s.handles as u64)),
-            ("Up time", fmt::duration(s.uptime)),
-            (
-                "Context switches/s",
-                fmt::count(s.cpu.context_switch_rate as u64),
-            ),
-            ("Interrupts/s", fmt::count(s.cpu.interrupt_rate as u64)),
-        ],
-    );
-    top(
-        ui,
-        snap,
-        "Top CPU",
-        |p| p.cpu as f64,
-        |v| format!("{v:.2} %"),
-        out,
-    );
+/// Two columns side by side when there is room (numbers left, the processes
+/// behind them right), stacked when there is not.
+fn band(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
+    const LEFT: f32 = 712.0;
+    if ui.available_width() < LEFT + 460.0 {
+        left(ui);
+        right(ui);
+        return;
+    }
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(vec2(LEFT, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(LEFT);
+            left(ui);
+        });
+        ui.add_space(24.0);
+        ui.vertical(|ui| right(ui));
+    });
 }
 
 fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCmd>) {
@@ -741,14 +784,18 @@ fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCm
     ui.add_space(8.0);
 
     if let Some(lists) = m.lists {
-        ui.label(RichText::new("Composition").small().color(theme::TEXT_WEAK));
+        ui.label(
+            RichText::new("Composition")
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
+        );
         let in_use = m.used().saturating_sub(lists.modified);
         let free = lists.free + lists.zeroed;
         let parts = [
             (in_use, theme::MEMORY, "In use"),
-            (lists.modified, theme::DISK_WRITE, "Modified"),
-            (lists.standby, theme::CPU, "Standby"),
-            (free, theme::TEXT_DIM, "Free"),
+            (lists.modified, theme::COMMIT, "Modified"),
+            (lists.standby, theme::MEMORY_STANDBY, "Standby"),
+            (free, theme::BORDER_STRONG, "Free"),
         ];
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
         let total: u64 = parts.iter().map(|p| p.0).sum::<u64>().max(1);
@@ -758,7 +805,7 @@ fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCm
             ui.painter().rect_filled(
                 Rect::from_min_size(egui::pos2(x, rect.top()), vec2(w, rect.height())),
                 0.0,
-                color.gamma_multiply(0.75),
+                color,
             );
             x += w;
         }
@@ -1103,11 +1150,12 @@ fn process_link(ui: &mut Ui, snap: &Snapshot, pid: u32, name: &str, out: &mut Ve
 }
 
 fn disk_use_cells(ui: &mut Ui, io: &DiskUse, widths: [f32; 3]) {
+    // Blank means zero, as in the process list.
     let rate = |v: f64| {
         if v > 0.0 {
             RichText::new(fmt::rate_always(v))
         } else {
-            RichText::new("—").color(theme::TEXT_DIM)
+            RichText::new("")
         }
     };
     widgets::text(ui, widths[0], Align::Max, rate(io.read_rate));
@@ -1575,7 +1623,7 @@ fn core_detail(
     };
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            ui.label(RichText::new("By process").strong());
+            widgets::section(ui, "By process");
             widgets::header(
                 ui,
                 &[
@@ -1623,7 +1671,7 @@ fn core_detail(
         });
         ui.add_space(36.0);
         ui.vertical(|ui| {
-            ui.label(RichText::new("By thread").strong());
+            widgets::section(ui, "By thread");
             widgets::header(
                 ui,
                 &[
@@ -1747,7 +1795,7 @@ fn facts(ui: &mut Ui, items: &[(&str, String)]) {
 
 fn section(ui: &mut Ui, name: &str) {
     ui.add_space(14.0);
-    ui.label(RichText::new(name).size(15.0).strong());
+    ui.label(widgets::strong(name, theme::SUBTITLE));
     ui.add_space(4.0);
 }
 
@@ -1874,7 +1922,8 @@ fn cpu_info(ui: &mut Ui, snap: &Snapshot, hw: &HardwareInfo) {
                     let color = if core.mhz <= 0.0 {
                         theme::TEXT_DIM
                     } else {
-                        theme::CPU.lerp_to_gamma(theme::ACCENT, core.mhz / max)
+                        // Brighter for the faster cores, in the CPU hue.
+                        theme::TEXT_WEAK.lerp_to_gamma(theme::CPU, core.mhz / max)
                     };
                     ui.label(RichText::new(ghz(core.mhz)).color(color));
                 });

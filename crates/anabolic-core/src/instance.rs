@@ -139,6 +139,36 @@ pub fn bring_to_front() -> bool {
     false
 }
 
+/// Paints the title bar dark, in `caption` and `border` (0xRRGGBB), so it
+/// belongs to the window instead of sitting on it in Windows' light gray.
+/// The colors need Windows 11; the dark mode works on Windows 10 too.
+/// Returns false while the window does not exist yet.
+pub fn style_title_bar(caption: u32, border: u32) -> bool {
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DwmSetWindowAttribute,
+    };
+    let Some(hwnd) = own_window() else {
+        return false;
+    };
+    // COLORREF is 0x00BBGGRR.
+    let colorref = |rgb: u32| ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF);
+    let dark: u32 = 1;
+    let caption = colorref(caption);
+    let border = colorref(border);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&raw const dark).cast(),
+            4,
+        );
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, (&raw const caption).cast(), 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&raw const border).cast(), 4);
+    }
+    true
+}
+
 /// This process' top-level "Anabolic…" window.
 fn own_window() -> Option<HWND> {
     struct Search {

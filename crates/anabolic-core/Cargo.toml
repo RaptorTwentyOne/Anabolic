@@ -15,6 +15,7 @@ features = [
     "Wdk_Graphics_Direct3D",
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",

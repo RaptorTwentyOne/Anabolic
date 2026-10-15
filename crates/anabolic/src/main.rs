@@ -18,6 +18,7 @@ mod proc_table;
 mod settings;
 #[cfg(debug_assertions)]
 mod shot;
+mod stalls;
 mod theme;
 mod tree;
 mod widgets;
@@ -55,7 +56,8 @@ fn main() -> eframe::Result {
             // Benchmarks and self-screenshots run beside someone's work: do
             // not take the focus from them.
             .with_active(!(bench::enabled() || std::env::var_os("ANABOLIC_SCREENSHOT").is_some())),
-        renderer: eframe::Renderer::Glow,
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
     eframe::run_native(
@@ -66,12 +68,75 @@ fn main() -> eframe::Result {
                 let ctx = cc.egui_ctx.clone();
                 instance::serve(event, move || {
                     activated();
-                    ctx.request_repaint();
+                    stalls::wake(&ctx);
                 });
             }
             Ok(Box::new(app::App::new(cc, hardening, elevated)))
         }),
     )
+}
+
+/// Direct3D 12, presented with the flip model. OpenGL on Windows goes
+/// through DWM's legacy blit path, and while such a window is in the
+/// foreground DWM walks the session's named objects on every frame it
+/// composes (dwmcore!OpenDxBltEvent). On a busy session that keeps DWM's
+/// composition thread at a full core and the whole desktop stops keeping up.
+fn wgpu_options() -> eframe::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuSetup, WgpuSetupCreateNew};
+    let mut setup = WgpuSetupCreateNew::without_display_handle();
+    setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+    setup.native_adapter_selector = Some(std::sync::Arc::new(pick_adapter));
+    eframe::WgpuConfiguration {
+        surface: eframe::SurfaceConfig::LOW_LATENCY,
+        wgpu_setup: WgpuSetup::CreateNew(setup),
+        ..Default::default()
+    }
+}
+
+/// Draws on the GPU the monitors hang off, the primary one's first: a frame
+/// rendered elsewhere has to be copied across to be shown. Windows' own
+/// order is no guide, it can put an idle integrated GPU first. The software
+/// rasterizer only when there is no hardware, as in a virtual machine.
+fn pick_adapter(
+    adapters: &[eframe::wgpu::Adapter],
+    surface: Option<&eframe::wgpu::Surface<'_>>,
+) -> Result<eframe::wgpu::Adapter, String> {
+    use eframe::wgpu;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+    let primary = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
+    // 2: shows the primary monitor, 1: shows another, 0: shows nothing.
+    let displays = |adapter: &wgpu::Adapter| {
+        let Some(hal) = (unsafe { adapter.as_hal::<wgpu::hal::api::Dx12>() }) else {
+            return 0;
+        };
+        let raw = hal.raw_adapter();
+        let mut best = 0;
+        for i in 0.. {
+            let Ok(output) = (unsafe { raw.EnumOutputs(i) }) else {
+                break;
+            };
+            if let Ok(desc) = unsafe { output.GetDesc() }
+                && desc.AttachedToDesktop.as_bool()
+            {
+                best = best.max(if desc.Monitor == primary { 2 } else { 1 });
+            }
+        }
+        best
+    };
+    let presents = |a: &&wgpu::Adapter| surface.is_none_or(|s| a.is_surface_supported(s));
+    let hardware = |a: &&wgpu::Adapter| a.get_info().device_type != wgpu::DeviceType::Cpu;
+    adapters
+        .iter()
+        .filter(presents)
+        .filter(hardware)
+        .enumerate()
+        // Highest score; the earliest of equals.
+        .max_by_key(|&(i, a)| (displays(a), std::cmp::Reverse(i)))
+        .map(|(_, a)| a)
+        .or_else(|| adapters.iter().find(presents))
+        .cloned()
+        .ok_or_else(|| "no Direct3D 12 adapter can show the window".to_string())
 }
 
 /// Another instance or the Ctrl+Shift+Esc launcher asked for us. Tests set
@@ -110,53 +175,11 @@ fn attach_parent_console() {
     }
 }
 
-/// A heartbeat on a hot rounded square, rasterized with anti-aliasing.
+/// The Steroid Core mark on its tile, from assets/logo (make.mjs).
 fn app_icon() -> egui::IconData {
-    const N: usize = 64;
-    let pulse = [
-        (7.0, 35.0),
-        (21.0, 35.0),
-        (27.0, 17.0),
-        (36.0, 48.0),
-        (42.0, 29.0),
-        (57.0, 29.0),
-    ];
-    let mut rgba = vec![0u8; N * N * 4];
-    for y in 0..N {
-        for x in 0..N {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            // Rounded square coverage.
-            let r = 14.0;
-            let dx = (px - 32.0).abs() - (32.0 - r - 1.0);
-            let dy = (py - 32.0).abs() - (32.0 - r - 1.0);
-            let outside =
-                (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt() + dx.max(dy).min(0.0) - r;
-            let bg = (0.5 - outside).clamp(0.0, 1.0);
-            // Distance to the pulse polyline.
-            let d = pulse
-                .windows(2)
-                .map(|w| segment_distance((px, py), w[0], w[1]))
-                .fold(f32::MAX, f32::min);
-            let line = (3.4 - d).clamp(0.0, 1.0);
-            let t = py / N as f32;
-            let base = [255.0, 106.0 - 50.0 * t, 61.0 - 20.0 * t];
-            let i = (y * N + x) * 4;
-            for c in 0..3 {
-                rgba[i + c] = (base[c] * (1.0 - line) + 255.0 * line) as u8;
-            }
-            rgba[i + 3] = (bg * 255.0) as u8;
-        }
-    }
     egui::IconData {
-        rgba,
-        width: N as u32,
-        height: N as u32,
+        rgba: include_bytes!("../assets/logo/icon-64.rgba").to_vec(),
+        width: 64,
+        height: 64,
     }
-}
-
-fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (abx, aby) = (b.0 - a.0, b.1 - a.1);
-    let t = (((p.0 - a.0) * abx + (p.1 - a.1) * aby) / (abx * abx + aby * aby)).clamp(0.0, 1.0);
-    let (cx, cy) = (a.0 + t * abx, a.1 + t * aby);
-    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
 }

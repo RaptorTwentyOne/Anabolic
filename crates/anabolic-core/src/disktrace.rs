@@ -346,6 +346,26 @@ mod tests {
     /// Both tests use this process's one session name; run them in turn.
     static SESSION: Mutex<()> = Mutex::new(());
 
+    /// Takes samples until `done` holds for everything seen so far, or the
+    /// time runs out: events arrive with the session's flush, later on a
+    /// loaded machine (other tests trace in parallel).
+    fn collect_until(tracer: &DiskTracer, done: impl Fn(&DiskSample) -> bool) -> DiskSample {
+        let mut all = DiskSample::default();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < until {
+            thread::sleep(Duration::from_millis(500));
+            let s = tracer.take();
+            all.records.extend(s.records);
+            all.owners.extend(s.owners);
+            all.images.extend(s.images);
+            all.late_names.extend(s.late_names);
+            if done(&all) {
+                break;
+            }
+        }
+        all
+    }
+
     fn bytes_for(sample: &DiskSample, marker: &str, read: bool) -> u64 {
         let late: HashMap<u64, &Arc<str>> =
             sample.late_names.iter().map(|(o, n)| (*o, n)).collect();
@@ -388,8 +408,7 @@ mod tests {
             f.write_all(&vec![0x5Au8; 4 << 20]).unwrap();
             f.sync_all().unwrap();
         }
-        thread::sleep(Duration::from_millis(2500));
-        let sample = tracer.take();
+        let sample = collect_until(&tracer, |s| bytes_for(s, &marker, false) >= 4 << 20);
         let _ = std::fs::remove_file(&path);
         let ours = bytes_for(&sample, &marker, false);
         assert!(
@@ -436,8 +455,7 @@ mod tests {
             f.read_exact(&mut buf).unwrap();
         }
         // The helper notices within half a second; the rundown takes about one.
-        thread::sleep(Duration::from_millis(4000));
-        let sample = tracer.take();
+        let sample = collect_until(&tracer, |s| bytes_for(s, &marker, true) >= 4 << 20);
         drop(f);
         let _ = std::fs::remove_file(&path);
         let named = bytes_for(&sample, &marker, true);

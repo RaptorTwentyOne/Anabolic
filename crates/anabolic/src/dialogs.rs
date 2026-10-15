@@ -3,9 +3,10 @@
 use std::time::{Duration, Instant};
 
 use anabolic_core::actions::Target;
-use eframe::egui::{self, Align2, Color32, Frame, Id, Key, Margin, Modal, RichText, Stroke, vec2};
+use eframe::egui::{self, Align2, Frame, Id, Key, Margin, Modal, RichText, Stroke, vec2};
 
 use crate::theme;
+use crate::widgets;
 
 pub struct KillDialog {
     pub title: String,
@@ -30,7 +31,7 @@ impl KillDialog {
         let mut choice = KillChoice::Pending;
         let response = Modal::new(Id::new("kill-dialog")).show(ctx, |ui| {
             ui.set_width(420.0);
-            ui.label(RichText::new(&self.title).size(17.0).strong());
+            ui.label(widgets::strong(&self.title, theme::SUBTITLE));
             ui.add_space(6.0);
             ui.label(&self.subject);
             if let Some(detail) = &self.detail {
@@ -40,7 +41,7 @@ impl KillDialog {
             if !self.critical.is_empty() {
                 ui.add_space(6.0);
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(0x3A, 0x14, 0x16))
+                    .fill(theme::BAD_FILL)
                     .stroke(Stroke::new(1.0, theme::BAD))
                     .inner_margin(Margin::same(8))
                     .corner_radius(4)
@@ -60,7 +61,7 @@ impl KillDialog {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let kill = egui::Button::new(RichText::new("Terminate").color(Color32::WHITE)).fill(Color32::from_rgb(0xC0, 0x39, 0x2B));
+                let kill = egui::Button::new(widgets::strong("Terminate", theme::BODY).color(theme::TEXT)).fill(theme::BAD_STRONG);
                 if ui.add(kill).clicked() || (self.critical.is_empty() && ui.input(|i| i.key_pressed(Key::Enter))) {
                     choice = KillChoice::Confirm { dont_ask_again: self.dont_ask && self.critical.is_empty() };
                 }
@@ -96,7 +97,7 @@ impl AffinityDialog {
             .collect();
         let response = Modal::new(Id::new("affinity-dialog")).show(ctx, |ui| {
             ui.set_width(460.0);
-            ui.label(RichText::new("Processor affinity").size(17.0).strong());
+            ui.label(widgets::strong("Processor affinity", theme::SUBTITLE));
             ui.label(
                 RichText::new(format!(
                     "{} (PID {})",
@@ -169,7 +170,7 @@ impl ConfirmDialog {
         let mut choice = ConfirmChoice::Pending;
         let response = Modal::new(Id::new("confirm-dialog")).show(ctx, |ui| {
             ui.set_width(460.0);
-            ui.label(RichText::new(&self.title).size(17.0).strong());
+            ui.label(widgets::strong(&self.title, theme::SUBTITLE));
             ui.add_space(6.0);
             for line in &self.lines {
                 ui.label(RichText::new(line).color(theme::TEXT_WEAK));
@@ -177,7 +178,10 @@ impl ConfirmDialog {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button(RichText::new(&self.confirm).strong()).clicked() {
+                if ui
+                    .button(widgets::strong(&self.confirm, theme::BODY))
+                    .clicked()
+                {
                     choice = ConfirmChoice::Confirm;
                 }
                 if ui.button("Cancel").clicked() {
