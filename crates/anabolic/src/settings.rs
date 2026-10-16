@@ -209,6 +209,10 @@ pub enum Tab {
     Performance,
     History,
     Rules,
+    Services,
+    Startup,
+    Stutters,
+    Network,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -269,6 +273,13 @@ pub struct Settings {
     /// Closing the window keeps Anabolic running in the notification area,
     /// recording the history and applying rules.
     pub close_to_tray: bool,
+    /// Frame times and driver timing are traced with the Stutters page
+    /// closed too, so the stutters of a game played meanwhile are caught.
+    pub watch_stutters: bool,
+    pub game: crate::gamemode::GameModeSettings,
+    /// Programs Anabolic cut off the network (Windows Firewall rules), by
+    /// path.
+    pub blocked: Vec<String>,
 }
 
 impl Default for Settings {
@@ -303,6 +314,9 @@ impl Default for Settings {
             history_days: 7,
             rules: Vec::new(),
             close_to_tray: false,
+            watch_stutters: false,
+            game: Default::default(),
+            blocked: Vec::new(),
         }
     }
 }

@@ -8,6 +8,8 @@ use anabolic_core::actions::{Action, ActionRunner, Outcome, Target};
 use anabolic_core::handles::{FindReport, FoundHandle, InspectRequest, Inspection, Inspector};
 use anabolic_core::hardening::{self, HardeningItem};
 use anabolic_core::recorder::RecorderConfig;
+use anabolic_core::services::{ServiceEvent, ServiceOp};
+use anabolic_core::startup::StartupEvent;
 use anabolic_core::{
     Collector, CollectorConfig, Command, InfoLevel, ProcKey, ProcState, ProcessInfo, Snapshot,
 };
@@ -56,6 +58,14 @@ enum Pending {
     EndThread(ProcKey, u32),
     Stack(ProcKey, u32),
     WaitChainFrom(ProcKey, u32),
+    Dump(ProcKey, anabolic_core::dump::DumpKind),
+    Block(String),
+    /// Stop (or restart) a service and the services depending on it.
+    ServiceWithDependents {
+        name: Arc<str>,
+        display: Arc<str>,
+        op: anabolic_core::services::ServiceOp,
+    },
 }
 
 /// What to do about a failure, from what Windows said; None when there is
@@ -129,6 +139,25 @@ pub struct App {
     tables: crate::table::DetailTables,
     rules_page: crate::rules::RulesPage,
     rule_engine: crate::rules::Engine,
+    services: crate::services_page::ServicesPage,
+    service_watch: anabolic_core::services::ServiceWatch,
+    service_events: Receiver<anabolic_core::services::ServiceEvent>,
+    /// When the service list was last asked for.
+    services_at: Option<Instant>,
+    startup: crate::startup_page::StartupPage,
+    startup_watch: anabolic_core::startup::StartupWatch,
+    startup_events: Receiver<StartupEvent>,
+    /// When the startup entries were last read.
+    startup_at: Option<Instant>,
+    stutters: crate::stutters_page::StuttersPage,
+    /// Processes whose handles, memory or threads keep climbing.
+    growth: anabolic_core::growth::Growth,
+    game_mode: crate::gamemode::GameMode,
+    /// Frame and DPC tracing are on.
+    stutters_traced: bool,
+    network: crate::network_page::NetworkPage,
+    /// Every connection is being published (the Network page is open).
+    network_watched: bool,
     /// Logical processor shown in detail on the CPU view.
     perf_core: Option<usize>,
     /// Context switch tracing is on (only while the CPU view is visible).
@@ -234,10 +263,43 @@ impl App {
                     | "--find"
                     | "--filter"
                     | "--detail-sort"
+                    | "--services"
+                    | "--service"
+                    | "--startup"
+                    | "--stutters"
+                    | "--network"
             )
         });
         if args.iter().any(|a| a == "--history") {
             settings.tab = Tab::History;
+        }
+        // `--services`, or `--service NAME` with its side pane open.
+        let mut services = crate::services_page::ServicesPage::default();
+        if args.iter().any(|a| a == "--services") {
+            settings.tab = Tab::Services;
+        }
+        if let Some(name) = value("--service") {
+            settings.tab = Tab::Services;
+            services.selected = Some(name.into());
+        }
+        if args.iter().any(|a| a == "--startup") {
+            settings.tab = Tab::Startup;
+        }
+        if args.iter().any(|a| a == "--stutters") {
+            settings.tab = Tab::Stutters;
+        }
+        // `--network [programs|connections|listening|destinations]`.
+        let mut network = crate::network_page::NetworkPage::default();
+        if args.iter().any(|a| a == "--network") {
+            use crate::network_page::NetTab;
+            settings.tab = Tab::Network;
+            network.tab = match value("--network") {
+                Some("connections") => NetTab::Connections,
+                Some("listening") => NetTab::Listening,
+                Some("destinations") => NetTab::Destinations,
+                Some("dns") => NetTab::Lookups,
+                _ => NetTab::Programs,
+            };
         }
         // `--rule NAME`: the rule editor, for that program.
         let mut rules_page = crate::rules::RulesPage::default();
@@ -339,6 +401,9 @@ impl App {
         let repaint = cc.egui_ctx.clone();
         let (actions, outcomes) = ActionRunner::start(move || crate::stalls::wake(&repaint));
         actions.run(Action::QueryTaskManager);
+        if !settings.blocked.is_empty() {
+            actions.run(Action::QueryFirewall(settings.blocked.clone()));
+        }
         let repaint = cc.egui_ctx.clone();
         let (inspector, inspections) = Inspector::start(move || crate::stalls::wake(&repaint));
         if let Some(query) = &find_query {
@@ -347,6 +412,12 @@ impl App {
                 exclude: Vec::new(),
             });
         }
+        let repaint = cc.egui_ctx.clone();
+        let (service_watch, service_events) =
+            anabolic_core::services::ServiceWatch::start(move || crate::stalls::wake(&repaint));
+        let repaint = cc.egui_ctx.clone();
+        let (startup_watch, startup_events) =
+            anabolic_core::startup::StartupWatch::start(move || crate::stalls::wake(&repaint));
         let mut zombie_view = ZombieView::default();
         if args.iter().any(|a| a == "--zombies") {
             zombie_view.pending = true;
@@ -379,6 +450,20 @@ impl App {
             tables,
             rules_page,
             rule_engine: Default::default(),
+            services,
+            service_watch,
+            service_events,
+            services_at: None,
+            startup: Default::default(),
+            startup_watch,
+            startup_events,
+            startup_at: None,
+            stutters: Default::default(),
+            stutters_traced: false,
+            network,
+            network_watched: false,
+            growth: Default::default(),
+            game_mode: Default::default(),
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
@@ -487,6 +572,63 @@ impl App {
                     self.taskmgr = Some(now);
                 }
                 Outcome::Relaunched => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Outcome::PowerForGame(previous) => match previous {
+                    Some((id, name)) => {
+                        self.settings.game.replaced_plan = Some(id);
+                        self.game_mode
+                            .note(format!("Power plan: High performance (was {name})"));
+                    }
+                    None => self
+                        .game_mode
+                        .note("Power plan: already a fast one, left as it is"),
+                },
+                Outcome::Firewall { path, blocked } => {
+                    let file = std::path::Path::new(&path)
+                        .file_name()
+                        .map_or(path.clone(), |f| f.to_string_lossy().into_owned());
+                    self.settings
+                        .blocked
+                        .retain(|b| !b.eq_ignore_ascii_case(&path));
+                    if blocked {
+                        self.settings.blocked.push(path);
+                        self.toasts
+                            .info(format!("{file} is blocked from the network"));
+                    } else {
+                        self.toasts
+                            .info(format!("{file} can use the network again"));
+                    }
+                }
+                Outcome::StillBlocked(paths) => self.settings.blocked = paths,
+                Outcome::PowerRestored(name) => {
+                    self.settings.game.replaced_plan = None;
+                    self.game_mode.note(match name {
+                        Some(name) => format!("Power plan: {name} again"),
+                        None => "Power plan: changed meanwhile, left as it is".into(),
+                    });
+                }
+                Outcome::Dumped {
+                    target,
+                    kind,
+                    report,
+                } => {
+                    let frozen = if report.cloned {
+                        ""
+                    } else {
+                        "  It was paused while the file was written."
+                    };
+                    self.toasts.info_with(
+                        format!(
+                            "Wrote a {} dump of {} ({}) in {}: {}{frozen}",
+                            kind.label(),
+                            target.name,
+                            fmt::bytes(report.bytes),
+                            fmt::millis(report.took),
+                            report.path.display()
+                        ),
+                        "Show in folder",
+                        UiCmd::OpenLocation(report.path.to_string_lossy().into_owned()),
+                    );
+                }
                 Outcome::Affinity {
                     target,
                     process_mask,
@@ -588,6 +730,79 @@ impl App {
                     let next = next_step(&error, self.elevated);
                     self.toasts
                         .error_with(format!("Could not inspect {what}: {error}"), next);
+                }
+            }
+        }
+
+        for event in self.startup_events.try_iter() {
+            match event {
+                StartupEvent::List(list) => self.startup.list = Some(list),
+                StartupEvent::Done(result) => {
+                    self.startup.busy = false;
+                    match result {
+                        Ok(text) => self.toasts.info(text),
+                        Err(text) => {
+                            let next = next_step(&text, self.elevated);
+                            self.toasts.error_with(text, next);
+                        }
+                    }
+                }
+            }
+        }
+        for event in self.service_events.try_iter() {
+            match event {
+                ServiceEvent::List(list) => self.services.list = Some(list),
+                ServiceEvent::Done {
+                    name,
+                    op,
+                    result,
+                    dependents,
+                } => {
+                    self.services.busy.remove(&name);
+                    match result {
+                        Ok(text) => self.toasts.info(text),
+                        // Others stand in the way: ask about them.
+                        Err(_) if !dependents.is_empty() => {
+                            let display = self
+                                .services
+                                .list
+                                .as_ref()
+                                .and_then(|l| l.services.iter().find(|s| s.name == name))
+                                .map_or_else(|| name.clone(), |s| s.display.clone());
+                            let restart = matches!(op, ServiceOp::Restart { .. });
+                            let dialog = ConfirmDialog {
+                                title: format!(
+                                    "{} {display} and what depends on it?",
+                                    if restart { "Restart" } else { "Stop" }
+                                ),
+                                lines: vec![
+                                    format!(
+                                        "These running services need {display} and stop with it{}:",
+                                        if restart { ", then start again" } else { "" }
+                                    ),
+                                    dependents.join(", "),
+                                ],
+                                confirm: if restart {
+                                    "Restart them all".into()
+                                } else {
+                                    "Stop them all".into()
+                                },
+                            };
+                            let op = if restart {
+                                ServiceOp::Restart { dependents: true }
+                            } else {
+                                ServiceOp::Stop { dependents: true }
+                            };
+                            self.confirm = Some((
+                                dialog,
+                                Pending::ServiceWithDependents { name, display, op },
+                            ));
+                        }
+                        Err(text) => {
+                            let next = next_step(&text, self.elevated);
+                            self.toasts.error_with(text, next);
+                        }
+                    }
                 }
             }
         }
@@ -865,6 +1080,69 @@ impl App {
                     self.table.scroll_to_selected = true;
                 }
                 UiCmd::GoTo(key) => self.go_to(key),
+                UiCmd::GoToPid(pid) => {
+                    if let Some(key) = self
+                        .snapshot
+                        .processes
+                        .iter()
+                        .find(|p| p.pid == pid && p.state != ProcState::Exited)
+                        .map(|p| p.key)
+                    {
+                        self.go_to(key);
+                    }
+                }
+                UiCmd::Service { name, display, op } => {
+                    self.services.busy.insert(name.clone());
+                    self.service_watch.control(name, display, op);
+                }
+                UiCmd::ConfirmBlock { path, name } => {
+                    let dialog = ConfirmDialog {
+                        title: format!("Block {name} from the network?"),
+                        lines: vec![
+                            format!(
+                                "Windows Firewall gets two rules, in and out, that block {path}: \
+                                 every process started from this file, now and later. Its open \
+                                 connections stop working."
+                            ),
+                            "Allow it again from the same menu, from the Rules page, or in \
+                             Windows' firewall settings (rules named \"Anabolic: block …\")."
+                                .into(),
+                        ],
+                        confirm: "Block".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::Block(path)));
+                }
+                UiCmd::Unblock(path) => self.actions.run(Action::Firewall { path, block: false }),
+                UiCmd::CloseConnection {
+                    pid,
+                    process,
+                    remote,
+                    remote_port,
+                    local_port,
+                } => self.actions.run(Action::CloseConnection {
+                    pid,
+                    process,
+                    remote,
+                    remote_port,
+                    local_port,
+                }),
+                UiCmd::ShowNetwork => self.settings.tab = Tab::Network,
+                UiCmd::RelaunchElevated => {
+                    self.relaunching = true;
+                    self.actions.run(Action::RelaunchElevated);
+                }
+                UiCmd::SetStartup(item, on) => {
+                    self.startup.busy = true;
+                    self.startup_watch.set_enabled(*item, on);
+                }
+                UiCmd::SelectService(name) => {
+                    self.settings.tab = Tab::Services;
+                    self.services.selected = Some(name);
+                }
+                UiCmd::ShowServices(pid) => {
+                    self.settings.tab = Tab::Services;
+                    self.services.show_pid(pid);
+                }
                 UiCmd::GoToThread { key, tid } => {
                     self.go_to(key);
                     self.detail_tab = DetailTab::Threads;
@@ -1060,6 +1338,43 @@ impl App {
                     self.confirm = Some((dialog, Pending::LoadModules(key)));
                 }
                 UiCmd::LoadModules(key) => self.load_modules(key),
+                UiCmd::ConfirmDump(key, kind) => {
+                    let Some(p) = self.snapshot.find(key) else {
+                        continue;
+                    };
+                    let what = match kind {
+                        anabolic_core::dump::DumpKind::Full => format!(
+                            "A full dump holds all of its memory: about {} of private memory \
+                             plus the code it has loaded.",
+                            fmt::bytes(p.private_bytes)
+                        ),
+                        anabolic_core::dump::DumpKind::Small => {
+                            "A small dump holds its threads with their stacks, its modules and \
+                             handles: enough to see where it is stuck, usually a few MB."
+                                .to_string()
+                        }
+                    };
+                    let dir = crate::data_dir()
+                        .map(|d| d.join("dumps").display().to_string())
+                        .unwrap_or_default();
+                    let dialog = ConfirmDialog {
+                        title: format!("Write a {} dump of {}?", kind.label(), p.name),
+                        lines: vec![
+                            what,
+                            format!(
+                                "Anabolic opens {} (PID {}) to read its memory and copies it \
+                                 first, so it pauses only for a moment. The file goes to {dir}.",
+                                p.name, p.pid
+                            ),
+                            "Reading another program's memory is what anti-cheat software \
+                             guards against: do not dump a protected game, or the anti-cheat \
+                             itself, while you play."
+                                .into(),
+                        ],
+                        confirm: "Write dump".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::Dump(key, kind)));
+                }
                 UiCmd::NewRule {
                     image,
                     base_priority,
@@ -1220,6 +1535,18 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::Num4) {
                 self.settings.tab = Tab::Rules;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::Num5) {
+                self.settings.tab = Tab::Services;
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::Num6) {
+                self.settings.tab = Tab::Startup;
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::Num7) {
+                self.settings.tab = Tab::Stutters;
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::Num8) {
+                self.settings.tab = Tab::Network;
+            }
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
@@ -1350,6 +1677,10 @@ impl App {
             ),
             (Tab::History, theme::icon::HISTORY, "History", "Ctrl+3"),
             (Tab::Rules, theme::icon::RULES, "Rules", "Ctrl+4"),
+            (Tab::Services, theme::icon::SERVICES, "Services", "Ctrl+5"),
+            (Tab::Startup, theme::icon::STARTUP, "Startup", "Ctrl+6"),
+            (Tab::Stutters, theme::icon::STUTTERS, "Stutters", "Ctrl+7"),
+            (Tab::Network, theme::icon::NETWORK, "Network", "Ctrl+8"),
         ];
         for (tab, icon, label, keys) in pages {
             let selected = self.settings.tab == tab;
@@ -1640,7 +1971,7 @@ impl App {
         }
     }
 
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui, out: &mut Vec<UiCmd>) {
         let snap = &self.snapshot;
         let s = &snap.system;
         let m = &s.memory;
@@ -1696,7 +2027,10 @@ impl App {
                     fmt::millis(snap.collect_time),
                     fmt::millis(self.ui_time),
                     own.map_or(0.0, |p| p.cpu),
-                    fmt::bytes(own.map_or(0, |p| p.working_set))
+                    // Like Task Manager's Memory: what is Anabolic's own. The
+                    // GPU drivers' code it maps is shared with every program
+                    // that draws, and comes and goes by hundreds of MB.
+                    fmt::bytes(own.map_or(0, |p| p.private_working_set))
                 );
                 ui.add_space(6.0);
                 widgets::cell(ui, 290.0, Align::Max, |ui| {
@@ -1708,6 +2042,48 @@ impl App {
                     .on_hover_ui(|ui| self.hardening_report(ui));
                     ui.label(widgets::icon(theme::icon::SPEED, 12.0).color(theme::TEXT_WEAK));
                 });
+                // Leaks: a mark that says how many, and who on hover.
+                let leaks = self.growth.leaks();
+                if !leaks.is_empty() {
+                    let mut who: Vec<ProcKey> = Vec::new();
+                    for l in leaks {
+                        if !who.contains(&l.key) {
+                            who.push(l.key);
+                        }
+                    }
+                    let text = format!(
+                        "{} growing",
+                        if who.len() == 1 {
+                            "1 process".to_string()
+                        } else {
+                            format!("{} processes", who.len())
+                        }
+                    );
+                    let response = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(text)
+                                    .size(theme::META)
+                                    .color(theme::ELEVATED_TEXT),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_ui(|ui| {
+                            ui.label(widgets::strong("Growing steadily", theme::BODY));
+                            for l in leaks.iter().take(8) {
+                                ui.label(format!("{} ({}): {}", l.name, l.key.pid, fmt::leak(l)));
+                            }
+                            ui.label(
+                                RichText::new("Click to show the first one.")
+                                    .size(theme::META)
+                                    .color(theme::TEXT_WEAK),
+                            );
+                        });
+                    if response.clicked() {
+                        out.push(UiCmd::GoTo(who[0]));
+                    }
+                    ui.label(widgets::icon(theme::icon::WARNING, 12.0).color(theme::ELEVATED_TEXT));
+                }
             });
         });
     }
@@ -1884,6 +2260,10 @@ impl App {
                 self.disks_traced = false;
                 self.collector.send(Command::TraceDisks(false));
             }
+            if self.network_watched {
+                self.network_watched = false;
+                self.collector.send(Command::NetActivity(false));
+            }
         }
     }
 
@@ -1934,6 +2314,19 @@ impl App {
                     .find(|e| report.type_name(e.type_index).to_lowercase() == name)
                     .or(report.entries.first())
                     .map(|e| e.value);
+            }
+            DetailTab::Network => {
+                // The busiest connection, once some traffic was seen.
+                let Some(c) = self
+                    .snapshot
+                    .selected
+                    .as_ref()
+                    .filter(|s| s.key == key)
+                    .and_then(|s| s.connections.iter().max_by_key(|c| c.rx_total + c.tx_total))
+                else {
+                    return;
+                };
+                self.tables.connection = Some((c.proto, c.remote, c.remote_port, c.local_port));
             }
             _ => {}
         }
@@ -2150,6 +2543,33 @@ impl App {
                                 handle: found.handle,
                                 name: found.name.clone(),
                             }),
+                            Pending::Block(path) => {
+                                self.actions.run(Action::Firewall { path, block: true })
+                            }
+                            Pending::Dump(key, kind) => {
+                                if let (Some(p), Some(dir)) = (
+                                    self.snapshot.find(key),
+                                    crate::data_dir().map(|d| d.join("dumps")),
+                                ) {
+                                    self.actions.run(Action::Dump {
+                                        target: Target {
+                                            key,
+                                            name: p.name.clone(),
+                                        },
+                                        kind,
+                                        dir,
+                                    });
+                                    self.toasts.info(format!(
+                                        "Writing a {} dump of {}\u{2026}",
+                                        kind.label(),
+                                        p.name
+                                    ));
+                                }
+                            }
+                            Pending::ServiceWithDependents { name, display, op } => {
+                                self.services.busy.insert(name.clone());
+                                self.service_watch.control(name, display, op);
+                            }
                         }
                     }
                 }
@@ -2215,6 +2635,10 @@ impl eframe::App for App {
             Tab::Performance => format!("Performance/{:?}", self.perf_view),
             Tab::History => "History".to_string(),
             Tab::Rules => "Rules".to_string(),
+            Tab::Services => "Services".to_string(),
+            Tab::Startup => "Startup".to_string(),
+            Tab::Stutters => "Stutters".to_string(),
+            Tab::Network => "Network".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
         if !self.title_bar_styled {
@@ -2245,6 +2669,10 @@ impl eframe::App for App {
                 );
             }
         }
+        // Names for addresses: what programs looked up, as it comes in.
+        self.tables
+            .names
+            .set_forward(self.snapshot.system.dns_names.clone());
         // Every graph reads its time span from here, in samples.
         crate::graph::set_window(self.settings.graph_span.seconds().map_or(0, |s| {
             (s * 1000 / self.settings.interval_ms.max(1)) as usize
@@ -2253,7 +2681,7 @@ impl eframe::App for App {
         let mut cmds = Vec::new();
         self.shortcuts(&ctx, &mut cmds);
 
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut cmds));
         let rail = if self.settings.nav_collapsed {
             48.0
         } else {
@@ -2325,6 +2753,9 @@ impl eframe::App for App {
                                     &self.wait_view,
                                     &self.end_view,
                                     &mut self.focus_thread,
+                                    &self.services.hosted(key.pid),
+                                    &self.growth,
+                                    &self.settings.blocked,
                                     &mut cmds,
                                 ),
                                 (None, None) => {}
@@ -2362,13 +2793,65 @@ impl eframe::App for App {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            crate::gamemode::card(ui, &mut self.settings.game, &self.game_mode);
+                            ui.add_space(12.0);
                             crate::rules::show(
                                 ui,
                                 &mut self.rules_page,
                                 &mut self.settings.rules,
                                 &self.snapshot,
                             );
+                            crate::rules::blocked_list(ui, &self.settings.blocked, &mut cmds);
                         });
+                });
+            }
+            Tab::Services => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::services_page::show(
+                        ui,
+                        &mut self.services,
+                        &self.snapshot,
+                        self.elevated,
+                        &mut cmds,
+                    );
+                });
+            }
+            Tab::Startup => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::startup_page::show(
+                        ui,
+                        &mut self.startup,
+                        &self.snapshot,
+                        &self.details,
+                        self.elevated,
+                        &mut cmds,
+                    );
+                });
+            }
+            Tab::Stutters => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::stutters_page::show(
+                        ui,
+                        &mut self.stutters,
+                        &self.snapshot,
+                        self.elevated,
+                        &mut self.settings.watch_stutters,
+                        self.relaunching,
+                        &mut cmds,
+                    );
+                });
+            }
+            Tab::Network => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::network_page::show(
+                        ui,
+                        &mut self.network,
+                        &self.snapshot,
+                        &self.details,
+                        &mut self.tables.names,
+                        &self.settings.blocked,
+                        &mut cmds,
+                    );
                 });
             }
             Tab::History => {
@@ -2396,6 +2879,36 @@ impl eframe::App for App {
 
         self.find_window(&ctx, &mut cmds);
         self.handle(cmds);
+        // The service list: every refresh while its page is open; otherwise
+        // now and then, for the services a process' details name.
+        let every = if self.settings.tab == Tab::Services {
+            Duration::from_millis(self.settings.interval_ms.max(1000))
+        } else {
+            Duration::from_secs(15)
+        };
+        if self.services_at.is_none_or(|at| at.elapsed() >= every) {
+            self.services_at = Some(Instant::now());
+            self.service_watch.refresh();
+        }
+        // Startup entries change rarely: read on opening the page, then
+        // every half minute while it stays open.
+        if self.settings.tab == Tab::Startup
+            && self
+                .startup_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
+        {
+            self.startup_at = Some(Instant::now());
+            self.startup_watch.refresh();
+        } else if self.settings.tab != Tab::Startup {
+            self.startup_at = None;
+        }
+        // Every connection, with its socket tables read each refresh: only
+        // while the Network page is on screen.
+        let want = self.settings.tab == Tab::Network;
+        if want != self.network_watched {
+            self.network_watched = want;
+            self.collector.send(Command::NetActivity(want));
+        }
         // Context switch tracing costs CPU; run it only while it is on screen.
         let want = self.settings.tab == Tab::Performance && self.perf_view == PerfView::Cpu;
         if want != self.cores_traced {
@@ -2410,7 +2923,9 @@ impl eframe::App for App {
         }
         self.dialogs(&ctx);
         crate::help::show(&ctx, &mut self.help_open);
-        self.toasts.show(&ctx);
+        let mut later = Vec::new();
+        self.toasts.show(&ctx, &mut later);
+        self.handle(later);
         self.maybe_pin();
         #[cfg(debug_assertions)]
         crate::shot::frame(&ctx);
@@ -2435,6 +2950,24 @@ impl eframe::App for App {
             }
         }
         self.tray_logic(ctx);
+        // Frames and DPCs: while their page is on screen, or always when
+        // asked to keep watching (a game played with the window closed).
+        let want =
+            self.settings.watch_stutters || (!self.hidden && self.settings.tab == Tab::Stutters);
+        if want != self.stutters_traced {
+            self.stutters_traced = want;
+            self.collector.send(Command::TraceFrames(want));
+            self.collector.send(Command::TraceLatency(want));
+        }
+        self.stutters.observe(&self.snapshot);
+        self.growth.observe(&self.snapshot);
+        for action in self.game_mode.step(
+            &mut self.settings.game,
+            &self.snapshot,
+            &self.settings.rules,
+        ) {
+            self.actions.run(action);
+        }
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {

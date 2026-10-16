@@ -8,9 +8,10 @@ use std::sync::Arc;
 use anabolic_core::ending::Holder;
 use anabolic_core::filefacts::{FileFacts, Signature};
 use anabolic_core::handles::{FoundHandle, HandleEntry, HandleReport, ModuleReport, ModuleRow};
+use anabolic_core::nettrace::Proto;
 use anabolic_core::sysinfo::{local_time, now_filetime, thread_state_name, wait_reason_name};
 use anabolic_core::threads::{PRIORITIES, StackReport, ThreadOp};
-use anabolic_core::{ProcKey, ProcState, ProcessInfo, Snapshot, ThreadInfo};
+use anabolic_core::{Connection, ProcKey, ProcState, ProcessInfo, Snapshot, ThreadInfo};
 use eframe::egui::{self, Grid, Label, RichText, ScrollArea, Ui, WidgetText};
 
 use crate::proc_table::{UiCmd, item};
@@ -49,7 +50,7 @@ pub fn side(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, add: impl F
         });
 }
 
-fn title(ui: &mut Ui, text: String, sub: Option<&str>) {
+pub fn title(ui: &mut Ui, text: String, sub: Option<&str>) {
     ui.label(widgets::strong(text, theme::SUBTITLE));
     if let Some(sub) = sub.filter(|s| !s.is_empty()) {
         ui.add(Label::new(RichText::new(sub).color(theme::TEXT_WEAK)).wrap());
@@ -57,7 +58,7 @@ fn title(ui: &mut Ui, text: String, sub: Option<&str>) {
     ui.add_space(6.0);
 }
 
-fn facts(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut Ui)) {
+pub fn facts(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, add: impl FnOnce(&mut Ui)) {
     Grid::new(egui::Id::new(id))
         .num_columns(2)
         .spacing([10.0, 4.0])
@@ -66,19 +67,19 @@ fn facts(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, add: impl FnOn
         .show(ui, add);
 }
 
-fn fact(ui: &mut Ui, key: &str, value: impl Into<WidgetText>) {
+pub fn fact(ui: &mut Ui, key: &str, value: impl Into<WidgetText>) {
     ui.label(RichText::new(key).color(theme::TEXT_WEAK));
     ui.add(Label::new(value).wrap().selectable(true));
     ui.end_row();
 }
 
-fn section(ui: &mut Ui, text: &str) {
+pub fn section(ui: &mut Ui, text: &str) {
     ui.add_space(10.0);
     ui.label(widgets::strong(text, theme::BODY));
     ui.add_space(2.0);
 }
 
-fn weak(ui: &mut Ui, text: impl Into<String>) {
+pub fn weak(ui: &mut Ui, text: impl Into<String>) {
     ui.add(Label::new(RichText::new(text.into()).color(theme::TEXT_WEAK)).wrap());
 }
 
@@ -819,4 +820,267 @@ pub fn handle_pane(
             button(ui, "Copy name", "", out, UiCmd::Copy(n.to_string()));
         }
     });
+}
+
+// Connections ----------------------------------------------------------------
+
+/// A connection on display, with what the pane needs around it.
+pub struct ConnRow<'a> {
+    pub c: &'a Connection,
+    /// Its DNS name, or what kind of address it is; may be empty.
+    pub name: &'a str,
+    pub p: &'a ProcessInfo,
+    /// The program's file, for blocking it.
+    pub path: Option<&'a str>,
+    pub blocked: bool,
+}
+
+/// What usually listens on a port.
+pub fn port_service(proto: Proto, port: u16) -> Option<&'static str> {
+    Some(match (proto, port) {
+        (Proto::Udp, 443) => "QUIC (HTTP/3)",
+        (_, 20 | 21) => "FTP",
+        (_, 22) => "SSH",
+        (_, 25 | 465 | 587) => "mail (SMTP)",
+        (_, 53) => "DNS",
+        (_, 67 | 68) => "DHCP",
+        (_, 80) => "HTTP",
+        (_, 110 | 995) => "mail (POP3)",
+        (_, 123) => "time (NTP)",
+        (_, 137..=139) => "Windows file sharing (NetBIOS)",
+        (_, 143 | 993) => "mail (IMAP)",
+        (_, 443) => "HTTPS",
+        (_, 445) => "Windows file sharing (SMB)",
+        (_, 1900) => "device discovery (SSDP)",
+        (_, 3389) => "Remote Desktop",
+        (_, 3478..=3481) => "calls and games (STUN/TURN)",
+        (_, 5222 | 5223) => "push and chat (XMPP)",
+        (_, 5228) => "Google push",
+        (_, 5353) => "local names (mDNS)",
+        (_, 5355) => "local names (LLMNR)",
+        (_, 8080 | 8443) => "HTTP (alternate port)",
+        (_, 27015..=27050) => "Steam",
+        _ => return None,
+    })
+}
+
+pub fn remote_text(c: &Connection) -> String {
+    match c.remote {
+        std::net::IpAddr::V6(v6) => format!("[{v6}]:{}", c.remote_port),
+        v4 => format!("{v4}:{}", c.remote_port),
+    }
+}
+
+/// Why a connection cannot be closed from here, or None when it can.
+fn why_not_closable(c: &Connection) -> Option<&'static str> {
+    match (c.proto, c.remote) {
+        (Proto::Udp, _) => Some("UDP has no connection to close: it just sends packets."),
+        (_, std::net::IpAddr::V6(_)) => {
+            Some("Windows offers no way to close another program's IPv6 connection.")
+        }
+        _ => None,
+    }
+}
+
+fn close_cmd(r: &ConnRow) -> Option<UiCmd> {
+    match (r.c.proto, r.c.remote) {
+        (Proto::Tcp, std::net::IpAddr::V4(v4)) => Some(UiCmd::CloseConnection {
+            pid: r.p.pid,
+            process: r.p.name.clone(),
+            remote: v4,
+            remote_port: r.c.remote_port,
+            local_port: r.c.local_port,
+        }),
+        _ => None,
+    }
+}
+
+fn public(c: &Connection) -> bool {
+    anabolic_core::resolver::local_kind(c.remote).is_none()
+}
+
+pub fn connection_menu(ui: &mut Ui, r: &ConnRow, out: &mut Vec<UiCmd>) {
+    match close_cmd(r) {
+        Some(cmd) => item(ui, out, "Close connection", "", cmd),
+        None => {
+            ui.add_enabled(false, egui::Button::new("Close connection"))
+                .on_disabled_hover_text(why_not_closable(r.c).unwrap_or(""));
+        }
+    }
+    if let Some(path) = r.path {
+        if r.blocked {
+            item(
+                ui,
+                out,
+                "Allow network access again",
+                "",
+                UiCmd::Unblock(path.to_string()),
+            );
+        } else if !crate::proc_table::system_file(path) {
+            item(
+                ui,
+                out,
+                &format!("Block {} from the network\u{2026}", r.p.name),
+                "",
+                UiCmd::ConfirmBlock {
+                    path: path.to_string(),
+                    name: r.p.name.clone(),
+                },
+            );
+        }
+    }
+    ui.separator();
+    if public(r.c) {
+        item(
+            ui,
+            out,
+            "Look up the address online",
+            "",
+            UiCmd::OpenUrl(format!("https://ipinfo.io/{}", r.c.remote)),
+        );
+    }
+    if !r.name.is_empty() && public(r.c) {
+        item(
+            ui,
+            out,
+            "Search the name online",
+            "",
+            UiCmd::SearchOnline(r.name.to_string()),
+        );
+    }
+    ui.separator();
+    item(ui, out, "Copy address", "", UiCmd::Copy(remote_text(r.c)));
+    if !r.name.is_empty() && public(r.c) {
+        item(ui, out, "Copy name", "", UiCmd::Copy(r.name.to_string()));
+    }
+}
+
+pub fn connection_pane(ui: &mut Ui, r: &ConnRow, out: &mut Vec<UiCmd>) {
+    let c = r.c;
+    let title_text = if r.name.is_empty() || !public(c) {
+        remote_text(c)
+    } else {
+        r.name.to_string()
+    };
+    let proto = format!("{:?}", c.proto).to_uppercase();
+    title(
+        ui,
+        title_text,
+        Some(&format!("{proto} to {}", remote_text(c))),
+    );
+    ui.horizontal_wrapped(|ui| {
+        match close_cmd(r) {
+            Some(cmd) => button(
+                ui,
+                "Close connection",
+                "The TCP stack drops it; the program sees it reset, as if the other end hung up.",
+                out,
+                cmd,
+            ),
+            None => {
+                ui.add_enabled(false, egui::Button::new("Close connection"))
+                    .on_disabled_hover_text(why_not_closable(c).unwrap_or(""));
+            }
+        }
+        if public(c) {
+            button(
+                ui,
+                "Look up",
+                "Who owns the address and where it is (ipinfo.io, in the browser)",
+                out,
+                UiCmd::OpenUrl(format!("https://ipinfo.io/{}", c.remote)),
+            );
+        }
+    });
+
+    section(ui, "Connection");
+    facts(ui, ("conn-facts", remote_text(c), c.local_port), |ui| {
+        fact(
+            ui,
+            "Address",
+            RichText::new(c.remote.to_string()).monospace(),
+        );
+        if !r.name.is_empty() {
+            fact(ui, "Name", r.name);
+        } else if public(c) {
+            fact(
+                ui,
+                "Name",
+                RichText::new("none (the address has no reverse DNS name)").color(theme::TEXT_DIM),
+            );
+        }
+        let port = match port_service(c.proto, c.remote_port) {
+            Some(service) => format!("{}  ·  usually {service}", c.remote_port),
+            None => c.remote_port.to_string(),
+        };
+        fact(ui, "Port", port);
+        fact(ui, "Local port", c.local_port.to_string());
+        fact(ui, "Protocol", proto.as_str());
+    });
+
+    section(ui, "Traffic");
+    facts(ui, ("conn-traffic", remote_text(c), c.local_port), |ui| {
+        fact(
+            ui,
+            "Now",
+            format!(
+                "receive {}  ·  send {}",
+                fmt::rate_always(c.rx_rate),
+                fmt::rate_always(c.tx_rate)
+            ),
+        );
+        fact(
+            ui,
+            "In all",
+            format!(
+                "{} received  ·  {} sent",
+                fmt::bytes(c.rx_total),
+                fmt::bytes(c.tx_total)
+            ),
+        );
+        fact(
+            ui,
+            "Last packet",
+            if c.idle == 0 {
+                "this refresh".to_string()
+            } else {
+                format!("{} s ago", c.idle)
+            },
+        );
+    });
+    weak(
+        ui,
+        "Counted since Anabolic started watching the network; a connection that stays quiet \
+         drops off the list after a while.",
+    );
+
+    if let Some(path) = r.path {
+        section(ui, "The program");
+        if r.blocked {
+            weak(ui, "Blocked from the network by Anabolic's firewall rules.");
+            button(
+                ui,
+                "Allow network access again",
+                "",
+                out,
+                UiCmd::Unblock(path.to_string()),
+            );
+        } else if crate::proc_table::system_file(path) {
+            weak(
+                ui,
+                "A Windows file: it cannot be blocked without cutting Windows off.",
+            );
+        } else {
+            button(
+                ui,
+                &format!("Block {} from the network\u{2026}", r.p.name),
+                "Two Windows Firewall rules, in and out, for every process of this file",
+                out,
+                UiCmd::ConfirmBlock {
+                    path: path.to_string(),
+                    name: r.p.name.clone(),
+                },
+            );
+        }
+    }
 }

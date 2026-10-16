@@ -22,6 +22,10 @@ pub struct DetailTables {
     pub threads: TableView,
     pub modules: TableView,
     pub network: TableView,
+    /// Names of the remote addresses in the network tab.
+    pub names: crate::netnames::Names,
+    /// The connection whose side pane is open.
+    pub connection: Option<(anabolic_core::nettrace::Proto, std::net::IpAddr, u16, u16)>,
 }
 
 impl Default for DetailTables {
@@ -31,6 +35,8 @@ impl Default for DetailTables {
             threads: TableView::sorted(1, true),
             modules: TableView::default(),
             network: TableView::default(),
+            names: Default::default(),
+            connection: None,
         }
     }
 }

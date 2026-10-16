@@ -475,6 +475,9 @@ pub fn show(
     waits: &WaitView,
     ends: &EndView,
     focus_thread: &mut Option<(u32, bool)>,
+    services: &[(Arc<str>, Arc<str>)],
+    growth: &anabolic_core::growth::Growth,
+    blocked: &[String],
     out: &mut Vec<UiCmd>,
 ) {
     let Some(p) = snap.find(key) else {
@@ -573,7 +576,7 @@ pub fn show(
             if needs_end_card(p, ends) {
                 end_card(ui, p, snap, ends, out);
             }
-            general(ui, p, snap, details, out)
+            general(ui, p, snap, details, services, growth, out)
         }
         DetailTab::Threads => threads(
             ui,
@@ -588,11 +591,23 @@ pub fn show(
         DetailTab::Waits => waits_tab(ui, p, snap, waits, out),
         DetailTab::Modules => modules_tab(ui, p, modules, panes, &mut tables.modules, out),
         DetailTab::Handles => handles_tab(ui, p, snap, handles, panes, out),
-        DetailTab::Network => network_tab(ui, p, snap, &mut tables.network),
+        DetailTab::Network => {
+            let path = details.get(&key).and_then(|d| d.path.as_deref());
+            let blocked = path.is_some_and(|p| blocked.iter().any(|b| b.eq_ignore_ascii_case(p)));
+            network_tab(ui, p, snap, tables, path, blocked, out)
+        }
     }
 }
 
-fn general(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, details: &Details, out: &mut Vec<UiCmd>) {
+fn general(
+    ui: &mut Ui,
+    p: &ProcessInfo,
+    snap: &Snapshot,
+    details: &Details,
+    services: &[(Arc<str>, Arc<str>)],
+    growth: &anabolic_core::growth::Growth,
+    out: &mut Vec<UiCmd>,
+) {
     let d = details.get(&p.key);
     ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -677,9 +692,58 @@ fn general(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, details: &Details, out
                         if let Some(e) = d.and_then(|d| d.open_error.as_ref()) {
                             row(ui, "Access", e.clone());
                         }
+                        if !services.is_empty() {
+                            ui.label(RichText::new("Services").color(theme::TEXT_WEAK));
+                            ui.horizontal_wrapped(|ui| {
+                                for (i, (name, display)) in services.iter().enumerate() {
+                                    if i > 0 {
+                                        ui.label(RichText::new("·").color(theme::TEXT_DIM));
+                                    }
+                                    if widgets::link(ui, display)
+                                        .on_hover_text(format!(
+                                            "{name}: open it on the Services page"
+                                        ))
+                                        .clicked()
+                                    {
+                                        out.push(UiCmd::SelectService(name.clone()));
+                                    }
+                                }
+                                if services.len() > 1
+                                    && ui.small_button("All on the Services page").clicked()
+                                {
+                                    out.push(UiCmd::ShowServices(p.pid));
+                                }
+                            });
+                            ui.end_row();
+                        }
                     });
 
-                counters(&mut cols[1], p);
+                let ui = &mut cols[1];
+                counters(ui, p);
+                let leaks: Vec<_> = growth.leaks_of(p.key).collect();
+                if !leaks.is_empty() {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            widgets::icon(theme::icon::WARNING, 12.0).color(theme::ELEVATED_TEXT),
+                        );
+                        ui.label(
+                            widgets::strong("Growing steadily", theme::BODY)
+                                .color(theme::ELEVATED_TEXT),
+                        );
+                    });
+                    for l in leaks {
+                        ui.label(RichText::new(fmt::leak(l)).color(theme::TEXT_WEAK));
+                    }
+                    ui.label(
+                        RichText::new(
+                            "A straight climb that has not levelled off: usually a leak. \
+                             Restarting the program gives it back.",
+                        )
+                        .size(theme::META)
+                        .color(theme::TEXT_DIM),
+                    );
+                }
             });
         });
 }
@@ -814,7 +878,7 @@ fn parent_of<'a>(p: &ProcessInfo, snap: &'a Snapshot) -> Option<&'a ProcessInfo>
         .max_by_key(|q| q.key.create_time)
 }
 
-fn right(ui: &mut Ui, text: String) {
+fn right(ui: &mut Ui, text: impl Into<egui::WidgetText>) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(text));
 }
 
@@ -1042,7 +1106,28 @@ fn chain_view(
     }
 }
 
-fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, view: &mut TableView) {
+#[allow(clippy::too_many_arguments)]
+fn network_tab(
+    ui: &mut Ui,
+    p: &ProcessInfo,
+    snap: &Snapshot,
+    tables: &mut DetailTables,
+    path: Option<&str>,
+    blocked: bool,
+    out: &mut Vec<UiCmd>,
+) {
+    if blocked && let Some(path) = path {
+        ui.horizontal(|ui| {
+            ui.label(widgets::icon(theme::icon::LOCK, 12.0).color(theme::ELEVATED_TEXT));
+            ui.label(
+                RichText::new("Blocked from the network by Anabolic (Windows Firewall rules).")
+                    .color(theme::ELEVATED_TEXT),
+            );
+            if ui.small_button("Allow again").clicked() {
+                out.push(UiCmd::Unblock(path.to_string()));
+            }
+        });
+    }
     if let Some(e) = &snap.system.net_trace_error {
         ui.label(
             RichText::new(format!("Per-process network traffic is unavailable: {e}"))
@@ -1054,138 +1139,211 @@ fn network_tab(ui: &mut Ui, p: &ProcessInfo, snap: &Snapshot, view: &mut TableVi
         ui.label(RichText::new("Collecting…").color(theme::TEXT_WEAK));
         return;
     };
-    ui.label(
-        RichText::new(format!(
-            "Receive {}   Send {}   ·   since Anabolic started: {} received, {} sent",
-            fmt::rate_always(p.net_rx_rate),
-            fmt::rate_always(p.net_tx_rate),
-            fmt::bytes(p.net_rx_total),
-            fmt::bytes(p.net_tx_total)
-        ))
-        .color(theme::TEXT_WEAK),
+    let summary = format!(
+        "Receive {}   Send {}   ·   since Anabolic started: {} received, {} sent",
+        fmt::rate_always(p.net_rx_rate),
+        fmt::rate_always(p.net_tx_rate),
+        fmt::bytes(p.net_rx_total),
+        fmt::bytes(p.net_tx_total)
     );
     if sel.connections.is_empty() {
+        ui.label(RichText::new(summary).color(theme::TEXT_WEAK));
         ui.label(RichText::new("No traffic seen yet.").color(theme::TEXT_DIM));
         return;
     }
-    let remote_of = |c: &anabolic_core::Connection| match c.remote {
-        std::net::IpAddr::V6(v6) => format!("[{v6}]:{}", c.remote_port),
-        v4 => format!("{v4}:{}", c.remote_port),
-    };
     let proto_of = |c: &anabolic_core::Connection| format!("{:?}", c.proto).to_uppercase();
-    let mut list: Vec<&anabolic_core::Connection> = sel
+    let ctx = ui.ctx().clone();
+    let view = &mut tables.network;
+    let names = &mut tables.names;
+    let mut rows: Vec<(&anabolic_core::Connection, String, egui::Color32)> = sel
         .connections
         .iter()
-        .filter(|c| view.matches(&[&proto_of(c), &remote_of(c), &c.local_port.to_string()]))
+        .map(|c| {
+            use crate::netnames::Name;
+            let (name, color) = match names.get(&ctx, c.remote) {
+                Name::Dns(n) => (n.to_string(), theme::TEXT_WEAK),
+                Name::Kind(k) => (k.to_string(), theme::TEXT_DIM),
+                Name::Looking => ("…".to_string(), theme::TEXT_DIM),
+                Name::None => (String::new(), theme::TEXT_DIM),
+            };
+            (c, name, color)
+        })
+        .filter(|(c, name, _)| {
+            view.matches(&[
+                &proto_of(c),
+                &crate::panes::remote_text(c),
+                &c.local_port.to_string(),
+                name,
+                crate::panes::port_service(c.proto, c.remote_port).unwrap_or(""),
+            ])
+        })
         .collect();
-    view.order(&mut list, |a, b, column| match column {
+    // A fixed order first: rows the chosen column ties (same name, no
+    // traffic) would otherwise trade places on every frame.
+    rows.sort_by_key(|(c, ..)| (c.proto as u8, c.remote, c.remote_port, c.local_port));
+    view.order(&mut rows, |(a, an, _), (b, bn, _), column| match column {
         0 => proto_of(a).cmp(&proto_of(b)),
         1 => (a.remote, a.remote_port).cmp(&(b.remote, b.remote_port)),
-        2 => a.local_port.cmp(&b.local_port),
-        3 => a.rx_rate.total_cmp(&b.rx_rate),
-        4 => a.tx_rate.total_cmp(&b.tx_rate),
-        5 => a.rx_total.cmp(&b.rx_total),
-        6 => a.tx_total.cmp(&b.tx_total),
+        2 => text_cmp(an, bn),
+        3 => a.local_port.cmp(&b.local_port),
+        4 => a.rx_rate.total_cmp(&b.rx_rate),
+        5 => a.tx_rate.total_cmp(&b.tx_rate),
+        6 => a.rx_total.cmp(&b.rx_total),
+        7 => a.tx_total.cmp(&b.tx_total),
         _ => a.idle.cmp(&b.idle),
     });
     ui.horizontal(|ui| {
         if view.filter_box(
             ui,
-            "Filter: address, port, protocol",
-            list.len(),
+            "Filter: address, name, port, protocol",
+            rows.len(),
             sel.connections.len(),
         ) {
             ui.ctx().request_repaint();
         }
+        ui.label(
+            RichText::new(format!("{summary}  ·  click one for its details"))
+                .small()
+                .color(theme::TEXT_WEAK),
+        );
     });
-    let columns = [
-        ("Proto", 50.0, Align::Min),
-        ("Remote", 290.0, Align::Min),
-        ("Local port", 80.0, Align::Max),
-        ("Receive", 100.0, Align::Max),
-        ("Send", 100.0, Align::Max),
-        ("Received", 100.0, Align::Max),
-        ("Sent", 100.0, Align::Max),
-        ("Idle", 70.0, Align::Max),
-    ];
-    let header = ui.horizontal(|ui| {
-        for (i, (title, width, align)) in columns.iter().enumerate() {
-            widgets::cell(ui, *width, *align, |ui| {
-                view.header(ui, i, title, *align == Align::Max);
-            });
-        }
-    });
-    let rect = header.response.rect;
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() + 1.0,
-        Stroke::new(1.0, theme::BORDER),
-    );
-    ui.add_space(2.0);
-    ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (i, c) in list.into_iter().enumerate() {
-                let quiet = c.rx_rate + c.tx_rate == 0.0;
-                let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
-                widgets::row(ui, i, |ui| {
-                    widgets::text(
-                        ui,
-                        columns[0].1,
-                        Align::Min,
-                        RichText::new(format!("{:?}", c.proto).to_uppercase()).color(color),
-                    );
-                    let remote = remote_of(c);
-                    widgets::text(
-                        ui,
-                        columns[1].1,
-                        Align::Min,
-                        RichText::new(remote).monospace().color(color),
-                    );
-                    widgets::text(
-                        ui,
-                        columns[2].1,
-                        Align::Max,
-                        RichText::new(c.local_port.to_string()).color(theme::TEXT_WEAK),
-                    );
-                    widgets::text(
-                        ui,
-                        columns[3].1,
-                        Align::Max,
-                        RichText::new(fmt::rate(c.rx_rate)).color(color),
-                    );
-                    widgets::text(
-                        ui,
-                        columns[4].1,
-                        Align::Max,
-                        RichText::new(fmt::rate(c.tx_rate)).color(color),
-                    );
-                    widgets::text(
-                        ui,
-                        columns[5].1,
-                        Align::Max,
-                        RichText::new(fmt::bytes(c.rx_total)).color(theme::TEXT_WEAK),
-                    );
-                    widgets::text(
-                        ui,
-                        columns[6].1,
-                        Align::Max,
-                        RichText::new(fmt::bytes(c.tx_total)).color(theme::TEXT_WEAK),
-                    );
-                    let idle = if c.idle == 0 {
-                        String::new()
-                    } else {
-                        format!("{} s", c.idle)
-                    };
-                    widgets::text(
-                        ui,
-                        columns[7].1,
-                        Align::Max,
-                        RichText::new(idle).color(theme::TEXT_DIM),
-                    );
-                });
-            }
+    let key_of = |c: &anabolic_core::Connection| (c.proto, c.remote, c.remote_port, c.local_port);
+    let selected = tables.connection;
+    if let Some((c, name, _)) = selected.and_then(|k| rows.iter().find(|(c, _, _)| key_of(c) == k))
+    {
+        let row = crate::panes::ConnRow {
+            c,
+            name,
+            p,
+            path,
+            blocked,
+        };
+        crate::panes::side(ui, ("connection-pane", p.key), |ui| {
+            crate::panes::connection_pane(ui, &row, out)
         });
+    }
+    let mut clicked = None;
+    egui::CentralPanel::no_frame().show(ui, |ui| {
+        TableBuilder::new(ui)
+            .id_salt("connections")
+            .striped(true)
+            .resizable(true)
+            .auto_shrink([false, false])
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .column(Column::initial(50.0))
+            .column(Column::initial(230.0).clip(true))
+            .column(Column::initial(230.0).clip(true))
+            .column(Column::initial(76.0))
+            .column(Column::initial(90.0))
+            .column(Column::initial(90.0))
+            .column(Column::initial(90.0))
+            .column(Column::initial(90.0))
+            .column(Column::remainder())
+            .header(20.0, |mut h| {
+                for (i, (t, numeric)) in [
+                    ("Proto", false),
+                    ("Remote", false),
+                    ("Name", false),
+                    ("Local port", true),
+                    ("Receive", true),
+                    ("Send", true),
+                    ("Received", true),
+                    ("Sent", true),
+                    ("Idle", true),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    h.col(|ui| {
+                        view.header(ui, i, t, numeric);
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(18.0, rows.len(), |mut row| {
+                    let (c, name, name_color) = &rows[row.index()];
+                    let c = *c;
+                    let key = key_of(c);
+                    row.set_selected(selected == Some(key));
+                    let quiet = c.rx_rate + c.tx_rate == 0.0;
+                    let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
+                    row.col(|ui| {
+                        ui.label(RichText::new(proto_of(c)).color(color));
+                    });
+                    row.col(|ui| {
+                        let response = ui.add(
+                            Label::new(
+                                RichText::new(crate::panes::remote_text(c))
+                                    .monospace()
+                                    .color(color),
+                            )
+                            .truncate(),
+                        );
+                        if let Some(service) = crate::panes::port_service(c.proto, c.remote_port) {
+                            response.on_hover_text(format!(
+                                "Port {}: usually {service}",
+                                c.remote_port
+                            ));
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.add(
+                            Label::new(RichText::new(name.as_str()).color(*name_color)).truncate(),
+                        );
+                    });
+                    row.col(|ui| {
+                        right(
+                            ui,
+                            RichText::new(c.local_port.to_string()).color(theme::TEXT_WEAK),
+                        );
+                    });
+                    row.col(|ui| right(ui, RichText::new(fmt::rate(c.rx_rate)).color(color)));
+                    row.col(|ui| right(ui, RichText::new(fmt::rate(c.tx_rate)).color(color)));
+                    row.col(|ui| {
+                        right(
+                            ui,
+                            RichText::new(fmt::bytes(c.rx_total)).color(theme::TEXT_WEAK),
+                        )
+                    });
+                    row.col(|ui| {
+                        right(
+                            ui,
+                            RichText::new(fmt::bytes(c.tx_total)).color(theme::TEXT_WEAK),
+                        )
+                    });
+                    row.col(|ui| {
+                        let idle = if c.idle == 0 {
+                            String::new()
+                        } else {
+                            format!("{} s", c.idle)
+                        };
+                        right(ui, RichText::new(idle).color(theme::TEXT_DIM));
+                    });
+                    let response = row.response();
+                    if response.clicked() {
+                        clicked = Some(key);
+                    }
+                    response.context_menu(|ui| {
+                        let r = crate::panes::ConnRow {
+                            c,
+                            name,
+                            p,
+                            path,
+                            blocked,
+                        };
+                        crate::panes::connection_menu(ui, &r, out);
+                    });
+                });
+            });
+    });
+    if let Some(key) = clicked {
+        tables.connection = if selected == Some(key) {
+            None
+        } else {
+            Some(key)
+        };
+    }
 }
 
 /// Asks for the module list: automatically for System (only kernel

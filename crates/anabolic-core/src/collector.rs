@@ -21,10 +21,12 @@ use crate::disk::DiskSampler;
 use crate::disktrace::DiskTracer;
 use crate::diskusage::DiskUsage;
 use crate::enrich::{self, EnrichRequest, Enriched};
+use crate::frames::FrameTracer;
 use crate::gpu::{self, GpuProcessMap, GpuSampler};
 use crate::hardening::set_current_thread_priority;
 use crate::history::History;
 use crate::hwinfo::{PageFile, page_files};
+use crate::latency::LatencyTracer;
 use crate::memory::MemorySampler;
 use crate::model::*;
 use crate::net::NetSampler;
@@ -67,6 +69,14 @@ pub enum Command {
     TraceDisks(bool),
     /// Start or stop the flight recorder.
     Record(Option<RecorderConfig>),
+    /// Follow the frames of the programs that draw (games): present events
+    /// from the graphics runtimes, no handle to any of them.
+    TraceFrames(bool),
+    /// Time every DPC and ISR per driver (a kernel trace; only while the
+    /// latency view is open).
+    TraceLatency(bool),
+    /// Publish every connection and listening port (the Network page).
+    NetActivity(bool),
     Shutdown,
 }
 
@@ -216,6 +226,17 @@ struct State {
     disk_tracer: Option<DiskTracer>,
     disk_trace_error: Option<String>,
     disk_usage: DiskUsage,
+    frame_tracer: Option<FrameTracer>,
+    frame_trace_error: Option<String>,
+    latency_tracer: Option<LatencyTracer>,
+    latency_trace_error: Option<String>,
+    net_activity: bool,
+    /// Address -> the name a program looked up for it.
+    dns_names: Arc<HashMap<std::net::IpAddr, Arc<str>>>,
+    dns_lookups: Arc<Vec<crate::nettrace::DnsLookup>>,
+    /// What Windows' DNS cache holds, read now and then on a thread of its
+    /// own: names for connections looked up before Anabolic started.
+    dns_cache: Receiver<HashMap<std::net::IpAddr, Arc<str>>>,
     /// pid -> (image name, last seen) for processes the core trace saw start,
     /// so a process that lived for less than a refresh still has a name.
     traced_images: HashMap<u32, (Arc<str>, u64)>,
@@ -266,6 +287,27 @@ impl State {
             disk_tracer: None,
             disk_trace_error: None,
             disk_usage: DiskUsage::default(),
+            frame_tracer: None,
+            frame_trace_error: None,
+            latency_tracer: None,
+            latency_trace_error: None,
+            net_activity: false,
+            dns_names: Arc::default(),
+            dns_lookups: Arc::default(),
+            dns_cache: {
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let _ = thread::Builder::new()
+                    .name("anabolic-dnscache".into())
+                    .spawn(move || {
+                        set_current_thread_priority(
+                            windows::Win32::System::Threading::THREAD_PRIORITY_BELOW_NORMAL,
+                        );
+                        while tx.send(crate::dnscache::names()).is_ok() {
+                            thread::sleep(Duration::from_secs(120));
+                        }
+                    });
+                rx
+            },
             thread_owners: HashMap::new(),
             traced_images: HashMap::new(),
             seq: 0,
@@ -325,6 +367,40 @@ impl State {
                     self.thread_owners.clear();
                 }
             }
+            _ => {}
+        }
+    }
+
+    fn trace_frames(&mut self, on: bool) {
+        match (on, self.frame_tracer.is_some()) {
+            (true, false) if !crate::hardening::is_elevated() => {
+                self.frame_trace_error = Some("needs administrator rights".into());
+            }
+            (true, false) => match FrameTracer::start(true) {
+                Ok(tracer) => {
+                    self.frame_tracer = Some(tracer);
+                    self.frame_trace_error = None;
+                }
+                Err(e) => self.frame_trace_error = Some(e),
+            },
+            (false, true) => self.frame_tracer = None,
+            _ => {}
+        }
+    }
+
+    fn trace_latency(&mut self, on: bool) {
+        match (on, self.latency_tracer.is_some()) {
+            (true, false) if !crate::hardening::is_elevated() => {
+                self.latency_trace_error = Some("needs administrator rights".into());
+            }
+            (true, false) => match LatencyTracer::start() {
+                Ok(tracer) => {
+                    self.latency_tracer = Some(tracer);
+                    self.latency_trace_error = None;
+                }
+                Err(e) => self.latency_trace_error = Some(e),
+            },
+            (false, true) => self.latency_tracer = None,
             _ => {}
         }
     }
@@ -428,7 +504,45 @@ impl State {
             .collect()
     }
 
+    /// Lookups kept for the Network page.
+    const LOOKUPS: usize = 2000;
+    /// Names kept; past this the map starts over (addresses still in use
+    /// are looked up again soon enough).
+    const NAMES: usize = 50_000;
+
+    fn update_lookups(&mut self, lookups: Vec<crate::nettrace::DnsLookup>) {
+        // The cache's names fill gaps; what programs looked up wins.
+        for cached in self.dns_cache.try_iter() {
+            let names = Arc::make_mut(&mut self.dns_names);
+            for (ip, name) in cached {
+                names.entry(ip).or_insert(name);
+            }
+        }
+        // Anabolic's own lookups are the reverse names its Network page
+        // asks for: a side effect of looking, not something to show.
+        let own = std::process::id();
+        let lookups: Vec<_> = lookups.into_iter().filter(|l| l.pid != own).collect();
+        if lookups.is_empty() {
+            return;
+        }
+        let names = Arc::make_mut(&mut self.dns_names);
+        if names.len() > Self::NAMES {
+            names.clear();
+        }
+        for l in lookups.iter().filter(|l| l.status == 0) {
+            for ip in &l.addresses {
+                names.insert(*ip, l.name.clone());
+            }
+        }
+        let log = Arc::make_mut(&mut self.dns_lookups);
+        log.extend(lookups);
+        if log.len() > Self::LOOKUPS * 5 / 4 {
+            log.drain(..log.len() - Self::LOOKUPS);
+        }
+    }
+
     fn update_connections(&mut self, traffic: Traffic, seq: u64, secs: f64) {
+        self.update_lookups(traffic.lookups);
         for (key, (rx, tx)) in traffic.per_conn {
             let c = self.conns.entry(key).or_default();
             c.rx_total += rx;
@@ -445,21 +559,95 @@ impl State {
         self.conns.retain(|_, c| seq - c.last_seq < 300);
     }
 
+    /// Every connection and listening port: Windows' socket tables (open
+    /// connections, listening ports, their owners) joined with the traffic
+    /// seen on each.
+    fn all_connections(&self, seq: u64) -> NetActivity {
+        let (sockets, error) = crate::sockets::sockets();
+        let mut connections = Vec::new();
+        let mut listeners = Vec::new();
+        let mut listed = std::collections::HashSet::new();
+        for s in sockets {
+            if s.listening() {
+                listeners.push(Listener {
+                    pid: s.pid,
+                    proto: s.proto,
+                    local: s.local,
+                    port: s.local_port,
+                });
+                continue;
+            }
+            // Closed connections waiting out TIME_WAIT belong to no process.
+            let (Some((remote, remote_port)), true) = (s.remote, s.pid != 0) else {
+                continue;
+            };
+            let key = ConnKey {
+                pid: s.pid,
+                proto: s.proto,
+                remote,
+                remote_port,
+                local_port: s.local_port,
+            };
+            let seen = self.conns.get(&key);
+            connections.push(Connection {
+                pid: s.pid,
+                proto: s.proto,
+                remote,
+                remote_port,
+                local_port: s.local_port,
+                state: s.state,
+                rx_rate: seen.map_or(0.0, |c| c.rx_rate),
+                tx_rate: seen.map_or(0.0, |c| c.tx_rate),
+                rx_total: seen.map_or(0, |c| c.rx_total),
+                tx_total: seen.map_or(0, |c| c.tx_total),
+                idle: seen.map_or(0, |c| seq - c.last_seq),
+                traffic: seen.is_some(),
+            });
+            listed.insert(key);
+        }
+        // Traffic the tables do not list: UDP, and TCP since closed.
+        for (k, c) in self.conns.iter().filter(|(k, _)| !listed.contains(*k)) {
+            connections.push(Connection {
+                pid: k.pid,
+                proto: k.proto,
+                remote: k.remote,
+                remote_port: k.remote_port,
+                local_port: k.local_port,
+                state: (k.proto == crate::nettrace::Proto::Tcp)
+                    .then_some(crate::sockets::TcpState::Closed),
+                rx_rate: c.rx_rate,
+                tx_rate: c.tx_rate,
+                rx_total: c.rx_total,
+                tx_total: c.tx_total,
+                idle: seq - c.last_seq,
+                traffic: true,
+            });
+        }
+        NetActivity {
+            connections,
+            listeners,
+            error,
+        }
+    }
+
     fn connections_of(&self, pid: u32, seq: u64) -> Vec<Connection> {
         let mut list: Vec<Connection> = self
             .conns
             .iter()
             .filter(|(k, _)| k.pid == pid)
             .map(|(k, c)| Connection {
+                pid,
                 proto: k.proto,
                 remote: k.remote,
                 remote_port: k.remote_port,
                 local_port: k.local_port,
+                state: None,
                 rx_rate: c.rx_rate,
                 tx_rate: c.tx_rate,
                 rx_total: c.rx_total,
                 tx_total: c.tx_total,
                 idle: seq - c.last_seq,
+                traffic: true,
             })
             .collect();
         list.sort_by(|a, b| {
@@ -519,6 +707,9 @@ impl State {
                         }
                     }
                     Ok(Command::TraceDisks(on)) => self.trace_disks(on),
+                    Ok(Command::TraceFrames(on)) => self.trace_frames(on),
+                    Ok(Command::TraceLatency(on)) => self.trace_latency(on),
+                    Ok(Command::NetActivity(on)) => self.net_activity = on,
                     // Dropping the old one writes what it holds.
                     Ok(Command::Record(config)) => self.recorder = config.map(Recorder::start),
                     Ok(Command::SetInterval(interval)) => {
@@ -838,10 +1029,31 @@ impl State {
             // their last moments arrive after they are gone.
             self.thread_owners.retain(|_, (_, seen)| seq - *seen < 30);
         }
+        system.frame_trace_error = self.frame_trace_error.clone();
+        if let Some(tracer) = &mut self.frame_tracer {
+            // Sorted by key, so by pid first.
+            let name_of = |pid: u32| {
+                let at = processes.partition_point(|p| p.pid < pid);
+                processes
+                    .get(at)
+                    .filter(|p| p.pid == pid)
+                    .map(|p| p.name.clone())
+            };
+            system.frames = Some(Arc::new(tracer.take(name_of)));
+        }
+        system.latency_trace_error = self.latency_trace_error.clone();
+        if let Some(tracer) = &mut self.latency_tracer {
+            system.latency = Some(Arc::new(tracer.take()));
+        }
         self.update_connections(traffic, seq, secs);
         if let Some(sel) = &mut selected {
             sel.connections = self.connections_of(sel.key.pid, seq);
         }
+        if self.net_activity {
+            system.net_activity = Some(Arc::new(self.all_connections(seq)));
+        }
+        system.dns_names = self.dns_names.clone();
+        system.dns_lookups = self.dns_lookups.clone();
         system.uptime = Duration::from_millis(unsafe { GetTickCount64() });
         // Live processes plus exited ones somebody still holds a handle to.
         system.process_objects = crate::handles::object_types()

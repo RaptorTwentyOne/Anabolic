@@ -1,8 +1,11 @@
 //! Per-process and per-connection network traffic from the
-//! Microsoft-Windows-Kernel-Network ETW provider (needs admin).
+//! Microsoft-Windows-Kernel-Network ETW provider (needs admin), and every
+//! name a program looks up, from Microsoft-Windows-DNS-Client: the DNS
+//! client writes the event in the asking program itself, so it says who
+//! asked, what for, and what came back.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::System::Diagnostics::Etw::EVENT_RECORD;
@@ -14,6 +17,10 @@ const KERNEL_NETWORK: GUID = GUID::from_u128(0x7dd42a49_5329_4832_8dfd_43d979153
 const KEYWORD_IPV4: u64 = 0x10;
 const KEYWORD_IPV6: u64 = 0x20;
 const LEVEL_INFORMATION: u8 = 4;
+const DNS_CLIENT: GUID = GUID::from_u128(0x1c95126e_7eea_49a9_a3fe_a378b03ddb4d);
+/// "DNS query is completed", in the program that asked.
+const DNS_QUERY_COMPLETED: u16 = 3008;
+const LEVEL_VERBOSE: u8 = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Proto {
@@ -30,12 +37,110 @@ pub struct ConnKey {
     pub local_port: u16,
 }
 
+/// One name a program looked up.
+#[derive(Clone, Debug)]
+pub struct DnsLookup {
+    pub at: std::time::SystemTime,
+    pub pid: u32,
+    pub name: Arc<str>,
+    /// The record type asked for: 1 = A (IPv4), 28 = AAAA (IPv6), ...
+    pub kind: u16,
+    /// 0, or the Windows error: 9003 no such name, 1460 timed out, ...
+    pub status: u32,
+    pub addresses: Vec<IpAddr>,
+    /// The names it was an alias of on the way (CNAMEs).
+    pub aliases: Vec<Arc<str>>,
+}
+
+impl DnsLookup {
+    pub fn kind_label(&self) -> String {
+        match self.kind {
+            1 => "A".into(),
+            5 => "CNAME".into(),
+            12 => "PTR".into(),
+            15 => "MX".into(),
+            16 => "TXT".into(),
+            28 => "AAAA".into(),
+            33 => "SRV".into(),
+            65 => "HTTPS".into(),
+            other => other.to_string(),
+        }
+    }
+
+    pub fn status_label(&self) -> String {
+        match self.status {
+            0 if self.addresses.is_empty() && self.aliases.is_empty() => "no records".into(),
+            0 => "answered".into(),
+            9003 => "no such name".into(),
+            9501 => "no records".into(),
+            1460 => "timed out".into(),
+            9002 => "server failure".into(),
+            1214 => "invalid name".into(),
+            other => format!("error {other}"),
+        }
+    }
+}
+
 /// Bytes seen since the last `take`.
 #[derive(Default, Debug)]
 pub struct Traffic {
     /// pid -> (received, sent)
     pub per_pid: HashMap<u32, (u64, u64)>,
     pub per_conn: HashMap<ConnKey, (u64, u64)>,
+    pub lookups: Vec<DnsLookup>,
+}
+
+fn wide_str(d: &[u8], at: usize) -> Option<(String, usize)> {
+    let mut chars = Vec::new();
+    let mut i = at;
+    loop {
+        let c = u16::from_le_bytes(d.get(i..i + 2)?.try_into().ok()?);
+        i += 2;
+        if c == 0 {
+            return Some((String::from_utf16_lossy(&chars), i));
+        }
+        chars.push(c);
+    }
+}
+
+/// QueryName, QueryType (u32), QueryOptions (u64), QueryStatus (u32),
+/// QueryResults: "type: 5 alias.example;1.2.3.4;::ffff:5.6.7.8;".
+pub fn parse_lookup(pid: u32, d: &[u8]) -> Option<DnsLookup> {
+    let (name, at) = wide_str(d, 0)?;
+    let kind = u32_le(d, at)? as u16;
+    let status = u32_le(d, at + 12)?;
+    let (results, _) = wide_str(d, at + 16).unwrap_or_default();
+    // 87: the A half of a lookup the AAAA half answers for both.
+    if status == 87 || name.is_empty() {
+        return None;
+    }
+    let mut addresses = Vec::new();
+    let mut aliases = Vec::new();
+    for part in results.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some(rest) = part.strip_prefix("type:") {
+            // "type: 5 alias": a CNAME on the way.
+            if let Some(alias) = rest.trim().strip_prefix("5 ") {
+                aliases.push(Arc::from(alias.trim()));
+            }
+        } else if let Ok(ip) = part.parse::<IpAddr>() {
+            let ip = match ip {
+                IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+                v4 => v4,
+            };
+            if !addresses.contains(&ip) {
+                addresses.push(ip);
+            }
+        }
+    }
+    Some(DnsLookup {
+        at: std::time::SystemTime::now(),
+        pid,
+        name: name.into(),
+        kind,
+        status,
+        addresses,
+        aliases,
+    })
 }
 
 pub struct NetTracer {
@@ -51,9 +156,21 @@ impl NetTracer {
             LEVEL_INFORMATION,
             KEYWORD_IPV4 | KEYWORD_IPV6,
         )?;
+        // Names are a bonus: traffic still counts if this is refused.
+        let _ = session.enable_ids(&DNS_CLIENT, LEVEL_VERBOSE, u64::MAX, &[DNS_QUERY_COMPLETED]);
         let traffic = Arc::new(Mutex::new(Traffic::default()));
         let sink = traffic.clone();
         session.consume(move |record| {
+            if record.EventHeader.ProviderId == DNS_CLIENT {
+                if record.EventHeader.EventDescriptor.Id == DNS_QUERY_COMPLETED
+                    && let Some(lookup) =
+                        parse_lookup(record.EventHeader.ProcessId, etw::user_data(record))
+                    && let Ok(mut t) = sink.lock()
+                {
+                    t.lookups.push(lookup);
+                }
+                return;
+            }
             if let Some((key, received, bytes)) = parse(record)
                 && let Ok(mut t) = sink.lock()
             {
@@ -116,11 +233,7 @@ fn parse(record: &EVENT_RECORD) -> Option<(ConnKey, bool, u32)> {
     let size = u32_le(d, 4)?;
     let (remote, remote_port, local_port) = if v6 {
         let addr: [u8; 16] = d.get(8..24)?.try_into().ok()?;
-        (
-            IpAddr::V6(Ipv6Addr::from(addr)),
-            u16_be(d, 40)?,
-            u16_be(d, 42)?,
-        )
+        (crate::sockets::ip6(addr), u16_be(d, 40)?, u16_be(d, 42)?)
     } else {
         let addr: [u8; 4] = d.get(8..12)?.try_into().ok()?;
         (
@@ -144,6 +257,38 @@ fn parse(record: &EVENT_RECORD) -> Option<(ConnKey, bool, u32)> {
 
 #[cfg(test)]
 mod tests {
+
+    fn wide(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(|c| c.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn reads_a_completed_lookup() {
+        let mut d = wide("www.microsoft.com");
+        d.extend(28u32.to_le_bytes());
+        d.extend(0u64.to_le_bytes());
+        d.extend(0u32.to_le_bytes());
+        d.extend(wide(
+            "type: 5 www.microsoft.com-c-3.edgekey.net;type: 5 e13678.dscb.akamaiedge.net;::ffff:184.30.158.70;",
+        ));
+        let l = parse_lookup(42, &d).expect("a lookup");
+        assert_eq!(&*l.name, "www.microsoft.com");
+        assert_eq!(l.kind_label(), "AAAA");
+        assert_eq!(l.addresses, ["184.30.158.70".parse::<IpAddr>().unwrap()]);
+        assert_eq!(l.aliases.len(), 2);
+        assert_eq!(l.status_label(), "answered");
+        // The A half of a lookup the AAAA half answers is skipped.
+        let mut half = wide("example.org");
+        half.extend(1u32.to_le_bytes());
+        half.extend(0u64.to_le_bytes());
+        half.extend(87u32.to_le_bytes());
+        half.extend(wide(""));
+        assert!(parse_lookup(42, &half).is_none());
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};

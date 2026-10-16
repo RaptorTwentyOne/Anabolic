@@ -71,6 +71,50 @@ pub fn duration(d: Duration) -> String {
     out
 }
 
+/// The local time of day, "14:32:05", with milliseconds when asked.
+pub fn clock(at: std::time::SystemTime, millis: bool) -> String {
+    let since = at.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    // 100 ns since 1601.
+    let filetime = since.as_nanos() as i64 / 100 + 116_444_736_000_000_000;
+    match anabolic_core::sysinfo::local_time(filetime) {
+        Some(t) if millis => format!("{}.{:03}", &t[11..], since.subsec_millis()),
+        Some(t) => t[11..].to_string(),
+        None => String::new(),
+    }
+}
+
+/// A span in words: "8 s", "29 min", "2 h 5 min".
+pub fn span(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs} s")
+    } else if secs < 3600 {
+        format!("{} min", secs / 60)
+    } else if secs % 3600 < 60 {
+        format!("{} h", secs / 3600)
+    } else {
+        format!("{} h {} min", secs / 3600, secs / 60 % 60)
+    }
+}
+
+/// Steady growth of a process, in a line: "handles +6,000/h for 29 min
+/// (1,000 → 3,900)".
+pub fn leak(l: &anabolic_core::growth::Leak) -> String {
+    use anabolic_core::growth::Metric;
+    let amount = |v: f64| match l.metric {
+        Metric::Memory => bytes(v.max(0.0) as u64),
+        _ => count(v.max(0.0) as u64),
+    };
+    format!(
+        "{} +{}/h for {} ({} → {})",
+        l.metric.label(),
+        amount(l.per_hour),
+        span(l.span),
+        amount(l.from),
+        amount(l.to)
+    )
+}
+
 /// 100 ns units (FILETIME deltas, CPU times) as h:mm:ss.fff.
 pub fn cpu_time(hundred_ns: u64) -> String {
     let ms = hundred_ns / 10_000;

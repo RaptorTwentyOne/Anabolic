@@ -148,6 +148,39 @@ pub enum Action {
     /// Done on the user's standing orders (a rule), not a click: only a
     /// failure is reported.
     Quiet(Box<Action>),
+    /// Nothing is reported at all: game mode checks the result itself on
+    /// the next refresh (a protected process refuses, and it should not
+    /// say so every time).
+    Silent(Box<Action>),
+    /// Block a program file from the network with Windows Firewall rules,
+    /// or remove them.
+    Firewall {
+        path: String,
+        block: bool,
+    },
+    /// Which of these blocked programs still have their rules.
+    QueryFirewall(Vec<String>),
+    /// Drop one TCP connection (IPv4) of a process; it is not opened.
+    CloseConnection {
+        pid: u32,
+        process: Arc<str>,
+        remote: std::net::Ipv4Addr,
+        remote_port: u16,
+        local_port: u16,
+    },
+    /// Game mode: switch to the High performance power plan (`true`), or
+    /// back to the plan it replaced (`false`, with that plan's id).
+    GamePower {
+        on: bool,
+        previous: Option<String>,
+    },
+    /// Write a memory dump into the folder, on a thread of its own: a full
+    /// dump of a big process takes a while.
+    Dump {
+        target: Target,
+        kind: crate::dump::DumpKind,
+        dir: std::path::PathBuf,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +202,23 @@ pub enum Outcome {
         process_mask: u64,
         system_mask: u64,
     },
+    Dumped {
+        target: Target,
+        kind: crate::dump::DumpKind,
+        report: crate::dump::DumpReport,
+    },
+    /// Game mode switched the power plan: the one it replaced (id, name),
+    /// None when a fast plan was already on.
+    PowerForGame(Option<(String, String)>),
+    /// Game mode put this plan back (None: someone changed it meanwhile).
+    PowerRestored(Option<String>),
+    /// A program was blocked from the network (or allowed again).
+    Firewall {
+        path: String,
+        blocked: bool,
+    },
+    /// Of the programs Anabolic blocked, those whose rules are still there.
+    StillBlocked(Vec<String>),
 }
 
 pub struct ActionRunner {
@@ -176,9 +226,10 @@ pub struct ActionRunner {
 }
 
 impl ActionRunner {
-    pub fn start(notify: impl Fn() + Send + 'static) -> (Self, Receiver<Outcome>) {
+    pub fn start(notify: impl Fn() + Send + Sync + 'static) -> (Self, Receiver<Outcome>) {
         let (tx, rx) = unbounded::<Action>();
         let (out_tx, out_rx) = unbounded();
+        let notify = Arc::new(notify);
         thread::Builder::new()
             .name("anabolic-actions".into())
             .spawn(move || {
@@ -186,6 +237,30 @@ impl ActionRunner {
                     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
                 }
                 for action in rx {
+                    if let Action::Dump { target, kind, dir } = action {
+                        let (out_tx, notify) = (out_tx.clone(), notify.clone());
+                        let _ =
+                            thread::Builder::new()
+                                .name("anabolic-dump".into())
+                                .spawn(move || {
+                                    let outcome = match crate::dump::write(
+                                        target.key,
+                                        &target.name,
+                                        kind,
+                                        &dir,
+                                    ) {
+                                        Ok(report) => Outcome::Dumped {
+                                            target,
+                                            kind,
+                                            report,
+                                        },
+                                        Err(e) => Outcome::Error(e),
+                                    };
+                                    let _ = out_tx.send(outcome);
+                                    notify();
+                                });
+                        continue;
+                    }
                     if let Some(outcome) = perform(action)
                         && out_tx.send(outcome).is_err()
                     {
@@ -207,6 +282,62 @@ fn perform(action: Action) -> Option<Outcome> {
     let result = match action {
         Action::Quiet(action) => {
             return perform(*action).filter(|o| matches!(o, Outcome::Error(_)));
+        }
+        Action::Silent(action) => {
+            perform(*action);
+            return None;
+        }
+        Action::Firewall { path, block } => {
+            let file = std::path::Path::new(&path)
+                .file_name()
+                .map_or(path.clone(), |f| f.to_string_lossy().into_owned());
+            let done = if block {
+                crate::firewall::block(&path)
+            } else {
+                crate::firewall::unblock(&path)
+            };
+            return Some(match done {
+                Ok(()) => Outcome::Firewall {
+                    path,
+                    blocked: block,
+                },
+                Err(e) if block => Outcome::Error(format!("Could not block {file}: {e}")),
+                Err(e) => Outcome::Error(format!("Could not allow {file} again: {e}")),
+            });
+        }
+        Action::CloseConnection {
+            pid,
+            process,
+            remote,
+            remote_port,
+            local_port,
+        } => crate::sockets::close_tcp(pid, remote, remote_port, local_port)
+            .map(|_| format!("Closed {process}'s connection to {remote}:{remote_port}"))
+            .map_err(|e| {
+                format!("Could not close {process}'s connection to {remote}:{remote_port}: {e}")
+            }),
+        Action::QueryFirewall(paths) => {
+            return Some(Outcome::StillBlocked(crate::firewall::still_blocked(
+                &paths,
+            )));
+        }
+        Action::GamePower { on: true, .. } => {
+            return Some(match crate::power::for_game() {
+                Ok(previous) => {
+                    Outcome::PowerForGame(previous.map(|(id, name)| (format!("{id:?}"), name)))
+                }
+                Err(e) => Outcome::Error(format!("Game mode could not switch the power plan: {e}")),
+            });
+        }
+        Action::GamePower {
+            on: false,
+            previous,
+        } => {
+            let previous = previous.as_deref().and_then(crate::power::parse)?;
+            return Some(match crate::power::restore(&previous) {
+                Ok(name) => Outcome::PowerRestored(name),
+                Err(e) => Outcome::Error(format!("Could not put the power plan back: {e}")),
+            });
         }
         Action::ReplaceTaskManager { on, launcher } => {
             return Some(match crate::taskmgr::set_replaced(on, launcher) {
@@ -230,6 +361,8 @@ fn perform(action: Action) -> Option<Outcome> {
             });
         }
         Action::Terminate(targets) => return Some(terminate(&targets)),
+        // Run on their own thread by the runner.
+        Action::Dump { .. } => return None,
         Action::Suspend(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtSuspendProcess)
             .map(|_| format!("Suspended {}", t.label())),
         Action::Resume(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtResumeProcess)

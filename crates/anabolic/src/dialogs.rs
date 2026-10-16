@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anabolic_core::actions::Target;
 use eframe::egui::{self, Align2, Frame, Id, Key, Margin, Modal, RichText, Stroke, vec2};
 
+use crate::proc_table::UiCmd;
 use crate::theme;
 use crate::widgets;
 
@@ -198,8 +199,26 @@ impl ConfirmDialog {
 
 const TOAST_LIFETIME: Duration = Duration::from_secs(5);
 
-/// (shown at, message, what to do about it, is an error)
-type Toast = (Instant, String, Option<String>, bool);
+struct Toast {
+    at: Instant,
+    text: String,
+    /// What the user can do about it.
+    next: Option<String>,
+    error: bool,
+    /// A button, and what it asks for; taken when clicked.
+    action: Option<(String, UiCmd)>,
+}
+
+impl Toast {
+    /// Errors, and toasts with something to click, stay longer.
+    fn life(&self) -> Duration {
+        if self.error || self.action.is_some() {
+            TOAST_LIFETIME * 2
+        } else {
+            TOAST_LIFETIME
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Toasts {
@@ -207,68 +226,89 @@ pub struct Toasts {
 }
 
 impl Toasts {
+    fn push(
+        &mut self,
+        text: String,
+        next: Option<String>,
+        error: bool,
+        action: Option<(String, UiCmd)>,
+    ) {
+        self.items.push(Toast {
+            at: Instant::now(),
+            text,
+            next,
+            error,
+            action,
+        });
+    }
+
     pub fn info(&mut self, text: impl Into<String>) {
-        self.items.push((Instant::now(), text.into(), None, false));
+        self.push(text.into(), None, false, None);
+    }
+
+    /// News with a button beside it (say, "Show in folder").
+    pub fn info_with(&mut self, text: impl Into<String>, label: &str, cmd: UiCmd) {
+        self.push(text.into(), None, false, Some((label.to_string(), cmd)));
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
-        self.items.push((Instant::now(), text.into(), None, true));
+        self.push(text.into(), None, true, None);
     }
 
     /// An error and, below it, what the user can do about it.
     pub fn error_with(&mut self, text: impl Into<String>, next: Option<String>) {
-        self.items.push((Instant::now(), text.into(), next, true));
+        self.push(text.into(), next, true, None);
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    /// Draws the toasts; a clicked button's request goes to `out`.
+    pub fn show(&mut self, ctx: &egui::Context, out: &mut Vec<UiCmd>) {
         let now = Instant::now();
-        self.items.retain(|(t, _, _, error)| {
-            now - *t
-                < if *error {
-                    TOAST_LIFETIME * 2
-                } else {
-                    TOAST_LIFETIME
-                }
-        });
+        self.items.retain(|t| now - t.at < t.life());
         if self.items.is_empty() {
             return;
         }
+        let clickable = self.items.iter().any(|t| t.action.is_some());
         egui::Area::new(Id::new("toasts"))
             .anchor(Align2::RIGHT_BOTTOM, vec2(-14.0, -34.0))
             .order(egui::Order::Foreground)
-            .interactable(false)
+            .interactable(clickable)
             .show(ctx, |ui| {
-                for (_, text, next, error) in &self.items {
+                for toast in &mut self.items {
                     Frame::new()
                         .fill(theme::RAISED)
                         .stroke(Stroke::new(
                             1.0,
-                            if *error { theme::BAD } else { theme::BORDER },
+                            if toast.error {
+                                theme::BAD
+                            } else {
+                                theme::BORDER
+                            },
                         ))
                         .inner_margin(Margin::symmetric(12, 8))
                         .corner_radius(6)
                         .show(ui, |ui| {
                             ui.set_max_width(460.0);
-                            ui.label(RichText::new(text).color(if *error {
+                            ui.label(RichText::new(&toast.text).color(if toast.error {
                                 theme::BAD
                             } else {
                                 theme::TEXT
                             }));
-                            if let Some(next) = next {
+                            if let Some(next) = &toast.next {
                                 ui.label(RichText::new(next).color(theme::TEXT_WEAK));
+                            }
+                            if let Some((label, _)) = &toast.action
+                                && ui.button(label.as_str()).clicked()
+                                && let Some((_, cmd)) = toast.action.take()
+                            {
+                                out.push(cmd);
                             }
                         });
                     ui.add_space(6.0);
                 }
             });
         // Wake up again to expire the oldest one.
-        if let Some((t, _, _, error)) = self.items.first() {
-            let life = if *error {
-                TOAST_LIFETIME * 2
-            } else {
-                TOAST_LIFETIME
-            };
-            ctx.request_repaint_after(life.saturating_sub(now - *t));
+        if let Some(t) = self.items.first() {
+            ctx.request_repaint_after(t.life().saturating_sub(now - t.at));
         }
     }
 }

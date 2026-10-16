@@ -353,6 +353,19 @@ pub struct SystemStats {
     pub page_files: Vec<crate::hwinfo::PageFile>,
     /// Windows that are not responding, one per thread.
     pub hung: Vec<crate::waits::HungWindow>,
+    /// Frame times of the programs drawing; None unless frame tracing is on.
+    pub frames: Option<Arc<crate::frames::FrameStats>>,
+    pub frame_trace_error: Option<String>,
+    /// DPC and ISR times per driver; None unless latency tracing is on.
+    pub latency: Option<Arc<crate::latency::LatencyStats>>,
+    pub latency_trace_error: Option<String>,
+    /// Every connection and listening port; None unless asked for.
+    pub net_activity: Option<Arc<NetActivity>>,
+    /// The name programs looked up for each address (forward DNS: what
+    /// they asked for, not what the address says of itself).
+    pub dns_names: Arc<std::collections::HashMap<std::net::IpAddr, Arc<str>>>,
+    /// The names looked up lately, oldest first.
+    pub dns_lookups: Arc<Vec<crate::nettrace::DnsLookup>>,
 }
 
 #[derive(Clone, Debug)]
@@ -365,16 +378,47 @@ pub struct SelectedThreads {
 
 #[derive(Clone, Debug)]
 pub struct Connection {
+    /// The process it belongs to.
+    pub pid: u32,
     pub proto: Proto,
     pub remote: std::net::IpAddr,
     pub remote_port: u16,
     pub local_port: u16,
+    /// From Windows' TCP table; None for UDP, and when only traffic was seen.
+    pub state: Option<crate::sockets::TcpState>,
     pub rx_rate: f64,
     pub tx_rate: f64,
     pub rx_total: u64,
     pub tx_total: u64,
     /// Refreshes since the last packet.
     pub idle: u64,
+    /// Traffic was seen on it since Anabolic started watching; an open
+    /// connection that carried nothing since has none.
+    pub traffic: bool,
+}
+
+/// A port open for others to connect to: a listening TCP port, or a bound
+/// UDP one.
+#[derive(Clone, Debug)]
+pub struct Listener {
+    pub pid: u32,
+    pub proto: Proto,
+    /// 0.0.0.0 or :: for every network, a loopback address for this
+    /// computer only, else that one network.
+    pub local: std::net::IpAddr,
+    pub port: u16,
+}
+
+/// Everything on the network, machine-wide: published while the Network
+/// page is open.
+#[derive(Clone, Debug, Default)]
+pub struct NetActivity {
+    /// Open TCP connections (with or without traffic), and the endpoints
+    /// traffic was seen on lately (UDP, and TCP since closed).
+    pub connections: Vec<Connection>,
+    pub listeners: Vec<Listener>,
+    /// A socket table that could not be read.
+    pub error: Option<String>,
 }
 
 /// One refresh worth of data.

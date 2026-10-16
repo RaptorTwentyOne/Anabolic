@@ -70,6 +70,10 @@ pub struct Rule {
     pub cpu_alert_pct: Option<f32>,
     /// …for this long, seconds.
     pub cpu_alert_secs: u32,
+    /// Warn when a process of it holds more handles than this.
+    pub handles_alert: Option<u32>,
+    /// It is a game: game mode starts when it is in front, windowed too.
+    pub game: bool,
 }
 
 impl Default for Rule {
@@ -83,6 +87,8 @@ impl Default for Rule {
             memory_alert_gb: None,
             cpu_alert_pct: None,
             cpu_alert_secs: 30,
+            handles_alert: None,
+            game: false,
         }
     }
 }
@@ -106,6 +112,9 @@ impl Rule {
             Some(false) => parts.push("no efficiency mode".into()),
             None => {}
         }
+        if self.game {
+            parts.push("a game".into());
+        }
         if parts.is_empty() {
             "nothing".into()
         } else {
@@ -120,6 +129,9 @@ impl Rule {
         }
         if let Some(pct) = self.cpu_alert_pct {
             parts.push(format!("CPU over {pct:.0} % for {} s", self.cpu_alert_secs));
+        }
+        if let Some(n) = self.handles_alert {
+            parts.push(format!("over {} handles", fmt::count(n as u64)));
         }
         if parts.is_empty() {
             "none".into()
@@ -182,6 +194,7 @@ pub struct Engine {
     memory_alerted: HashSet<(ProcKey, usize)>,
     cpu_since: HashMap<(ProcKey, usize), Instant>,
     cpu_alerted: HashSet<(ProcKey, usize)>,
+    handles_alerted: HashSet<(ProcKey, usize)>,
     last_seq: u64,
 }
 
@@ -199,6 +212,7 @@ impl Engine {
             self.memory_alerted.clear();
             self.cpu_since.clear();
             self.cpu_alerted.clear();
+            self.handles_alerted.clear();
             self.seen = rules.to_vec();
         }
         let now = Instant::now();
@@ -248,6 +262,21 @@ impl Engine {
                         self.memory_alerted.remove(&id);
                     }
                 }
+                if let Some(limit) = rule.handles_alert {
+                    if p.handles > limit {
+                        if self.handles_alerted.insert(id) {
+                            alerts.push(format!(
+                                "{} ({}) holds {} handles, over the {} its rule allows",
+                                p.name,
+                                p.pid,
+                                fmt::count(p.handles as u64),
+                                fmt::count(limit as u64)
+                            ));
+                        }
+                    } else if (p.handles as f64) < limit as f64 * 0.9 {
+                        self.handles_alerted.remove(&id);
+                    }
+                }
                 if let Some(pct) = rule.cpu_alert_pct {
                     if p.cpu >= pct {
                         let since = *self.cpu_since.entry(id).or_insert(now);
@@ -270,7 +299,33 @@ impl Engine {
         self.memory_alerted.retain(|(k, _)| live.contains(k));
         self.cpu_since.retain(|(k, _), _| live.contains(k));
         self.cpu_alerted.retain(|(k, _)| live.contains(k));
+        self.handles_alerted.retain(|(k, _)| live.contains(k));
         (actions, alerts)
+    }
+}
+
+/// The programs Anabolic blocked from the network, with a way back.
+pub fn blocked_list(ui: &mut Ui, blocked: &[String], out: &mut Vec<crate::proc_table::UiCmd>) {
+    if blocked.is_empty() {
+        return;
+    }
+    ui.add_space(14.0);
+    widgets::section(ui, "Blocked from the network");
+    ui.label(
+        RichText::new(
+            "Windows Firewall rules Anabolic added (named \"Anabolic: block …\"). Every process \
+             started from these files is cut off, in and out.",
+        )
+        .size(theme::META)
+        .color(theme::TEXT_WEAK),
+    );
+    for path in blocked {
+        ui.horizontal(|ui| {
+            if ui.small_button("Allow again").clicked() {
+                out.push(crate::proc_table::UiCmd::Unblock(path.clone()));
+            }
+            ui.label(path.as_str());
+        });
     }
 }
 
@@ -508,6 +563,14 @@ fn editor(ui: &mut Ui, d: &mut Draft, snap: &Snapshot) -> Option<bool> {
                     });
                     ui.end_row();
 
+                    ui.label("Game");
+                    ui.checkbox(&mut d.rule.game, "It is a game: game mode starts while it is in front")
+                        .on_hover_text(
+                            "Game mode notices games that fill the screen by itself; this is for \
+                             games played in a window.",
+                        );
+                    ui.end_row();
+
                     ui.label("Alerts");
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
@@ -539,6 +602,22 @@ fn editor(ui: &mut Ui, d: &mut Draft, snap: &Snapshot) -> Option<bool> {
                                     .suffix(" s"),
                             );
                             d.rule.cpu_alert_pct = on.then_some(pct);
+                        });
+                        ui.horizontal(|ui| {
+                            let mut on = d.rule.handles_alert.is_some();
+                            ui.checkbox(&mut on, "Handles pass")
+                                .on_hover_text(
+                                    "A program that keeps opening handles and never closes them \
+                                     slows itself and Windows down over time.",
+                                );
+                            let mut n = d.rule.handles_alert.unwrap_or(50_000);
+                            ui.add_enabled(
+                                on,
+                                egui::DragValue::new(&mut n)
+                                    .range(1_000..=10_000_000)
+                                    .speed(100.0),
+                            );
+                            d.rule.handles_alert = on.then_some(n);
                         });
                     });
                     ui.end_row();

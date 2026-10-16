@@ -27,6 +27,39 @@ pub enum UiCmd {
     SelectGroup(Arc<str>),
     /// Switch to the process list and select (used from other tabs).
     GoTo(ProcKey),
+    /// The same, by PID (a service's host process).
+    GoToPid(u32),
+    /// Start, stop or reconfigure a service.
+    Service {
+        name: Arc<str>,
+        display: Arc<str>,
+        op: anabolic_core::services::ServiceOp,
+    },
+    /// Select a service on the Services page.
+    SelectService(Arc<str>),
+    /// Turn a startup entry on or off.
+    SetStartup(Box<anabolic_core::startup::StartupItem>, bool),
+    /// Start Anabolic again as administrator.
+    RelaunchElevated,
+    /// Open the Network page.
+    ShowNetwork,
+    /// Ask before cutting a program off the network.
+    ConfirmBlock {
+        path: String,
+        name: Arc<str>,
+    },
+    /// Give a blocked program its network back.
+    Unblock(String),
+    /// Drop one TCP connection of a process (IPv4).
+    CloseConnection {
+        pid: u32,
+        process: Arc<str>,
+        remote: std::net::Ipv4Addr,
+        remote_port: u16,
+        local_port: u16,
+    },
+    /// Open the Services page on the services of one process.
+    ShowServices(u32),
     /// Like `GoTo`, then show this thread in the Threads tab.
     GoToThread {
         key: ProcKey,
@@ -59,6 +92,8 @@ pub enum UiCmd {
     ConfirmResolveNames(ProcKey),
     /// Ask before reading the process' module list (opens it for reading).
     ConfirmLoadModules(ProcKey),
+    /// Ask before writing a memory dump of the process.
+    ConfirmDump(ProcKey, anabolic_core::dump::DumpKind),
     /// Ask before following what the process' threads wait for.
     ConfirmWaitChain(ProcKey),
     /// Drop the wait chain analysis under way.
@@ -297,9 +332,10 @@ pub fn show(
                         if response.double_clicked() && r.has_children {
                             out.push(UiCmd::ToggleCollapse(p.key));
                         }
-                        response.context_menu(|ui| context_menu(ui, p, d, out));
+                        let blocked = &settings.blocked;
+                        response.context_menu(|ui| context_menu(ui, p, d, blocked, out));
                         let open = selected && table.open_menu.replace(false);
-                        keyboard_menu(&response, open, |ui| context_menu(ui, p, d, out));
+                        keyboard_menu(&response, open, |ui| context_menu(ui, p, d, blocked, out));
                     }
                 }
             });
@@ -744,6 +780,7 @@ pub fn context_menu(
     ui: &mut Ui,
     p: &ProcessInfo,
     d: Option<&Arc<ProcessDetails>>,
+    blocked: &[String],
     out: &mut Vec<UiCmd>,
 ) {
     ui.set_min_width(220.0);
@@ -827,8 +864,27 @@ pub fn context_menu(
             names: false,
         },
     );
+    ui.menu_button("Create dump file", |ui| {
+        item(
+            ui,
+            out,
+            "Full: all of its memory\u{2026}",
+            "",
+            UiCmd::ConfirmDump(p.key, anabolic_core::dump::DumpKind::Full),
+        );
+        item(
+            ui,
+            out,
+            "Small: threads, stacks, modules\u{2026}",
+            "",
+            UiCmd::ConfirmDump(p.key, anabolic_core::dump::DumpKind::Small),
+        );
+    });
 
     let path = d.and_then(|d| d.path.clone());
+    if let Some(path) = &path {
+        network_item(ui, p, path, blocked, out);
+    }
     ui.separator();
     if let Some(path) = &path {
         item(
@@ -861,6 +917,49 @@ pub fn context_menu(
         copy(ui, "Path", path.clone());
         copy(ui, "Command line", d.and_then(|d| d.command_line.clone()));
     });
+}
+
+/// Windows' own files serve many programs at once (svchost.exe runs half
+/// of Windows' services): blocking one cuts Windows off.
+pub fn system_file(path: &str) -> bool {
+    let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    path.to_lowercase()
+        .starts_with(&format!("{}\\", windows.to_lowercase()))
+}
+
+fn network_item(
+    ui: &mut Ui,
+    p: &ProcessInfo,
+    path: &str,
+    blocked: &[String],
+    out: &mut Vec<UiCmd>,
+) {
+    if blocked.iter().any(|b| b.eq_ignore_ascii_case(path)) {
+        item(
+            ui,
+            out,
+            "Allow network access again",
+            "",
+            UiCmd::Unblock(path.to_string()),
+        );
+    } else if system_file(path) {
+        ui.add_enabled(false, egui::Button::new("Block network access\u{2026}"))
+            .on_disabled_hover_text(
+                "A Windows file: it serves many programs and Windows itself, so blocking it \
+                 would cut Windows off the network.",
+            );
+    } else {
+        item(
+            ui,
+            out,
+            "Block network access\u{2026}",
+            "",
+            UiCmd::ConfirmBlock {
+                path: path.to_string(),
+                name: p.name.clone(),
+            },
+        );
+    }
 }
 
 fn group_menu(ui: &mut Ui, g: &Group, d: Option<&Arc<ProcessDetails>>, out: &mut Vec<UiCmd>) {

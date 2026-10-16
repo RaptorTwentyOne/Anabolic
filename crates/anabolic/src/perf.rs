@@ -1329,7 +1329,15 @@ fn network(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut Vec<UiCm
         snap,
         |v| format!("{}/s", fmt::bytes(v as u64)),
     );
-    legend(ui, &[(theme::NET_RX, "Receive"), (theme::NET_TX, "Send")]);
+    ui.horizontal(|ui| {
+        legend(ui, &[(theme::NET_RX, "Receive"), (theme::NET_TX, "Send")]);
+        if ui
+            .button("Who is using it: the Network page (Ctrl+8)")
+            .clicked()
+        {
+            out.push(UiCmd::ShowNetwork);
+        }
+    });
     ui.add_space(10.0);
     stats(
         ui,

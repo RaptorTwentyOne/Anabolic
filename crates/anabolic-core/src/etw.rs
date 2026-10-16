@@ -7,10 +7,12 @@ use std::thread::{self, JoinHandle};
 
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Diagnostics::Etw::{
-    CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, EVENT_CONTROL_CODE_CAPTURE_STATE,
-    EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_RECORD, EVENT_TRACE_CONTROL_QUERY,
-    EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
-    EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2, OpenTraceW, PROCESS_TRACE_MODE_EVENT_RECORD,
+    CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
+    ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_CAPTURE_STATE,
+    EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_TYPE_EVENT_ID,
+    EVENT_RECORD, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG,
+    EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2,
+    OpenTraceW, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_RAW_TIMESTAMP,
     PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE, ProcessTrace, QueryAllTracesW, StartTraceW,
     WNODE_FLAG_TRACED_GUID,
 };
@@ -158,6 +160,54 @@ impl Session {
         )
     }
 
+    /// Like `enable`, but only the events with these ids reach the session.
+    /// For chatty providers whose keywords cannot single out the few events
+    /// wanted: ETW drops the rest before they are buffered.
+    pub fn enable_ids(
+        &self,
+        provider: &GUID,
+        level: u8,
+        keywords: u64,
+        ids: &[u16],
+    ) -> Result<(), String> {
+        // EVENT_FILTER_EVENT_ID: FilterIn (BOOLEAN), Reserved, Count (u16),
+        // then the ids.
+        let mut filter: Vec<u16> = Vec::with_capacity(2 + ids.len());
+        filter.push(1);
+        filter.push(ids.len() as u16);
+        filter.extend_from_slice(ids);
+        let mut descriptor = EVENT_FILTER_DESCRIPTOR {
+            Ptr: filter.as_ptr() as u64,
+            Size: (filter.len() * 2) as u32,
+            Type: EVENT_FILTER_TYPE_EVENT_ID,
+        };
+        let parameters = ENABLE_TRACE_PARAMETERS {
+            Version: ENABLE_TRACE_PARAMETERS_VERSION_2,
+            EnableFilterDesc: &mut descriptor,
+            FilterDescCount: 1,
+            ..Default::default()
+        };
+        let err = unsafe {
+            EnableTraceEx2(
+                self.handle,
+                provider,
+                EVENT_CONTROL_CODE_ENABLE_PROVIDER.0,
+                level,
+                keywords,
+                0,
+                0,
+                Some(&parameters),
+            )
+        };
+        if err == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(crate::util::error_text(&windows::core::Error::from(
+                err.to_hresult(),
+            )))
+        }
+    }
+
     /// Asks an enabled provider to log its current state (a rundown).
     pub fn capture_state(&self, provider: &GUID, keywords: u64) -> Result<(), String> {
         self.control(provider, EVENT_CONTROL_CODE_CAPTURE_STATE.0, 0, keywords)
@@ -184,8 +234,12 @@ impl Session {
         // SAFETY: plain data; the unions are filled in below.
         let mut logfile: EVENT_TRACE_LOGFILEW = unsafe { std::mem::zeroed() };
         logfile.LoggerName = PWSTR(self.name.as_ptr().cast_mut());
-        logfile.Anonymous1.ProcessTraceMode =
-            PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+        // Raw timestamps: counter ticks, comparable with the ones some
+        // payloads carry (a DPC's start) and with QpcClock. Without it they
+        // arrive converted to system time.
+        logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME
+            | PROCESS_TRACE_MODE_EVENT_RECORD
+            | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
         logfile.Anonymous2.EventRecordCallback = Some(trampoline);
         logfile.Context = context.cast::<c_void>();
         let trace = unsafe { OpenTraceW(&mut logfile) };
@@ -221,6 +275,83 @@ unsafe extern "system" fn trampoline(record: *mut EVENT_RECORD) {
         let record = &*record;
         let callback = &mut *record.UserContext.cast::<Callback>();
         callback(record);
+    }
+}
+
+/// Turns event timestamps into durations and wall-clock times. Sessions here
+/// stamp events with QueryPerformanceCounter ticks (ClientContext 1).
+#[derive(Clone, Copy, Debug)]
+pub struct QpcClock {
+    /// Ticks per second.
+    pub freq: i64,
+    origin: i64,
+    wall: std::time::SystemTime,
+}
+
+impl QpcClock {
+    pub fn new() -> Self {
+        let mut freq = 0i64;
+        unsafe {
+            let _ = windows::Win32::System::Performance::QueryPerformanceFrequency(&mut freq);
+        }
+        Self {
+            freq: freq.max(1),
+            origin: Self::ticks(),
+            wall: std::time::SystemTime::now(),
+        }
+    }
+
+    /// The counter now, comparable with event timestamps.
+    pub fn ticks() -> i64 {
+        let mut now = 0i64;
+        unsafe {
+            let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut now);
+        }
+        now
+    }
+
+    pub fn ms(&self, ticks: i64) -> f32 {
+        (ticks as f64 * 1000.0 / self.freq as f64) as f32
+    }
+
+    pub fn from_ms(&self, ms: f64) -> i64 {
+        (ms * self.freq as f64 / 1000.0) as i64
+    }
+
+    /// When a timestamp happened, by the clock on the wall.
+    pub fn wall(&self, ticks: i64) -> std::time::SystemTime {
+        let ms = (ticks - self.origin) as f64 * 1000.0 / self.freq as f64;
+        let offset = std::time::Duration::from_secs_f64(ms.abs() / 1000.0);
+        if ms >= 0.0 {
+            self.wall + offset
+        } else {
+            self.wall - offset
+        }
+    }
+}
+
+impl Default for QpcClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Events from 32-bit processes carry 4-byte pointers.
+pub fn pointer_size(record: &EVENT_RECORD) -> usize {
+    const EVENT_HEADER_FLAG_32_BIT_HEADER: u16 = 0x20;
+    if record.EventHeader.Flags & EVENT_HEADER_FLAG_32_BIT_HEADER != 0 {
+        4
+    } else {
+        8
+    }
+}
+
+/// A pointer-sized payload field.
+pub fn pointer_at(d: &[u8], at: usize, size: usize) -> Option<u64> {
+    if size == 4 {
+        u32_at(d, at).map(u64::from)
+    } else {
+        u64_at(d, at)
     }
 }
 

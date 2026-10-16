@@ -114,6 +114,14 @@ pub mod icon {
     pub const SPEED: &str = "\u{EC4A}";
     pub const HISTORY: &str = "\u{E81C}";
     pub const RULES: &str = "\u{E9E9}";
+    /// Two gears.
+    pub const SERVICES: &str = "\u{E9F5}";
+    /// A power button.
+    pub const STARTUP: &str = "\u{E7E8}";
+    /// A monitor with a pulse.
+    pub const STUTTERS: &str = "\u{E9D9}";
+    /// A globe.
+    pub const NETWORK: &str = "\u{E774}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for
