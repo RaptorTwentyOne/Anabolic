@@ -154,6 +154,7 @@ impl HistoryPage {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     page: &mut HistoryPage,
@@ -161,6 +162,7 @@ pub fn show(
     dir: Option<PathBuf>,
     recording: bool,
     keep_days: u32,
+    in_tray: bool,
     out: &mut Vec<UiCmd>,
 ) {
     page.receive();
@@ -176,7 +178,7 @@ pub fn show(
         page.request(ui.ctx(), dir);
     }
 
-    header(ui, page, &today, recording, keep_days);
+    header(ui, page, &today, recording, keep_days, in_tray, out);
     ui.add_space(6.0);
 
     let Some(loaded) = &page.loaded else {
@@ -231,7 +233,15 @@ pub fn show(
     tables(ui, summary, snap, out);
 }
 
-fn header(ui: &mut Ui, page: &mut HistoryPage, today: &str, recording: bool, keep_days: u32) {
+fn header(
+    ui: &mut Ui,
+    page: &mut HistoryPage,
+    today: &str,
+    recording: bool,
+    keep_days: u32,
+    in_tray: bool,
+    out: &mut Vec<UiCmd>,
+) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("History").font(theme::brand(theme::TITLE)));
         ui.add_space(12.0);
@@ -272,6 +282,18 @@ fn header(ui: &mut Ui, page: &mut HistoryPage, today: &str, recording: bool, kee
                     .size(theme::META)
                     .color(theme::TEXT_WEAK),
                 );
+                // Right to left: this lands before the text.
+                if !in_tray
+                    && ui
+                        .small_button("Keep recording with the window closed")
+                        .on_hover_text(
+                            "Closing the window then leaves Anabolic in the notification area, \
+                             recording; its icon opens it again or quits.",
+                        )
+                        .clicked()
+                {
+                    out.push(UiCmd::CloseToTray(true));
+                }
             } else {
                 ui.label(
                     RichText::new("Recording is off (Settings)")

@@ -26,6 +26,7 @@ mod shot;
 mod stalls;
 mod table;
 mod theme;
+mod tray;
 mod tree;
 mod widgets;
 
@@ -66,6 +67,8 @@ fn main() -> eframe::Result {
                 "Anabolic"
             })
             .with_inner_size(window_size())
+            // `--tray` (signing in, say): start in the notification area.
+            .with_visible(!std::env::args().any(|a| a == "--tray"))
             .with_min_inner_size([760.0, 420.0])
             .with_icon(app_icon())
             // Benchmarks and self-screenshots run beside someone's work: do

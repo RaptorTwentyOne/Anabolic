@@ -266,6 +266,9 @@ pub struct Settings {
     /// Days of history kept.
     pub history_days: u32,
     pub rules: Vec<crate::rules::Rule>,
+    /// Closing the window keeps Anabolic running in the notification area,
+    /// recording the history and applying rules.
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -299,6 +302,7 @@ impl Default for Settings {
             record_history: true,
             history_days: 7,
             rules: Vec::new(),
+            close_to_tray: false,
         }
     }
 }

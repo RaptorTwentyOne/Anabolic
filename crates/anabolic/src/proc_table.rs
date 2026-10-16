@@ -96,6 +96,8 @@ pub enum UiCmd {
     OpenUrl(String),
     /// Open the find window and search for this text.
     FindText(String),
+    /// Keep running in the notification area when the window closes.
+    CloseToTray(bool),
     /// Ask before closing handles inside another process.
     ConfirmCloseHandles {
         pid: u32,

@@ -176,6 +176,21 @@ pub struct App {
     pending_stack: bool,
     /// The shortcuts and colours page (F1).
     help_open: bool,
+    /// The notification area icon, while closing hides the window.
+    tray: Option<crate::tray::Tray>,
+    /// There is no notification area (no Explorer on this desktop).
+    tray_failed: bool,
+    /// `--tray`: started hidden, so the icon is needed this session.
+    start_in_tray: bool,
+    /// The window is closed into the notification area.
+    hidden: bool,
+    /// Quit was chosen: let the close through.
+    quitting: bool,
+    /// The first hide this session explained itself.
+    told_hidden: bool,
+    /// The memory alert was active at the last check (notify on its start).
+    alert_seen: bool,
+    tip_at: Instant,
     /// Started with command line overrides: do not persist settings.
     session_only: bool,
 }
@@ -409,6 +424,14 @@ impl App {
             }),
             pending_stack: args.iter().any(|a| a == "--stack"),
             help_open: args.iter().any(|a| a == "--help-page"),
+            tray: None,
+            tray_failed: false,
+            start_in_tray: args.iter().any(|a| a == "--tray"),
+            hidden: args.iter().any(|a| a == "--tray"),
+            quitting: false,
+            told_hidden: false,
+            alert_seen: false,
+            tip_at: Instant::now(),
             taskmgr: None,
             this_app: anabolic_core::taskmgr::app_path().map(|p| p.display().to_string()),
             relaunching: false,
@@ -599,7 +622,8 @@ impl App {
         if self.pending_pane.is_some() && self.pending_pid.is_none() {
             self.open_pending_pane();
         }
-        if self.table.dirty {
+        // Nobody sees the table while the window is closed.
+        if self.table.dirty && !self.hidden {
             self.table
                 .rebuild(&self.snapshot, &self.details, &self.settings);
         }
@@ -875,6 +899,7 @@ impl App {
                 UiCmd::SearchOnline(query) => self.actions.run(Action::SearchOnline(query)),
                 UiCmd::Copy(text) => self.actions.run(Action::Copy(text)),
                 UiCmd::OpenUrl(url) => self.actions.run(Action::OpenUrl(url)),
+                UiCmd::CloseToTray(on) => self.settings.close_to_tray = on,
                 UiCmd::FindText(text) => {
                     self.find.open = true;
                     self.find.query = text.clone();
@@ -1505,6 +1530,21 @@ impl App {
                     ui.selectable_value(&mut self.settings.graph_span, span, span.label());
                 }
             });
+            ui.checkbox(
+                &mut self.settings.close_to_tray,
+                "Keep running in the notification area when closed",
+            )
+            .on_hover_text(
+                "Closing the window leaves Anabolic running: it keeps recording the history and \
+                 applying your rules. Its icon opens it again; right-click it to quit.",
+            );
+            if self.settings.close_to_tray && self.tray_failed {
+                ui.label(
+                    RichText::new("There is no notification area here, so closing still quits.")
+                        .size(theme::CAPTION)
+                        .color(theme::ELEVATED_TEXT),
+                );
+            }
             ui.separator();
             if ui
                 .add(egui::Button::new("Shortcuts and colours").shortcut_text("F1"))
@@ -1768,6 +1808,83 @@ impl App {
         self.go_to(key);
         self.detail_tab = DetailTab::Waits;
         self.settings.show_details = true;
+    }
+
+    /// The notification area icon: there while it is wanted, its clicks,
+    /// its tooltip, and what a closed window should not keep running.
+    fn tray_logic(&mut self, ctx: &egui::Context) {
+        let want = self.settings.close_to_tray || self.start_in_tray;
+        if !want {
+            self.tray_failed = false;
+            if !self.hidden {
+                self.tray = None;
+            }
+        } else if self.tray.is_none() && !self.tray_failed {
+            self.tray = crate::tray::Tray::start(ctx.clone());
+            self.tray_failed = self.tray.is_none();
+        }
+        let Some(tray) = &self.tray else {
+            // Nothing could bring a hidden window back: show it.
+            if self.hidden {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                self.hidden = false;
+            }
+            return;
+        };
+        let events: Vec<crate::tray::TrayEvent> = tray.events().collect();
+        // The memory alert starting while nobody looks at the window.
+        let alert = self.alert.as_ref().map(|a| {
+            let who = match &a.app {
+                Some((name, bytes, count)) if *count > 1 => {
+                    format!("{name} uses {} in {count} processes.", fmt::bytes(*bytes))
+                }
+                Some((name, bytes, _)) => format!("{name} uses {}.", fmt::bytes(*bytes)),
+                None => "Open Anabolic to see who uses it.".into(),
+            };
+            (format!("{} at {:.0} %", a.what, a.pct), who)
+        });
+        if self.hidden
+            && !self.alert_seen
+            && let Some((title, text)) = &alert
+        {
+            tray.notify(title, text, true);
+        }
+        self.alert_seen = alert.is_some();
+        if self.tip_at.elapsed() >= Duration::from_secs(2) {
+            self.tip_at = Instant::now();
+            let s = &self.snapshot.system;
+            let memory = s.memory.used() as f64 * 100.0 / s.memory.total.max(1) as f64;
+            tray.tip(&format!(
+                "Anabolic  ·  CPU {:.0} %  ·  memory {memory:.0} %{}",
+                s.cpu.total,
+                if self.settings.record_history {
+                    "  ·  recording"
+                } else {
+                    ""
+                }
+            ));
+        }
+        for event in events {
+            match event {
+                crate::tray::TrayEvent::Open => self.hidden = false,
+                crate::tray::TrayEvent::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                }
+            }
+        }
+        // Tracing that only feeds a page on screen stops with the window.
+        if self.hidden {
+            if self.cores_traced {
+                self.cores_traced = false;
+                self.collector.send(Command::TraceCores(false));
+            }
+            if self.disks_traced {
+                self.disks_traced = false;
+                self.collector.send(Command::TraceDisks(false));
+            }
+        }
     }
 
     /// `--pane`: waits for what the tab needs, then selects the row.
@@ -2106,15 +2223,27 @@ impl eframe::App for App {
                 anabolic_core::instance::style_title_bar(rgb(theme::PANEL), rgb(theme::BORDER));
         }
         let ctx = ui.ctx().clone();
-        self.pump(&ctx);
-        // Rules: standing orders go to the action thread quietly; alerts
-        // become toasts.
-        let (actions, alerts) = self.rule_engine.step(&self.settings.rules, &self.snapshot);
-        for action in actions {
-            self.actions.run(Action::Quiet(Box::new(action)));
-        }
-        for alert in alerts {
-            self.toasts.error(alert);
+        // `ui` runs only while the window is on screen; `logic` has pumped.
+        self.hidden = false;
+        // Closing hides the window when its icon can bring it back.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && self.tray.is_some()
+            && (self.settings.close_to_tray || self.start_in_tray)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden = true;
+            if !std::mem::replace(&mut self.told_hidden, true)
+                && let Some(tray) = &self.tray
+            {
+                tray.notify(
+                    "Anabolic is still running",
+                    "It keeps recording the history and applying your rules. Click the icon to \
+                     open it; right-click it to quit.",
+                    false,
+                );
+            }
         }
         // Every graph reads its time span from here, in samples.
         crate::graph::set_window(self.settings.graph_span.seconds().map_or(0, |s| {
@@ -2245,6 +2374,7 @@ impl eframe::App for App {
             Tab::History => {
                 let recording = self.settings.record_history;
                 let days = self.settings.history_days;
+                let in_tray = self.settings.close_to_tray;
                 egui::CentralPanel::default_margins().show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -2256,6 +2386,7 @@ impl eframe::App for App {
                                 crate::data_dir().map(|d| d.join("history")),
                                 recording,
                                 days,
+                                in_tray,
                                 &mut cmds,
                             );
                         });
@@ -2284,6 +2415,26 @@ impl eframe::App for App {
         #[cfg(debug_assertions)]
         crate::shot::frame(&ctx);
         self.ui_time = started.elapsed();
+    }
+
+    /// Runs before every frame, and while the window is closed into the
+    /// notification area whenever new data arrives (no frame is drawn
+    /// then): what must go on without a window lives here.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump(ctx);
+        // Rules: standing orders go to the action thread quietly; alerts
+        // become toasts, or notifications while the window is closed.
+        let (actions, alerts) = self.rule_engine.step(&self.settings.rules, &self.snapshot);
+        for action in actions {
+            self.actions.run(Action::Quiet(Box::new(action)));
+        }
+        for alert in alerts {
+            match &self.tray {
+                Some(tray) if self.hidden => tray.notify("Anabolic rule", &alert, true),
+                _ => self.toasts.error(alert),
+            }
+        }
+        self.tray_logic(ctx);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
