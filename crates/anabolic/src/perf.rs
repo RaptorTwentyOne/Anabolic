@@ -35,6 +35,7 @@ pub enum PerfView {
     Adapter(u64),
     Io,
     Gpu(usize),
+    Displays,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -46,6 +47,7 @@ pub fn show(
     cpu_name: &str,
     hw: &HardwareInfo,
     zombies: &ZombieView,
+    displays: Option<&[anabolic_core::displays::Display]>,
     out: &mut Vec<UiCmd>,
 ) {
     egui::Panel::left("perf-nav")
@@ -56,7 +58,7 @@ pub fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(6.0);
-                    nav(ui, view, snap, hw);
+                    nav(ui, view, snap, hw, displays);
                 });
         });
     egui::CentralPanel::default_margins().show(ui, |ui| {
@@ -75,6 +77,7 @@ pub fn show(
             PerfView::Adapter(luid) => adapter(ui, snap, luid),
             PerfView::Io => io(ui, snap, out),
             PerfView::Gpu(i) => gpu(ui, snap, i, out),
+            PerfView::Displays => crate::displays_view::show(ui, displays),
         });
         crate::bench::scrolled_to(output.state.offset.y, output.content_size.y);
     });
@@ -106,7 +109,13 @@ fn volume_letters(d: &anabolic_core::disk::DiskStats) -> String {
     }
 }
 
-fn nav(ui: &mut Ui, view: &mut PerfView, snap: &Snapshot, hw: &HardwareInfo) {
+fn nav(
+    ui: &mut Ui,
+    view: &mut PerfView,
+    snap: &Snapshot,
+    hw: &HardwareInfo,
+    displays: Option<&[anabolic_core::displays::Display]>,
+) {
     let h = &snap.history;
     let s = &snap.system;
     let mem = &s.memory;
@@ -239,6 +248,33 @@ fn nav(ui: &mut Ui, view: &mut PerfView, snap: &Snapshot, hw: &HardwareInfo) {
             Graph::new(Some(100.0)).series(&gh.usage, theme::GPU, true),
         ));
     }
+    cards.push(Card {
+        view: PerfView::Displays,
+        title: "Displays".into(),
+        value: match displays {
+            Some(d) => {
+                let flagged = d
+                    .iter()
+                    .filter(|d| d.below_max() || d.below_native())
+                    .count();
+                let main = d.iter().find(|d| d.primary).map_or(String::new(), |m| {
+                    format!("  ·  main {:.0} Hz", m.refresh_hz)
+                });
+                if flagged > 0 {
+                    format!("{} monitors  ·  {flagged} to look at", d.len())
+                } else {
+                    format!(
+                        "{} monitor{}{main}",
+                        d.len(),
+                        if d.len() == 1 { "" } else { "s" }
+                    )
+                }
+            }
+            None => "Monitors and GPUs".into(),
+        },
+        graph: None,
+        child: false,
+    });
 
     for card in cards {
         let (height, indent) = if card.child {

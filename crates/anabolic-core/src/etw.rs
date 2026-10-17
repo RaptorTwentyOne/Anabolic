@@ -77,7 +77,11 @@ pub fn stop_orphans(prefix: &str) {
                 .cast::<u16>();
             crate::util::from_wide(std::slice::from_raw_parts(at, blank.len()))
         };
-        let Some(pid) = name.strip_prefix(&head).and_then(|p| p.parse::<u32>().ok()) else {
+        // `{prefix}-{pid}`, or `{prefix}-{pid}-{instance}`.
+        let Some(pid) = name
+            .strip_prefix(&head)
+            .and_then(|p| p.split('-').next()?.parse::<u32>().ok())
+        else {
             continue;
         };
         if !process_alive(pid) {
@@ -99,6 +103,43 @@ fn process_alive(pid: u32) -> bool {
     unsafe { GetExitCodeProcess(h.raw(), &mut code) }.is_ok() && code == STILL_ACTIVE.0 as u32
 }
 
+/// Events and real-time buffers a running session dropped, by its name.
+pub fn lost_by_name(name: &[u16]) -> (u32, u32) {
+    let mut buf = properties(name);
+    let props = buf.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>();
+    let err = unsafe {
+        ControlTraceW(
+            CONTROLTRACE_HANDLE::default(),
+            PCWSTR(name.as_ptr()),
+            props,
+            EVENT_TRACE_CONTROL_QUERY,
+        )
+    };
+    if err != ERROR_SUCCESS {
+        return (0, 0);
+    }
+    unsafe { ((*props).EventsLost, (*props).RealTimeBuffersLost) }
+}
+
+/// A session's buffers: size in KB, how many to start with, and how many
+/// it may grow to when the consumer falls behind (0: ETW's default).
+#[derive(Clone, Copy, Debug)]
+pub struct Buffers {
+    pub kb: u32,
+    pub min: u32,
+    pub max: u32,
+}
+
+impl Default for Buffers {
+    fn default() -> Self {
+        Self {
+            kb: 256,
+            min: 16,
+            max: 0,
+        }
+    }
+}
+
 /// A running trace session; stopped when dropped.
 pub struct Session {
     name: Vec<u16>,
@@ -109,8 +150,37 @@ impl Session {
     /// `extra_mode` and `enable_flags` are only needed for kernel (system
     /// logger) sessions.
     pub fn start(prefix: &str, extra_mode: u32, enable_flags: u32) -> Result<Self, String> {
+        Self::start_named(
+            prefix,
+            format!("{prefix}-{}", std::process::id()),
+            extra_mode,
+            enable_flags,
+            Buffers::default(),
+        )
+    }
+
+    /// Like `start`, for a kind of session this process may run several of
+    /// at once: each instance gets a name of its own, and buffers to suit.
+    pub fn start_instance(
+        prefix: &str,
+        instance: u32,
+        extra_mode: u32,
+        enable_flags: u32,
+        buffers: Buffers,
+    ) -> Result<Self, String> {
+        let name = format!("{prefix}-{}-{instance}", std::process::id());
+        Self::start_named(prefix, name, extra_mode, enable_flags, buffers)
+    }
+
+    fn start_named(
+        prefix: &str,
+        name: String,
+        extra_mode: u32,
+        enable_flags: u32,
+        buffers: Buffers,
+    ) -> Result<Self, String> {
         stop_orphans(prefix);
-        let name = wide(&format!("{prefix}-{}", std::process::id()));
+        let name = wide(&name);
         // Left behind by an earlier session of this same process.
         stop_by_name(&name);
         let mut buf = properties(&name);
@@ -118,8 +188,10 @@ impl Session {
         unsafe {
             (*props).LogFileMode = EVENT_TRACE_REAL_TIME_MODE | extra_mode;
             (*props).FlushTimer = 1;
-            (*props).BufferSize = 256; // KB
-            (*props).MinimumBuffers = 16;
+            (*props).BufferSize = buffers.kb;
+            (*props).MinimumBuffers = buffers.min;
+            // 0 leaves the maximum to ETW.
+            (*props).MaximumBuffers = buffers.max;
             (*props).EnableFlags = EVENT_TRACE_FLAG(enable_flags);
         }
         let mut handle = CONTROLTRACE_HANDLE::default();
@@ -135,20 +207,13 @@ impl Session {
     /// Events and real-time buffers the session dropped so far (it was
     /// producing faster than we consumed).
     pub fn lost(&self) -> (u32, u32) {
-        let mut buf = properties(&self.name);
-        let props = buf.as_mut_ptr().cast::<EVENT_TRACE_PROPERTIES>();
-        let err = unsafe {
-            ControlTraceW(
-                CONTROLTRACE_HANDLE::default(),
-                PCWSTR(self.name.as_ptr()),
-                props,
-                EVENT_TRACE_CONTROL_QUERY,
-            )
-        };
-        if err != ERROR_SUCCESS {
-            return (0, 0);
-        }
-        unsafe { ((*props).EventsLost, (*props).RealTimeBuffersLost) }
+        lost_by_name(&self.name)
+    }
+
+    /// The session's name (NUL-terminated UTF-16), for `lost_by_name` from
+    /// a thread that does not own the session.
+    pub fn name(&self) -> Vec<u16> {
+        self.name.clone()
     }
 
     pub fn enable(&self, provider: &GUID, level: u8, keywords: u64) -> Result<(), String> {

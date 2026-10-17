@@ -133,6 +133,13 @@ pub fn serve(event: OwnedHandle, on_activate: impl Fn() + Send + 'static) {
 pub fn bring_to_front() -> bool {
     for _ in 0..50 {
         if let Some(hwnd) = own_window() {
+            // Ctrl+Shift+Esc during a full-screen game: open beside it, on
+            // another monitor, rather than over it. Before anything else,
+            // while the game is still the foreground window.
+            if let Some(game) = crate::placement::fullscreen_monitor() {
+                crate::placement::avoid(hwnd, game);
+            }
+            crate::placement::rescue(hwnd);
             unsafe {
                 if IsIconic(hwnd).as_bool() {
                     let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -183,7 +190,7 @@ pub fn style_title_bar(caption: u32, border: u32) -> bool {
 }
 
 /// This process' top-level "Anabolic…" window.
-fn own_window() -> Option<HWND> {
+pub fn own_window() -> Option<HWND> {
     struct Search {
         pid: u32,
         found: Option<HWND>,

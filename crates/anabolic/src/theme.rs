@@ -122,6 +122,8 @@ pub mod icon {
     pub const STUTTERS: &str = "\u{E9D9}";
     /// A globe.
     pub const NETWORK: &str = "\u{E774}";
+    /// A recording dot.
+    pub const RECORD: &str = "\u{E7C8}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

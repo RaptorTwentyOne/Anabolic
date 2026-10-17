@@ -213,6 +213,7 @@ pub enum Tab {
     Startup,
     Stutters,
     Network,
+    Activity,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]

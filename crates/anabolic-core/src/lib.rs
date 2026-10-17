@@ -8,12 +8,14 @@
 #![cfg(windows)]
 
 pub mod actions;
+pub mod activity;
 pub mod collector;
 pub mod coretrace;
 pub mod cpu;
 pub mod disk;
 pub mod disktrace;
 pub mod diskusage;
+pub mod displays;
 pub mod dnscache;
 pub mod dump;
 pub mod ending;
@@ -31,12 +33,14 @@ pub mod history;
 pub mod hwinfo;
 pub mod instance;
 pub mod latency;
+pub mod lineage;
 pub mod memory;
 pub mod model;
 pub mod modules;
 pub mod net;
 pub mod nettrace;
 pub mod ntapi;
+pub mod placement;
 pub mod power;
 pub mod recorder;
 pub mod resolver;

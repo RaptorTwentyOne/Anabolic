@@ -43,6 +43,11 @@ pub enum UiCmd {
     RelaunchElevated,
     /// Open the Network page.
     ShowNetwork,
+    /// What a process does, live, on the Activity page (with the processes
+    /// under it in the tree view).
+    LiveActivity(ProcKey),
+    /// The same for every process of an Apps group.
+    LiveActivityGroup(Arc<str>),
     /// Ask before cutting a program off the network.
     ConfirmBlock {
         path: String,
@@ -864,6 +869,7 @@ pub fn context_menu(
             names: false,
         },
     );
+    item(ui, out, "Live activity", "", UiCmd::LiveActivity(p.key));
     ui.menu_button("Create dump file", |ui| {
         item(
             ui,
@@ -982,6 +988,13 @@ fn group_menu(ui: &mut Ui, g: &Group, d: Option<&Arc<ProcessDetails>>, out: &mut
         "Expand / collapse",
         "",
         UiCmd::ToggleGroup(g.id.clone()),
+    );
+    item(
+        ui,
+        out,
+        &format!("Live activity of all {}", g.members.len()),
+        "",
+        UiCmd::LiveActivityGroup(g.id.clone()),
     );
     ui.separator();
     if let Some(path) = d.and_then(|d| d.path.clone()) {

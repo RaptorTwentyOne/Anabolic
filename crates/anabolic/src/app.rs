@@ -152,10 +152,27 @@ pub struct App {
     stutters: crate::stutters_page::StuttersPage,
     /// Processes whose handles, memory or threads keep climbing.
     growth: anabolic_core::growth::Growth,
+    /// Command lines, kept after their processes exit: a parent that is
+    /// gone is still described in "Started by".
+    cmdlines: HashMap<ProcKey, Arc<str>>,
+    /// The monitor a full-screen game filled at startup: the window moves
+    /// off it once it exists.
+    avoid_monitor: Option<isize>,
+    /// The window's monitor was last checked (one unplugged or switched
+    /// off strands a window).
+    placed_at: Instant,
+    /// The monitors, read on a thread of their own while their view is open.
+    displays: Option<Arc<Vec<anabolic_core::displays::Display>>>,
+    displays_rx: Option<Receiver<Vec<anabolic_core::displays::Display>>>,
+    displays_at: Option<Instant>,
+    /// What draws the window: the GPU, or Windows' software renderer.
+    renderer: Option<String>,
     game_mode: crate::gamemode::GameMode,
     /// Frame and DPC tracing are on.
     stutters_traced: bool,
     network: crate::network_page::NetworkPage,
+    /// Recording what a program does, step by step.
+    activity: crate::activity_page::ActivityPage,
     /// Every connection is being published (the Network page is open).
     network_watched: bool,
     /// Logical processor shown in detail on the CPU view.
@@ -229,6 +246,7 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         hardening: Vec<HardeningItem>,
         elevated: bool,
+        avoid_monitor: Option<isize>,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
         let mut settings: Settings = cc
@@ -268,6 +286,9 @@ impl App {
                     | "--startup"
                     | "--stutters"
                     | "--network"
+                    | "--activity"
+                    | "--activity-filter"
+                    | "--record"
             )
         });
         if args.iter().any(|a| a == "--history") {
@@ -287,6 +308,27 @@ impl App {
         }
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
+        }
+        if args.iter().any(|a| a == "--activity") {
+            settings.tab = Tab::Activity;
+        }
+        // `--record PID` or `--record all`: record from the start (tests).
+        let mut activity = crate::activity_page::ActivityPage::default();
+        match value("--record") {
+            Some("all") => {
+                activity.record_everything();
+                settings.tab = Tab::Activity;
+            }
+            Some(v) => {
+                if let Ok(pid) = v.parse::<u32>() {
+                    activity.record_pids(&[pid], format!("PID {pid} and what it starts"));
+                    settings.tab = Tab::Activity;
+                }
+            }
+            None => {}
+        }
+        if let Some(text) = value("--activity-filter") {
+            activity.set_filter(text);
         }
         // `--network [programs|connections|listening|destinations]`.
         let mut network = crate::network_page::NetworkPage::default();
@@ -318,6 +360,7 @@ impl App {
                 Some("gpu") => perf_view = PerfView::Gpu(0),
                 Some("cpuinfo") => perf_view = PerfView::CpuInfo,
                 Some("meminfo") => perf_view = PerfView::MemoryInfo,
+                Some("displays") => perf_view = PerfView::Displays,
                 Some(v) if v.starts_with("disk") => {
                     if let Ok(n) = v[4..].parse() {
                         perf_view = PerfView::PhysicalDisk(n);
@@ -462,7 +505,15 @@ impl App {
             stutters_traced: false,
             network,
             network_watched: false,
+            activity,
             growth: Default::default(),
+            cmdlines: HashMap::new(),
+            avoid_monitor,
+            placed_at: Instant::now(),
+            displays: None,
+            displays_rx: None,
+            displays_at: None,
+            renderer: None,
             game_mode: Default::default(),
             zombie_view,
             kill_dialog: None,
@@ -528,6 +579,13 @@ impl App {
     fn pump(&mut self, ctx: &egui::Context) {
         let mut new_details = false;
         for e in self.collector.details().try_iter() {
+            if let Some(cmd) = &e.details.command_line {
+                // A long session forgets the oldest at once, rarely.
+                if self.cmdlines.len() > 50_000 {
+                    self.cmdlines.clear();
+                }
+                self.cmdlines.insert(e.key, cmd.as_str().into());
+            }
             self.details.insert(e.key, e.details);
             new_details = true;
         }
@@ -1127,6 +1185,28 @@ impl App {
                     local_port,
                 }),
                 UiCmd::ShowNetwork => self.settings.tab = Tab::Network,
+                UiCmd::LiveActivity(key) => {
+                    use crate::activity_page::Watch;
+                    if self.snapshot.find(key).is_some() {
+                        // The tree view shows a process with the ones under
+                        // it; so does its live activity.
+                        let watch = if self.settings.view == crate::settings::View::Tree {
+                            Watch::Tree(key)
+                        } else {
+                            Watch::Process(key)
+                        };
+                        self.activity.watch(watch, &self.snapshot);
+                        self.settings.tab = Tab::Activity;
+                    }
+                }
+                UiCmd::LiveActivityGroup(id) => {
+                    if let Some(g) = self.table.group(&id) {
+                        let name = g.agg.name.clone();
+                        self.activity
+                            .watch(crate::activity_page::Watch::Name(name), &self.snapshot);
+                        self.settings.tab = Tab::Activity;
+                    }
+                }
                 UiCmd::RelaunchElevated => {
                     self.relaunching = true;
                     self.actions.run(Action::RelaunchElevated);
@@ -1547,6 +1627,9 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::Num8) {
                 self.settings.tab = Tab::Network;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::Num9) {
+                self.settings.tab = Tab::Activity;
+            }
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
@@ -1681,6 +1764,7 @@ impl App {
             (Tab::Startup, theme::icon::STARTUP, "Startup", "Ctrl+6"),
             (Tab::Stutters, theme::icon::STUTTERS, "Stutters", "Ctrl+7"),
             (Tab::Network, theme::icon::NETWORK, "Network", "Ctrl+8"),
+            (Tab::Activity, theme::icon::RECORD, "Activity", "Ctrl+9"),
         ];
         for (tab, icon, label, keys) in pages {
             let selected = self.settings.tab == tab;
@@ -2097,6 +2181,9 @@ impl App {
             RichText::new(format!("Information level: {:?}", self.snapshot.info_level))
                 .color(theme::TEXT_WEAK),
         );
+        if let Some(renderer) = &self.renderer {
+            ui.label(RichText::new(format!("Drawn by {renderer}")).color(theme::TEXT_WEAK));
+        }
         let mark = |ui: &mut egui::Ui, ok: bool| {
             let (glyph, color) = if ok {
                 (theme::icon::CHECK, theme::GOOD)
@@ -2265,6 +2352,22 @@ impl App {
                 self.collector.send(Command::NetActivity(false));
             }
         }
+    }
+
+    /// Keeps the window off a full-screen game's monitor at startup, and on
+    /// a monitor that exists (checked every couple of seconds).
+    fn place_window(&mut self) {
+        if self.avoid_monitor.is_none() && self.placed_at.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        let Some(hwnd) = anabolic_core::instance::own_window() else {
+            return;
+        };
+        if let Some(game) = self.avoid_monitor.take() {
+            anabolic_core::placement::avoid(hwnd, game);
+        }
+        self.placed_at = Instant::now();
+        anabolic_core::placement::rescue(hwnd);
     }
 
     /// `--pane`: waits for what the tab needs, then selects the row.
@@ -2639,12 +2742,35 @@ impl eframe::App for App {
             Tab::Startup => "Startup".to_string(),
             Tab::Stutters => "Stutters".to_string(),
             Tab::Network => "Network".to_string(),
+            Tab::Activity => "Activity".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
         if !self.title_bar_styled {
             let rgb = |c: Color32| u32::from_be_bytes([0, c.r(), c.g(), c.b()]);
             self.title_bar_styled =
                 anabolic_core::instance::style_title_bar(rgb(theme::PANEL), rgb(theme::BORDER));
+        }
+        if self.renderer.is_none()
+            && let Some(renderer) = match frame.wgpu_render_state() {
+                Some(state) => {
+                    let info = state.adapter.get_info();
+                    Some(if info.device_type == eframe::wgpu::DeviceType::Cpu {
+                        "Windows' software renderer (no graphics driver with Direct3D 12)"
+                            .to_string()
+                    } else {
+                        format!("{} (Direct3D 12)", info.name)
+                    })
+                }
+                None => frame
+                    .gl()
+                    .map(|_| "OpenGL (the graphics driver has no Direct3D 12)".to_string()),
+            }
+        {
+            // ANABOLIC_RENDERER_LOG=<file>: say which, for tests.
+            if let Some(path) = std::env::var_os("ANABOLIC_RENDERER_LOG") {
+                let _ = std::fs::write(path, &renderer);
+            }
+            self.renderer = Some(renderer);
         }
         let ctx = ui.ctx().clone();
         // `ui` runs only while the window is on screen; `logic` has pumped.
@@ -2756,6 +2882,10 @@ impl eframe::App for App {
                                     &self.services.hosted(key.pid),
                                     &self.growth,
                                     &self.settings.blocked,
+                                    &crate::details::Origin {
+                                        cmdlines: &self.cmdlines,
+                                        services: self.services.list.as_deref(),
+                                    },
                                     &mut cmds,
                                 ),
                                 (None, None) => {}
@@ -2784,6 +2914,7 @@ impl eframe::App for App {
                         &self.cpu_name,
                         &self.hardware,
                         &self.zombie_view,
+                        self.displays.as_deref().map(Vec::as_slice),
                         &mut cmds,
                     );
                 });
@@ -2841,6 +2972,18 @@ impl eframe::App for App {
                     );
                 });
             }
+            Tab::Activity => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::activity_page::show(
+                        ui,
+                        &mut self.activity,
+                        &self.snapshot,
+                        self.elevated,
+                        self.relaunching,
+                        &mut cmds,
+                    );
+                });
+            }
             Tab::Network => {
                 egui::CentralPanel::default_margins().show(ui, |ui| {
                     crate::network_page::show(
@@ -2889,6 +3032,32 @@ impl eframe::App for App {
         if self.services_at.is_none_or(|at| at.elapsed() >= every) {
             self.services_at = Some(Instant::now());
             self.service_watch.refresh();
+        }
+        self.place_window();
+        // The monitors: every 5 s while their view is open.
+        if let Some(rx) = &self.displays_rx
+            && let Ok(list) = rx.try_recv()
+        {
+            self.displays = Some(Arc::new(list));
+            self.displays_rx = None;
+        }
+        let want = self.settings.tab == Tab::Performance && self.perf_view == PerfView::Displays;
+        if want
+            && self.displays_rx.is_none()
+            && self
+                .displays_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(5))
+        {
+            self.displays_at = Some(Instant::now());
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let wake = ctx.clone();
+            let _ = std::thread::Builder::new()
+                .name("anabolic-displays".into())
+                .spawn(move || {
+                    let _ = tx.send(anabolic_core::displays::displays());
+                    wake.request_repaint();
+                });
+            self.displays_rx = Some(rx);
         }
         // Startup entries change rarely: read on opening the page, then
         // every half minute while it stays open.
@@ -2961,6 +3130,8 @@ impl eframe::App for App {
         }
         self.stutters.observe(&self.snapshot);
         self.growth.observe(&self.snapshot);
+        // A recording goes on with the window closed.
+        self.activity.poll(&self.snapshot);
         for action in self.game_mode.step(
             &mut self.settings.game,
             &self.snapshot,
@@ -2974,7 +3145,7 @@ impl eframe::App for App {
         crate::bench::inject(raw_input);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Stops the ETW session before the process goes away.
         self.collector.shutdown();
     }

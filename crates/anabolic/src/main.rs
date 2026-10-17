@@ -7,10 +7,12 @@
 #![windows_subsystem = "windows"]
 
 mod access;
+mod activity_page;
 mod app;
 mod bench;
 mod details;
 mod dialogs;
+mod displays_view;
 mod fmt;
 mod gamemode;
 mod graph;
@@ -19,6 +21,7 @@ mod history_page;
 mod icons;
 mod netnames;
 mod network_page;
+mod origin;
 mod panes;
 mod perf;
 mod proc_table;
@@ -61,10 +64,15 @@ fn main() -> eframe::Result {
             Claim::Unavailable => None,
         }
     };
+    // A full-screen game in front now (Ctrl+Shift+Esc mid-game): the
+    // window opens on another monitor. Read before the window takes the
+    // foreground.
+    let avoid = anabolic_core::placement::fullscreen_monitor();
     // Before anything else: priority, EcoQoS opt-out, privileges.
     let hardening = anabolic_core::hardening::harden_process();
     let elevated = anabolic_core::hardening::is_elevated();
 
+    let draw = renderer();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(if elevated {
@@ -80,7 +88,10 @@ fn main() -> eframe::Result {
             // Benchmarks and self-screenshots run beside someone's work: do
             // not take the focus from them.
             .with_active(!(bench::enabled() || std::env::var_os("ANABOLIC_SCREENSHOT").is_some())),
-        renderer: eframe::Renderer::Wgpu,
+        renderer: match draw {
+            Draw::OpenGl => eframe::Renderer::Glow,
+            Draw::Direct3D12 | Draw::Software => eframe::Renderer::Wgpu,
+        },
         wgpu_options: wgpu_options(),
         // Test instances keep their state elsewhere, away from the user's.
         // (eframe wants the file here, not the folder its docs mention.)
@@ -88,7 +99,7 @@ fn main() -> eframe::Result {
             .map(|dir| std::path::Path::new(&dir).join("app.ron")),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Anabolic",
         options,
         Box::new(move |cc| {
@@ -99,9 +110,90 @@ fn main() -> eframe::Result {
                     stalls::wake(&ctx);
                 });
             }
-            Ok(Box::new(app::App::new(cc, hardening, elevated)))
+            Ok(Box::new(app::App::new(cc, hardening, elevated, avoid)))
         }),
-    )
+    );
+    // A window program has nowhere to print why it could not start.
+    if let Err(e) = &result {
+        use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let text: Vec<u16> = format!(
+            "Anabolic could not start: {e}\n\nIt draws with Direct3D 12, which Windows 10 and 11 \
+             have on every PC: through the graphics driver, or without one through Windows' \
+             own software renderer. Updating the graphics driver usually helps."
+        )
+        .encode_utf16()
+        .chain([0])
+        .collect();
+        unsafe {
+            MessageBoxW(
+                None,
+                windows::core::PCWSTR(text.as_ptr()),
+                windows::core::w!("Anabolic"),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    result
+}
+
+/// What draws the window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Draw {
+    Direct3D12,
+    /// A GPU whose driver has no Direct3D 12 (one from before about 2012):
+    /// its OpenGL driver still draws in hardware.
+    OpenGl,
+    /// No GPU at all (a virtual machine without one): Windows' software
+    /// renderer, WARP. It costs whole cores per frame; the last resort.
+    Software,
+}
+
+/// Direct3D 12 when a GPU has it; else OpenGL on a GPU that has a driver;
+/// else Windows' software renderer. ANABOLIC_RENDERER=gl|software picks
+/// one (tests).
+fn renderer() -> Draw {
+    match std::env::var("ANABOLIC_RENDERER").as_deref() {
+        Ok("gl") => return Draw::OpenGl,
+        Ok("software") => return Draw::Software,
+        _ => {}
+    }
+    if std::env::var_os("ANABOLIC_SOFTWARE").is_some() {
+        return Draw::Software;
+    }
+    use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
+    use windows::Win32::Graphics::Direct3D12::{D3D12CreateDevice, ID3D12Device};
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+    };
+    // Unknown: let wgpu find out.
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return Draw::Direct3D12;
+    };
+    let mut gpu = false;
+    for i in 0.. {
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(i) }) else {
+            break;
+        };
+        let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+            continue;
+        };
+        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            continue;
+        }
+        gpu = true;
+        // Asks whether it could, without making a device.
+        let can = unsafe {
+            D3D12CreateDevice::<_, ID3D12Device>(
+                &adapter,
+                D3D_FEATURE_LEVEL_11_0,
+                std::ptr::null_mut(),
+            )
+        };
+        if can.is_ok() {
+            return Draw::Direct3D12;
+        }
+    }
+    if gpu { Draw::OpenGl } else { Draw::Software }
 }
 
 /// Direct3D 12, presented with the flip model. OpenGL on Windows goes
@@ -163,6 +255,16 @@ fn pick_adapter(
         best
     };
     let presents = |a: &&wgpu::Adapter| surface.is_none_or(|s| a.is_surface_supported(s));
+    // ANABOLIC_SOFTWARE=1: draw as a PC without a Direct3D 12 driver would,
+    // with Windows' software renderer (WARP).
+    if std::env::var_os("ANABOLIC_SOFTWARE").is_some() {
+        return adapters
+            .iter()
+            .filter(presents)
+            .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
+            .cloned()
+            .ok_or_else(|| "no software renderer".to_string());
+    }
     let hardware = |a: &&wgpu::Adapter| a.get_info().device_type != wgpu::DeviceType::Cpu;
     adapters
         .iter()

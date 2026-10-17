@@ -18,6 +18,12 @@ const KEYWORD_IPV4: u64 = 0x10;
 const KEYWORD_IPV6: u64 = 0x20;
 const LEVEL_INFORMATION: u8 = 4;
 const DNS_CLIENT: GUID = GUID::from_u128(0x1c95126e_7eea_49a9_a3fe_a378b03ddb4d);
+/// Microsoft-Windows-Kernel-Process: every process start and stop, with the
+/// parent, even for one that lives a few milliseconds.
+const KERNEL_PROCESS: GUID = GUID::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
+const KEYWORD_PROCESS: u64 = 0x10;
+const PROCESS_START: u16 = 1;
+const PROCESS_STOP: u16 = 2;
 /// "DNS query is completed", in the program that asked.
 const DNS_QUERY_COMPLETED: u16 = 3008;
 const LEVEL_VERBOSE: u8 = 5;
@@ -81,6 +87,72 @@ impl DnsLookup {
     }
 }
 
+/// A process started.
+#[derive(Clone, Debug)]
+pub struct ProcessStart {
+    pub pid: u32,
+    /// FILETIME, as in ProcKey.
+    pub create_time: i64,
+    pub ppid: u32,
+    pub elevated: bool,
+    /// The NT path of its file (\Device\HarddiskVolumeN\...).
+    pub image: String,
+}
+
+/// A process exited.
+#[derive(Clone, Copy, Debug)]
+pub struct ProcessStop {
+    pub pid: u32,
+    pub create_time: i64,
+    pub exit_time: i64,
+    pub exit_code: u32,
+}
+
+/// ProcessStart, version 4 (Windows 10 and 11; older layouts are left to
+/// the process scans): ProcessID, ProcessSequenceNumber, CreateTime,
+/// ParentProcessID, ParentProcessSequenceNumber, SessionID, Flags,
+/// ProcessTokenElevationType, ProcessTokenIsElevated, MandatoryLabel (a
+/// SID), ImageName, ...
+pub fn parse_start(version: u8, d: &[u8]) -> Option<ProcessStart> {
+    if version < 4 {
+        return None;
+    }
+    let pid = u32_le(d, 0)?;
+    let create_time = i64::from_le_bytes(d.get(12..20)?.try_into().ok()?);
+    let ppid = u32_le(d, 20)?;
+    let elevated = u32_le(d, 44)? != 0;
+    // The SID: revision, sub-authority count, 6-byte authority, then the
+    // sub-authorities.
+    let count = *d.get(49)? as usize;
+    let (image, _) = wide_str(d, 48 + 8 + 4 * count)?;
+    Some(ProcessStart {
+        pid,
+        create_time,
+        ppid,
+        elevated,
+        image,
+    })
+}
+
+/// ProcessStop, version 2: ProcessID, ProcessSequenceNumber, CreateTime,
+/// ExitTime, ExitCode, ...
+pub fn parse_stop(version: u8, d: &[u8]) -> Option<ProcessStop> {
+    if version < 2 {
+        return None;
+    }
+    Some(ProcessStop {
+        pid: u32_le(d, 0)?,
+        create_time: i64::from_le_bytes(d.get(12..20)?.try_into().ok()?),
+        exit_time: i64::from_le_bytes(d.get(20..28)?.try_into().ok()?),
+        exit_code: u32_le(d, 28)?,
+    })
+}
+
+/// Tests that start the network trace share its session name (it carries
+/// the process id): one at a time, or each stops the other's.
+#[cfg(test)]
+pub(crate) static TEST_SESSION: Mutex<()> = Mutex::new(());
+
 /// Bytes seen since the last `take`.
 #[derive(Default, Debug)]
 pub struct Traffic {
@@ -88,6 +160,8 @@ pub struct Traffic {
     pub per_pid: HashMap<u32, (u64, u64)>,
     pub per_conn: HashMap<ConnKey, (u64, u64)>,
     pub lookups: Vec<DnsLookup>,
+    pub starts: Vec<ProcessStart>,
+    pub stops: Vec<ProcessStop>,
 }
 
 fn wide_str(d: &[u8], at: usize) -> Option<(String, usize)> {
@@ -158,9 +232,28 @@ impl NetTracer {
         )?;
         // Names are a bonus: traffic still counts if this is refused.
         let _ = session.enable_ids(&DNS_CLIENT, LEVEL_VERBOSE, u64::MAX, &[DNS_QUERY_COMPLETED]);
+        // Lineage, likewise.
+        let _ = session.enable_ids(
+            &KERNEL_PROCESS,
+            LEVEL_VERBOSE,
+            KEYWORD_PROCESS,
+            &[PROCESS_START, PROCESS_STOP],
+        );
         let traffic = Arc::new(Mutex::new(Traffic::default()));
         let sink = traffic.clone();
         session.consume(move |record| {
+            if record.EventHeader.ProviderId == KERNEL_PROCESS {
+                let descriptor = record.EventHeader.EventDescriptor;
+                let d = etw::user_data(record);
+                if let Ok(mut t) = sink.lock() {
+                    match descriptor.Id {
+                        PROCESS_START => t.starts.extend(parse_start(descriptor.Version, d)),
+                        PROCESS_STOP => t.stops.extend(parse_stop(descriptor.Version, d)),
+                        _ => {}
+                    }
+                }
+                return;
+            }
             if record.EventHeader.ProviderId == DNS_CLIENT {
                 if record.EventHeader.EventDescriptor.Id == DNS_QUERY_COMPLETED
                     && let Some(lookup) =
@@ -297,6 +390,7 @@ mod tests {
     /// Needs an elevated test run; skips itself otherwise.
     #[test]
     fn sees_own_tcp_traffic() {
+        let _one_at_a_time = TEST_SESSION.lock();
         if !crate::hardening::is_elevated() {
             eprintln!("not elevated, skipping");
             return;

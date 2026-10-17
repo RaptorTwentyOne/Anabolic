@@ -478,6 +478,7 @@ pub fn show(
     services: &[(Arc<str>, Arc<str>)],
     growth: &anabolic_core::growth::Growth,
     blocked: &[String],
+    origin: &Origin,
     out: &mut Vec<UiCmd>,
 ) {
     let Some(p) = snap.find(key) else {
@@ -555,6 +556,21 @@ pub fn show(
                 });
             }
         }
+        if !p.is_pseudo() && p.state != ProcState::Exited {
+            let live =
+                egui::Button::new(widgets::icon_text(ui, theme::icon::RECORD, "Live activity"));
+            if ui
+                .add(live)
+                .on_hover_text(
+                    "What it does from now on, step by step, on the Activity page: files, \
+                     registry, network, programs started. In the tree view, with the processes \
+                     under it.",
+                )
+                .clicked()
+            {
+                out.push(UiCmd::LiveActivity(p.key));
+            }
+        }
         if !p.is_pseudo() && p.state != ProcState::Exited && p.threads > 0 {
             let (glyph, label, cmd): (_, _, fn(ProcKey) -> UiCmd) =
                 if p.state == ProcState::Suspended {
@@ -576,7 +592,7 @@ pub fn show(
             if needs_end_card(p, ends) {
                 end_card(ui, p, snap, ends, out);
             }
-            general(ui, p, snap, details, services, growth, out)
+            general(ui, p, snap, details, services, growth, origin, out)
         }
         DetailTab::Threads => threads(
             ui,
@@ -599,6 +615,14 @@ pub fn show(
     }
 }
 
+/// What the "Started by" block reads: command lines kept after their
+/// processes exit, and the services list (who a service host is).
+pub struct Origin<'a> {
+    pub cmdlines: &'a std::collections::HashMap<ProcKey, Arc<str>>,
+    pub services: Option<&'a anabolic_core::services::ServiceList>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn general(
     ui: &mut Ui,
     p: &ProcessInfo,
@@ -606,6 +630,7 @@ fn general(
     details: &Details,
     services: &[(Arc<str>, Arc<str>)],
     growth: &anabolic_core::growth::Growth,
+    origin: &Origin,
     out: &mut Vec<UiCmd>,
 ) {
     let d = details.get(&p.key);
@@ -651,7 +676,17 @@ fn general(
                                 }
                             }
                             None => {
-                                ui.label(format!("<exited> ({})", p.ppid));
+                                // Gone: named when this session saw it.
+                                let known = snap
+                                    .selected
+                                    .as_ref()
+                                    .filter(|s| s.key == p.key)
+                                    .and_then(|s| s.ancestry.first());
+                                let text = match known {
+                                    Some(a) => format!("{} ({}), exited", a.name, a.key.pid),
+                                    None => format!("exited ({})", p.ppid),
+                                };
+                                ui.label(RichText::new(text).color(theme::TEXT_WEAK));
                             }
                         }
                         ui.end_row();
@@ -717,6 +752,7 @@ fn general(
                             ui.end_row();
                         }
                     });
+                crate::origin::show(ui, p, snap, origin.cmdlines, origin.services, out);
 
                 let ui = &mut cols[1];
                 counters(ui, p);
@@ -1914,6 +1950,21 @@ pub fn show_group(
                 .clicked()
             {
                 out.push(UiCmd::KillGroup(group.id.clone()));
+            }
+            // Right to left: left of the button above.
+            if ui
+                .add(egui::Button::new(widgets::icon_text(
+                    ui,
+                    theme::icon::RECORD,
+                    "Live activity",
+                )))
+                .on_hover_text(format!(
+                    "What every {} does from now on, step by step, on the Activity page",
+                    group.agg.name
+                ))
+                .clicked()
+            {
+                out.push(UiCmd::LiveActivityGroup(group.id.clone()));
             }
         },
     );

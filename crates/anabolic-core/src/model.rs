@@ -374,6 +374,10 @@ pub struct SelectedThreads {
     pub threads: Vec<ThreadInfo>,
     /// Endpoints the process exchanged traffic with recently.
     pub connections: Vec<Connection>,
+    /// Its parent, grandparent and so on, as far as this session knows.
+    pub ancestry: Vec<crate::lineage::Ancestor>,
+    /// Its own start record (image path, elevation), when seen.
+    pub origin: Option<crate::lineage::Ancestor>,
 }
 
 #[derive(Clone, Debug)]

@@ -237,6 +237,8 @@ struct State {
     /// What Windows' DNS cache holds, read now and then on a thread of its
     /// own: names for connections looked up before Anabolic started.
     dns_cache: Receiver<HashMap<std::net::IpAddr, Arc<str>>>,
+    /// Who started every process seen this session.
+    lineage: crate::lineage::Lineage,
     /// pid -> (image name, last seen) for processes the core trace saw start,
     /// so a process that lived for less than a refresh still has a name.
     traced_images: HashMap<u32, (Arc<str>, u64)>,
@@ -294,6 +296,7 @@ impl State {
             net_activity: false,
             dns_names: Arc::default(),
             dns_lookups: Arc::default(),
+            lineage: crate::lineage::Lineage::default(),
             dns_cache: {
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let _ = thread::Builder::new()
@@ -746,7 +749,7 @@ impl State {
 
         let mut processes = Vec::with_capacity(self.tracked.len() + 16);
         let gpu_share = self.gpu_procs.load_full();
-        let traffic = self
+        let mut traffic = self
             .net_trace
             .as_ref()
             .map(|t| t.take())
@@ -942,6 +945,8 @@ impl State {
                     key,
                     threads,
                     connections: Vec::new(),
+                    ancestry: Vec::new(),
+                    origin: None,
                 });
             }
             processes.push(info);
@@ -1045,9 +1050,17 @@ impl State {
         if let Some(tracer) = &mut self.latency_tracer {
             system.latency = Some(Arc::new(tracer.take()));
         }
+        self.lineage.observe(
+            &processes,
+            std::mem::take(&mut traffic.starts),
+            std::mem::take(&mut traffic.stops),
+            crate::sysinfo::now_filetime(),
+        );
         self.update_connections(traffic, seq, secs);
         if let Some(sel) = &mut selected {
             sel.connections = self.connections_of(sel.key.pid, seq);
+            sel.ancestry = self.lineage.ancestry(sel.key);
+            sel.origin = self.lineage.get(sel.key).cloned();
         }
         if self.net_activity {
             system.net_activity = Some(Arc::new(self.all_connections(seq)));
