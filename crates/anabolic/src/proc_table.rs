@@ -338,9 +338,12 @@ pub fn show(
                             out.push(UiCmd::ToggleCollapse(p.key));
                         }
                         let blocked = &settings.blocked;
-                        response.context_menu(|ui| context_menu(ui, p, d, blocked, out));
+                        let secrets = settings.dump_sign_in_secrets;
+                        response.context_menu(|ui| context_menu(ui, p, d, blocked, secrets, out));
                         let open = selected && table.open_menu.replace(false);
-                        keyboard_menu(&response, open, |ui| context_menu(ui, p, d, blocked, out));
+                        keyboard_menu(&response, open, |ui| {
+                            context_menu(ui, p, d, blocked, secrets, out)
+                        });
                     }
                 }
             });
@@ -786,6 +789,7 @@ pub fn context_menu(
     p: &ProcessInfo,
     d: Option<&Arc<ProcessDetails>>,
     blocked: &[String],
+    secrets: bool,
     out: &mut Vec<UiCmd>,
 ) {
     ui.set_min_width(220.0);
@@ -870,7 +874,7 @@ pub fn context_menu(
         },
     );
     item(ui, out, "Live activity", "", UiCmd::LiveActivity(p.key));
-    if !anabolic_core::dump::refused(&p.name) {
+    if !anabolic_core::dump::refused(&p.name, secrets) {
         ui.menu_button("Create dump file", |ui| {
             item(
                 ui,

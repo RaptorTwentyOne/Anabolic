@@ -140,7 +140,7 @@ fn permissions_card(ui: &mut Ui, settings: &mut McpSettings) {
             ui.label(
                 RichText::new(kind.detail())
                     .size(theme::META)
-                    .color(theme::TEXT_DIM),
+                    .color(theme::TEXT_WEAK),
             );
         });
         ui.add_space(3.0);
@@ -254,7 +254,7 @@ fn calls_card(ui: &mut Ui, mcp: &McpState) {
                 ui.label(
                     RichText::new(title)
                         .size(theme::META)
-                        .color(theme::TEXT_DIM),
+                        .color(theme::TEXT_WEAK),
                 );
             }
             ui.end_row();

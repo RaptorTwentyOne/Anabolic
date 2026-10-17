@@ -416,7 +416,8 @@ impl AnabolicMcp {
             return fail("Anabolic has no data folder here.");
         };
         let (key, name) = (p.key, p.name.to_string());
-        let report = blocking(move || anabolic_core::dump::write(key, &name, kind, &dir)).await;
+        let report =
+            blocking(move || anabolic_core::dump::write(key, &name, kind, &dir, false)).await;
         match report {
             Ok(r) => ok(json!({
                 "pid": p.pid,

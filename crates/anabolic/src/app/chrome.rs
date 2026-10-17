@@ -60,6 +60,9 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::Num0) {
                 self.settings.tab = Tab::Mcp;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::Comma) {
+                self.settings.tab = Tab::Settings;
+            }
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
@@ -218,9 +221,13 @@ impl App {
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             ui.add_space(8.0);
-            let settings =
-                widgets::rail_item(ui, theme::icon::SETTINGS, "Settings", false, collapsed);
-            self.settings_menu(&settings);
+            let selected = self.settings.tab == Tab::Settings;
+            if widgets::rail_item(ui, theme::icon::SETTINGS, "Settings", selected, collapsed)
+                .on_hover_text("Settings (Ctrl+,)")
+                .clicked()
+            {
+                self.settings.tab = Tab::Settings;
+            }
         });
     }
 
@@ -311,91 +318,6 @@ impl App {
                     ui.label(widgets::strong("Paused", theme::META).color(theme::ACCENT));
                 }
             });
-    }
-
-    pub(super) fn settings_menu(&mut self, button: &egui::Response) {
-        egui::Popup::menu(button).align(egui::RectAlign::RIGHT_END).show(|ui| {
-            ui.set_min_width(340.0);
-            ui.label(widgets::strong("Settings", theme::BODY));
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Bring to front with").on_hover_text(
-                    "From any program, while Anabolic runs: in the notification area too, when it                      keeps running there.",
-                );
-                ui.menu_button(self.settings.hotkey.label(), |ui| {
-                    for key in crate::settings::Hotkey::ALL {
-                        if ui
-                            .selectable_value(&mut self.settings.hotkey, key, key.label())
-                            .clicked()
-                        {
-                            ui.close();
-                        }
-                    }
-                });
-            });
-            if let Some(e) = &self.hotkey_error {
-                ui.label(
-                    RichText::new(format!("{}: {e}. Pick another.", self.settings.hotkey.label()))
-                        .size(theme::CAPTION)
-                        .color(theme::ELEVATED_TEXT),
-                );
-            }
-            ui.checkbox(&mut self.settings.confirm_kill, "Ask before terminating processes");
-            ui.horizontal(|ui| {
-                ui.label("Memory warning at");
-                ui.add(egui::Slider::new(&mut self.settings.memory_alert_pct, 50.0..=99.0).suffix(" %").integer());
-            });
-            ui.horizontal(|ui| {
-                let mut changed = ui
-                    .checkbox(&mut self.settings.record_history, "Keep a history for")
-                    .on_hover_text(
-                        "Every 10 seconds while Anabolic runs: the machine's totals and the processes \
-                         that led. Look back on the History page (Ctrl+3).",
-                    )
-                    .changed();
-                let days = ui.add_enabled(
-                    self.settings.record_history,
-                    egui::DragValue::new(&mut self.settings.history_days).range(1..=90).suffix(" days"),
-                );
-                // Not on every step of a drag: each change restarts the recorder.
-                changed |= days.drag_stopped() || (days.changed() && !days.dragged());
-                if changed {
-                    self.collector.send(Command::Record(recorder_config(&self.settings)));
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Graphs show").on_hover_text(
-                    "Fit stretches each graph over the history collected so far. \
-                     A fixed window keeps its length from the start, and new values flow in from the right.",
-                );
-                for span in GraphSpan::ALL {
-                    ui.selectable_value(&mut self.settings.graph_span, span, span.label());
-                }
-            });
-            ui.checkbox(
-                &mut self.settings.close_to_tray,
-                "Keep running in the notification area when closed",
-            )
-            .on_hover_text(
-                "Closing the window leaves Anabolic running: it keeps recording the history and \
-                 applying your rules. Its icon opens it again; right-click it to quit.",
-            );
-            if self.settings.close_to_tray && self.tray_failed {
-                ui.label(
-                    RichText::new("There is no notification area here, so closing still quits.")
-                        .size(theme::CAPTION)
-                        .color(theme::ELEVATED_TEXT),
-                );
-            }
-            ui.separator();
-            if ui
-                .add(egui::Button::new("Shortcuts and colours").shortcut_text("F1"))
-                .clicked()
-            {
-                self.help_open = true;
-                ui.close();
-            }
-        });
     }
 
     pub(super) fn alert_bar(&mut self, ui: &mut egui::Ui, out: &mut Vec<UiCmd>) {

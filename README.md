@@ -100,8 +100,13 @@ Anabolic watches from system-wide tables and kernel traces: its regular
 views do not open game processes, read their memory or inject anything.
 What does open a process (memory dumps, a thread's call stack, duplicating
 handles, reading modules) asks first. Game mode never touches the game,
-Windows' core processes or anti-cheat software, and dumps are never written
-for the process that holds Windows' sign-in secrets (lsass).
+Windows' core processes or anti-cheat software.
+
+The process that holds Windows' sign-in secrets (lsass) is not dumped
+unless "Allow dumps of lsass.exe" is turned on in Settings (Ctrl+,): its
+memory is what credential-stealing tools take, so antivirus software stops
+any program that reads it and may quarantine Anabolic. MCP clients can never
+dump it.
 
 How an anti-cheat reacts to any program is up to its vendor; Anabolic makes
 no promise on their behalf.

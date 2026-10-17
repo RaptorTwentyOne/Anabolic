@@ -173,6 +173,8 @@ pub enum Action {
         target: Target,
         kind: crate::dump::DumpKind,
         dir: std::path::PathBuf,
+        /// lsass too (the user's setting).
+        secrets: bool,
     },
 }
 
@@ -228,7 +230,13 @@ impl ActionRunner {
                     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
                 }
                 for action in rx {
-                    if let Action::Dump { target, kind, dir } = action {
+                    if let Action::Dump {
+                        target,
+                        kind,
+                        dir,
+                        secrets,
+                    } = action
+                    {
                         let (out_tx, notify) = (out_tx.clone(), notify.clone());
                         let _ =
                             thread::Builder::new()
@@ -239,6 +247,7 @@ impl ActionRunner {
                                         &target.name,
                                         kind,
                                         &dir,
+                                        secrets,
                                     ) {
                                         Ok(report) => Outcome::Dumped {
                                             target,

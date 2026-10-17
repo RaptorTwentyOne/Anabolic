@@ -477,20 +477,30 @@ impl App {
                     let dir = crate::data_dir()
                         .map(|d| d.join("dumps").display().to_string())
                         .unwrap_or_default();
+                    let mut lines = vec![
+                        what,
+                        format!(
+                            "Anabolic opens {} (PID {}) to read its memory and copies it first, \
+                             so it pauses only for a moment. The file goes to {dir}.",
+                            p.name, p.pid
+                        ),
+                        "Reading another program's memory is what anti-cheat software guards \
+                         against: do not dump a protected game, or the anti-cheat itself, while \
+                         you play."
+                            .into(),
+                    ];
+                    if anabolic_core::dump::holds_secrets(&p.name) {
+                        lines.push(
+                            "lsass holds the sign-in secrets of this PC: the file will hold \
+                             password hashes and tickets of everyone signed in, and your \
+                             antivirus will likely stop the dump and may quarantine Anabolic. \
+                             Keep the file safe and delete it when done."
+                                .into(),
+                        );
+                    }
                     let dialog = ConfirmDialog {
                         title: format!("Write a {} dump of {}?", kind.label(), p.name),
-                        lines: vec![
-                            what,
-                            format!(
-                                "Anabolic opens {} (PID {}) to read its memory and copies it \
-                                 first, so it pauses only for a moment. The file goes to {dir}.",
-                                p.name, p.pid
-                            ),
-                            "Reading another program's memory is what anti-cheat software \
-                             guards against: do not dump a protected game, or the anti-cheat \
-                             itself, while you play."
-                                .into(),
-                        ],
+                        lines,
                         confirm: "Write dump".into(),
                     };
                     self.confirm = Some((dialog, Pending::Dump(key, kind)));

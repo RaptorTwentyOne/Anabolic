@@ -35,6 +35,7 @@ mod chrome;
 mod commands;
 mod inspect;
 pub(crate) mod mcp;
+mod settings_page;
 mod window;
 
 const INTERVALS: [(u64, &str); 6] = [
@@ -298,6 +299,7 @@ impl App {
                     | "--record"
                     | "--mcp-port"
                     | "--mcp"
+                    | "--settings"
             )
         });
         if args.iter().any(|a| a == "--history") {
@@ -323,6 +325,9 @@ impl App {
         }
         if args.iter().any(|a| a == "--mcp") {
             settings.tab = Tab::Mcp;
+        }
+        if args.iter().any(|a| a == "--settings") {
+            settings.tab = Tab::Settings;
         }
         // `--record PID` or `--record all`: record from the start (tests).
         let mut activity = crate::activity_page::ActivityPage::default();
@@ -1016,6 +1021,7 @@ impl eframe::App for App {
             Tab::Network => "Network".to_string(),
             Tab::Activity => "Activity".to_string(),
             Tab::Mcp => "MCP".to_string(),
+            Tab::Settings => "Settings".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
         if !self.title_bar_styled {
@@ -1227,6 +1233,9 @@ impl eframe::App for App {
                         &mut cmds,
                     );
                 });
+            }
+            Tab::Settings => {
+                egui::CentralPanel::default_margins().show(ui, |ui| self.settings_page(ui));
             }
             Tab::Mcp => {
                 egui::CentralPanel::default_margins().show(ui, |ui| {

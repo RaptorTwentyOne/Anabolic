@@ -20,6 +20,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
             ("Space", "Pause or resume the view"),
             ("F5", "Refresh now"),
             ("F1", "This page"),
+            ("Ctrl+,", "Settings"),
             (
                 "Ctrl+Alt+Esc",
                 "From any program: Anabolic to the front (other keys in Settings)",

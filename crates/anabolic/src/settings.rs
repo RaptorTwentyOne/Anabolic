@@ -215,6 +215,7 @@ pub enum Tab {
     Network,
     Activity,
     Mcp,
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -471,6 +472,10 @@ pub struct Settings {
     /// Frame times and driver timing are traced with the Stutters page
     /// closed too, so the stutters of a game played meanwhile are caught.
     pub watch_stutters: bool,
+    /// Memory dumps of lsass.exe, which holds the sign-in secrets, may be
+    /// written (from the process menu only, never by MCP clients). Off: an
+    /// antivirus takes reading it for credential theft.
+    pub dump_sign_in_secrets: bool,
     pub game: crate::gamemode::GameModeSettings,
     /// Programs Anabolic cut off the network (Windows Firewall rules), by
     /// path.
@@ -512,6 +517,7 @@ impl Default for Settings {
             hotkey: Hotkey::default(),
             mcp: McpSettings::default(),
             watch_stutters: false,
+            dump_sign_in_secrets: false,
             game: Default::default(),
             blocked: Vec::new(),
         }

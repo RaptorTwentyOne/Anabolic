@@ -105,21 +105,44 @@ pub fn file_name(name: &str, pid: u32, kind: DumpKind) -> String {
     format!("{stem}-{pid}-{stamp}{small}.dmp")
 }
 
-/// The processes that hold the machine's sign-in secrets: the Local
-/// Security Authority and its isolated half. Their memory is never written
-/// to a file, whoever asks.
-const REFUSED: &[&str] = &["lsass.exe", "lsaiso.exe"];
+/// The Local Security Authority: its memory holds the sign-in secrets of
+/// this PC (password hashes, Kerberos tickets), and reading it is what
+/// credential theft does, so antivirus software stops whoever tries.
+/// Dumped only when the user turned that on in Settings.
+const SIGN_IN_SECRETS: &str = "lsass.exe";
 
-/// Whether a process of this name is never dumped.
-pub fn refused(name: &str) -> bool {
-    REFUSED.iter().any(|r| name.eq_ignore_ascii_case(r))
+/// Its isolated half (Credential Guard): Windows lets nobody read it.
+const ISOLATED: &str = "lsaiso.exe";
+
+/// Whether this process holds the sign-in secrets (lsass).
+pub fn holds_secrets(name: &str) -> bool {
+    name.eq_ignore_ascii_case(SIGN_IN_SECRETS)
 }
 
-/// Writes a dump of `key` into `dir`, which is created if needed.
-pub fn write(key: ProcKey, name: &str, kind: DumpKind, dir: &Path) -> Result<DumpReport, String> {
-    if refused(name) {
+/// Whether a process of this name is not dumped: lsaiso never, lsass
+/// unless `secrets` (the user's setting) allows it.
+pub fn refused(name: &str, secrets: bool) -> bool {
+    name.eq_ignore_ascii_case(ISOLATED) || (!secrets && holds_secrets(name))
+}
+
+/// Writes a dump of `key` into `dir`, which is created if needed. lsass only
+/// with `secrets`.
+pub fn write(
+    key: ProcKey,
+    name: &str,
+    kind: DumpKind,
+    dir: &Path,
+    secrets: bool,
+) -> Result<DumpReport, String> {
+    if name.eq_ignore_ascii_case(ISOLATED) {
         return Err(format!(
-            "{name} holds the sign-in secrets of this PC: Anabolic does not write its memory to a file."
+            "{name} is isolated by Windows (Credential Guard): nobody can read its memory."
+        ));
+    }
+    if refused(name, secrets) {
+        return Err(format!(
+            "{name} holds the sign-in secrets of this PC: dumping it is off in Settings \
+             (Memory dumps), because antivirus software takes it for credential theft."
         ));
     }
     let started = Instant::now();
@@ -231,7 +254,7 @@ mod tests {
             pid,
             create_time: 0,
         };
-        let report = write(key, "self.exe", DumpKind::Small, &dir).expect("dump written");
+        let report = write(key, "self.exe", DumpKind::Small, &dir, false).expect("dump written");
         assert!(report.cloned);
         assert!(report.bytes > 4096, "{} bytes", report.bytes);
         let head = std::fs::read(&report.path).unwrap();
@@ -248,9 +271,12 @@ mod tests {
             pid,
             create_time: 0,
         };
-        assert!(write(key, "LSASS.EXE", DumpKind::Small, &dir).is_err());
+        assert!(write(key, "LSASS.EXE", DumpKind::Small, &dir, false).is_err());
+        assert!(write(key, "lsaiso.exe", DumpKind::Small, &dir, true).is_err());
         assert!(!dir.exists());
-        assert!(refused("LsaIso.exe"));
-        assert!(!refused("lsass2.exe"));
+        assert!(refused("LsaIso.exe", true));
+        assert!(refused("lsass.exe", false));
+        assert!(!refused("lsass.exe", true));
+        assert!(!refused("lsass2.exe", false));
     }
 }

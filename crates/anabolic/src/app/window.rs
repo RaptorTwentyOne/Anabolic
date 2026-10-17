@@ -294,6 +294,7 @@ impl App {
                                         },
                                         kind,
                                         dir,
+                                        secrets: self.settings.dump_sign_in_secrets,
                                     });
                                     self.toasts.info(format!(
                                         "Writing a {} dump of {}\u{2026}",
