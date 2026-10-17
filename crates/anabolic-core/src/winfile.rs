@@ -146,7 +146,7 @@ pub fn file_info(path: &str) -> FileInfo {
     let mut languages = Vec::new();
     if let Some((ptr, len)) = query(r"\VarFileInfo\Translation") {
         let pairs = unsafe { std::slice::from_raw_parts(ptr.cast::<u16>(), len as usize / 2) };
-        for pair in pairs.chunks_exact(2) {
+        for pair in pairs.as_chunks::<2>().0 {
             languages.push(format!("{:04x}{:04x}", pair[0], pair[1]));
         }
     }
@@ -230,14 +230,19 @@ fn icon_to_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
         }
         let (w, h) = (bm.bmWidth, bm.bmHeight);
         let mut pixels = read_bitmap(info.hbmColor, w, h)?;
-        if pixels.chunks_exact(4).all(|p| p[3] == 0) {
+        if pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
             // No alpha channel: transparency lives in the AND mask.
             let mask = read_bitmap(info.hbmMask, w, h)?;
-            for (p, m) in pixels.chunks_exact_mut(4).zip(mask.chunks_exact(4)) {
+            for (p, m) in pixels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(mask.as_chunks::<4>().0)
+            {
                 p[3] = if m[0] == 0 { 255 } else { 0 };
             }
         }
-        for p in pixels.chunks_exact_mut(4) {
+        for p in pixels.as_chunks_mut::<4>().0 {
             p.swap(0, 2); // BGRA -> RGBA
         }
         Some((w as u32, h as u32, pixels))
@@ -343,7 +348,7 @@ mod tests {
         let (w, h, rgba) = extract_icon(&format!(r"{root}\System32\cmd.exe"), 32).expect("no icon");
         assert_eq!(rgba.len(), (w * h * 4) as usize);
         assert!(
-            rgba.chunks_exact(4).any(|p| p[3] != 0),
+            rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 0),
             "icon is fully transparent"
         );
     }

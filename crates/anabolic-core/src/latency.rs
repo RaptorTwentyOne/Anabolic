@@ -499,6 +499,7 @@ mod tests {
             eprintln!("not elevated, skipping");
             return;
         }
+        let _turn = crate::etw::kernel_turn();
         let mut tracer = LatencyTracer::start().expect("could not start the trace");
         std::thread::sleep(Duration::from_millis(2500));
         let stats = tracer.take();

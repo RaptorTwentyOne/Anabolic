@@ -287,7 +287,7 @@ mod tests {
         if !crate::hardening::is_elevated() {
             return;
         }
-        let _one_at_a_time = crate::nettrace::TEST_SESSION.lock();
+        let _turn = crate::etw::kernel_turn();
         let tracer = crate::nettrace::NetTracer::start().expect("trace");
         std::thread::sleep(std::time::Duration::from_millis(500));
         // cmd starts ping and exits; ping lives on for a couple of seconds.

@@ -288,8 +288,10 @@ fn run_key(
         }
         let name = from_wide(&name[..name_len as usize]);
         let chars: Vec<u16> = data[..data_len as usize]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         let command = from_wide(&chars);
         if name.is_empty() || command.trim().is_empty() {

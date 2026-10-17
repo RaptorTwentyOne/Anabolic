@@ -1,10 +1,5 @@
 use super::*;
 
-/// Kernel sessions are few (Windows allows eight private ones, the
-/// other tests' and a running Anabolic's included): one recording at a
-/// time.
-static RECORDING: Mutex<()> = Mutex::new(());
-
 fn wide(text: &str) -> Vec<u8> {
     text.encode_utf16()
         .chain([0])
@@ -251,7 +246,7 @@ fn records_a_child_step_by_step() {
         eprintln!("skipped: not elevated");
         return;
     }
-    let _turn = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
+    let _turn = crate::etw::kernel_turn();
     let file = std::env::temp_dir().join(format!("anabolic-activity-{}.txt", std::process::id()));
     let args = format!(
         "/c echo recorded> \"{f}\" & reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\" /v ProgramFilesDir & reg query HKCU\\Software\\AnabolicNoSuchKey & del \"{f}\"",
@@ -351,7 +346,7 @@ fn names_a_file_opened_before_recording() {
         eprintln!("skipped: not elevated");
         return;
     }
-    let _turn = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
+    let _turn = crate::etw::kernel_turn();
     use std::io::Write;
     let path = std::env::temp_dir().join(format!("anabolic-before-{}.txt", std::process::id()));
     let mut file = std::fs::File::create(&path).unwrap();

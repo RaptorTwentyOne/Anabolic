@@ -148,11 +148,6 @@ pub fn parse_stop(version: u8, d: &[u8]) -> Option<ProcessStop> {
     })
 }
 
-/// Tests that start the network trace share its session name (it carries
-/// the process id): one at a time, or each stops the other's.
-#[cfg(test)]
-pub(crate) static TEST_SESSION: Mutex<()> = Mutex::new(());
-
 /// Bytes seen since the last `take`.
 #[derive(Default, Debug)]
 pub struct Traffic {
@@ -390,7 +385,7 @@ mod tests {
     /// Needs an elevated test run; skips itself otherwise.
     #[test]
     fn sees_own_tcp_traffic() {
-        let _one_at_a_time = TEST_SESSION.lock();
+        let _turn = crate::etw::kernel_turn();
         if !crate::hardening::is_elevated() {
             eprintln!("not elevated, skipping");
             return;

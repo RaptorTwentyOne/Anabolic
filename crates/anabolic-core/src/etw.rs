@@ -22,6 +22,15 @@ use crate::util::wide;
 
 type Callback = Box<dyn FnMut(&EVENT_RECORD) + Send>;
 
+/// Kernel sessions are few (Windows allows eight private ones, a running
+/// Anabolic's included), and a test's session name carries the process id:
+/// the tests that start one take turns, or they starve or stop each other.
+#[cfg(test)]
+pub(crate) fn kernel_turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// EVENT_TRACE_PROPERTIES followed by room for the session name, 8-aligned.
 fn properties(name: &[u16]) -> Vec<u64> {
     let bytes = size_of::<EVENT_TRACE_PROPERTIES>() + name.len() * 2;

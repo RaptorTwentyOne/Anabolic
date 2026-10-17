@@ -485,8 +485,10 @@ pub fn page_files() -> Vec<PageFile> {
         let len = name.Length as usize & !1;
         let path = if !name.Buffer.is_null() && ptr >= base && ptr + len <= base + bytes.len() {
             let units: Vec<u16> = bytes[ptr - base..ptr - base + len]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             String::from_utf16_lossy(&units)
                 .trim_start_matches(r"\??\")

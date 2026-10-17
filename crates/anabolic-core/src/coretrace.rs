@@ -131,6 +131,7 @@ mod tests {
             return;
         }
         let _ = crate::hardening::enable_privilege(windows::core::w!("SeSystemProfilePrivilege"));
+        let _turn = crate::etw::kernel_turn();
         let cpus = crate::cpu::CpuSampler::new().core_count();
         let tracer = CoreTracer::start(cpus).expect("could not start the trace");
         std::thread::sleep(Duration::from_millis(300));

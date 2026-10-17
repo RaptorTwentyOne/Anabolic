@@ -7,8 +7,10 @@ use super::*;
 pub(super) fn wide_at(d: &[u8], at: usize) -> Option<String> {
     let units: Vec<u16> = d
         .get(at..)?
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .take_while(|&u| u != 0)
         .collect();
     Some(String::from_utf16_lossy(&units))

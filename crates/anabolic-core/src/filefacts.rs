@@ -204,7 +204,9 @@ fn reproducible(file: &mut std::fs::File, head: &[u8]) -> bool {
         return false;
     }
     // IMAGE_DEBUG_DIRECTORY entries are 28 bytes; Type is at 12.
-    buf.chunks_exact(28)
+    buf.as_chunks::<28>()
+        .0
+        .iter()
         .any(|d| u32::from_le_bytes([d[12], d[13], d[14], d[15]]) == 16)
 }
 

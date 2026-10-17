@@ -159,8 +159,10 @@ fn unicode_in(bytes: &[u8], s: ntapi::UNICODE_STRING) -> Option<String> {
     }
     let at = ptr - base;
     let units: Vec<u16> = bytes[at..at + len]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     Some(String::from_utf16_lossy(&units))
 }

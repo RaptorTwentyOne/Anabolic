@@ -108,8 +108,10 @@ pub struct DiskTracer {
 fn wide_at(d: &[u8], at: usize) -> Option<String> {
     let units: Vec<u16> = d
         .get(at..)?
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .take_while(|&u| u != 0)
         .collect();
     Some(String::from_utf16_lossy(&units))
@@ -343,9 +345,6 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Both tests use this process's one session name; run them in turn.
-    static SESSION: Mutex<()> = Mutex::new(());
-
     /// Takes samples until `done` holds for everything seen so far, or the
     /// time runs out: events arrive with the session's flush, later on a
     /// loaded machine (other tests trace in parallel).
@@ -389,7 +388,7 @@ mod tests {
             eprintln!("not elevated, skipping");
             return;
         }
-        let _turn = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::etw::kernel_turn();
         let _ = crate::hardening::enable_privilege(windows::core::w!("SeSystemProfilePrivilege"));
         let tracer = DiskTracer::start().expect("could not start the trace");
         thread::sleep(Duration::from_millis(500));
@@ -435,7 +434,7 @@ mod tests {
             eprintln!("not elevated, skipping");
             return;
         }
-        let _turn = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::etw::kernel_turn();
         use std::io::{Read, Seek, SeekFrom};
         use std::os::windows::fs::OpenOptionsExt;
         let marker = format!("anabolic-disk-old-{}.bin", std::process::id());
