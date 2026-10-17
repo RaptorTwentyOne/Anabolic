@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Raptor21Software/Anabolic/actions/workflows/ci.yml"><img src="https://github.com/Raptor21Software/Anabolic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/Raptor21Software/Anabolic/releases"><img src="https://img.shields.io/github/v/release/Raptor21Software/Anabolic?include_prereleases&sort=semver" alt="Release"></a>
+  <a href="https://github.com/RaptorTwentyOne/Anabolic/actions/workflows/ci.yml"><img src="https://github.com/RaptorTwentyOne/Anabolic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/RaptorTwentyOne/Anabolic/releases"><img src="https://img.shields.io/github/v/release/RaptorTwentyOne/Anabolic?include_prereleases&sort=semver" alt="Release"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-0078D4" alt="Windows 10 | 11 x64">
   <img src="https://img.shields.io/badge/rust-1.95%2B-orange" alt="Rust 1.95+">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT OR Apache-2.0"></a>
@@ -93,7 +93,7 @@ And across the pages:
 ## Getting started
 
 Download the zip from the
-[releases](https://github.com/Raptor21Software/Anabolic/releases) page,
+[releases](https://github.com/RaptorTwentyOne/Anabolic/releases) page,
 unpack it anywhere and run `anabolic.exe`: a single executable with nothing to
 install. Windows 10 or 11, x64.
 
