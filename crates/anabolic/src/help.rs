@@ -12,9 +12,9 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
         "Everywhere",
         &[
             (
-                "Ctrl+1 … 9",
+                "Ctrl+1 … 9, 0",
                 "Processes, Performance, History, Rules, Services, Startup, Stutters, Network, \
-                 Activity",
+                 Activity, MCP",
             ),
             ("Ctrl+H", "Find which process holds a file or handle"),
             ("Space", "Pause or resume the view"),

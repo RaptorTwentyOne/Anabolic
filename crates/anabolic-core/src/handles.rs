@@ -945,6 +945,12 @@ pub struct Inspector {
 
 const NAME_LIMIT: usize = 250_000;
 
+/// The handles of one process, read on the calling thread (the MCP
+/// server's), with names when `names` (which duplicates handles out of it).
+pub fn handles_now(key: ProcKey, names: bool) -> Result<HandleReport, String> {
+    inspect_handles(key, names, &mut HashMap::new(), &DeviceMap::build())
+}
+
 fn inspect_handles(
     key: ProcKey,
     want_names: bool,

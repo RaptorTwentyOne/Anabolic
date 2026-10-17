@@ -124,6 +124,8 @@ pub mod icon {
     pub const NETWORK: &str = "\u{E774}";
     /// A recording dot.
     pub const RECORD: &str = "\u{E7C8}";
+    /// A robot: AI assistants (the MCP page).
+    pub const MCP: &str = "\u{E99A}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

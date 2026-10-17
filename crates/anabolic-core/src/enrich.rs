@@ -171,6 +171,23 @@ fn worker(requests: Receiver<EnrichRequest>, results: Sender<Enriched>) {
     }
 }
 
+/// The details of one process, read on the calling thread with caches of
+/// its own (the MCP server asks for any process, not the ones on screen).
+pub fn details_of(key: ProcKey, sid: Option<Arc<[u8]>>) -> ProcessDetails {
+    let mut caches = Caches {
+        devices: DeviceMap::build(),
+        ..Default::default()
+    };
+    enrich(
+        &EnrichRequest {
+            key,
+            sid,
+            nt_path: None,
+        },
+        &mut caches,
+    )
+}
+
 fn enrich(request: &EnrichRequest, caches: &mut Caches) -> ProcessDetails {
     let pid = request.key.pid;
     let mut d = ProcessDetails::default();

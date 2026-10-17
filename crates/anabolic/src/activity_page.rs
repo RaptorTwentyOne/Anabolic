@@ -99,7 +99,7 @@ pub enum Watch {
 
 /// A running process and the running ones under it, the process first.
 /// Parents come from `tree::parents`, which minds reused PIDs.
-fn tree_pids(snap: &Snapshot, root: u32) -> Vec<u32> {
+pub(crate) fn tree_pids(snap: &Snapshot, root: u32) -> Vec<u32> {
     let procs = &snap.processes;
     let Some(top) = procs
         .iter()
@@ -242,7 +242,7 @@ impl Default for ActivityPage {
 }
 
 /// The PID a start event names (its detail reads "PID 1234 · command line").
-fn started_pid(e: &ActivityEvent) -> Option<u32> {
+pub(crate) fn started_pid(e: &ActivityEvent) -> Option<u32> {
     e.detail
         .strip_prefix("PID ")?
         .split(|c: char| !c.is_ascii_digit())
@@ -251,7 +251,7 @@ fn started_pid(e: &ActivityEvent) -> Option<u32> {
         .ok()
 }
 
-fn file_name(path: &str) -> &str {
+pub(crate) fn file_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 

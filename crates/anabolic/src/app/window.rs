@@ -68,21 +68,6 @@ impl App {
                 }
             }
         }
-        // Tracing that only feeds a page on screen stops with the window.
-        if self.hidden {
-            if self.cores_traced {
-                self.cores_traced = false;
-                self.collector.send(Command::TraceCores(false));
-            }
-            if self.disks_traced {
-                self.disks_traced = false;
-                self.collector.send(Command::TraceDisks(false));
-            }
-            if self.network_watched {
-                self.network_watched = false;
-                self.collector.send(Command::NetActivity(false));
-            }
-        }
     }
 
     /// Holds the hotkey chosen in Settings, and lets it go or swaps it when

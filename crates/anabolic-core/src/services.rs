@@ -589,6 +589,21 @@ fn pause(scm: &Handle, name: &str, resume: bool) -> Result<(), String> {
     settle(&service, want, STOP_LIMIT)
 }
 
+/// Every service now, read on the calling thread.
+pub fn query() -> ServiceList {
+    list(&mut HashMap::new())
+}
+
+/// Carries out one control on the calling thread: the outcome in words, and
+/// the running services that depend on it when that is why it failed.
+pub fn control_now(
+    name: &str,
+    display: &str,
+    op: ServiceOp,
+) -> (Result<String, String>, Vec<String>) {
+    control(name, display, op)
+}
+
 /// Carries out one control and words the outcome.
 fn control(name: &str, display: &str, op: ServiceOp) -> (Result<String, String>, Vec<String>) {
     let scm = match manager(SC_MANAGER_CONNECT) {

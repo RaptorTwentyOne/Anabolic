@@ -225,6 +225,29 @@ fn dbghelp_name(process: HANDLE, address: u64) -> Option<String> {
 
 /// The user-mode call stack of one thread. The thread is suspended while
 /// its stack is read (a few milliseconds), then resumed.
+/// A process' threads from the system's thread list (the process is not
+/// opened): ids with their CPU time in 100 ns units, the busiest first.
+pub fn by_cpu_time(pid: u32) -> Result<Vec<(u32, i64)>, String> {
+    let mut scanner = crate::scan::ProcessScanner::new();
+    scanner
+        .refresh()
+        .map_err(|status| format!("the thread list could not be read ({status:#x})"))?;
+    let mut threads: Vec<(u32, i64)> = scanner
+        .entries()
+        .find(|e| e.pid() == pid)
+        .map(|p| {
+            p.threads()
+                .map(|t| {
+                    let cpu = t.info.KernelTime + t.info.UserTime;
+                    (t.info.ClientId.UniqueThread as u32, cpu)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    threads.sort_by_key(|t| std::cmp::Reverse(t.1));
+    Ok(threads)
+}
+
 pub fn call_stack(
     key: ProcKey,
     tid: u32,

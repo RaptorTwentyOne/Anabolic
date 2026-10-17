@@ -34,6 +34,7 @@ use crate::widgets;
 mod chrome;
 mod commands;
 mod inspect;
+pub(crate) mod mcp;
 mod window;
 
 const INTERVALS: [(u64, &str); 6] = [
@@ -211,6 +212,8 @@ pub struct App {
     hotkey_for: Option<crate::settings::Hotkey>,
     hotkey_error: Option<String>,
     serves_hotkey: bool,
+    /// The MCP server and what it reported, for the MCP page.
+    mcp: mcp::McpState,
     /// "Restart as admin" is waiting on the UAC prompt.
     relaunching: bool,
     /// `--pid N` on the command line: select it once it shows up.
@@ -293,6 +296,8 @@ impl App {
                     | "--activity"
                     | "--activity-filter"
                     | "--record"
+                    | "--mcp-port"
+                    | "--mcp"
             )
         });
         if args.iter().any(|a| a == "--history") {
@@ -316,6 +321,9 @@ impl App {
         if args.iter().any(|a| a == "--activity") {
             settings.tab = Tab::Activity;
         }
+        if args.iter().any(|a| a == "--mcp") {
+            settings.tab = Tab::Mcp;
+        }
         // `--record PID` or `--record all`: record from the start (tests).
         let mut activity = crate::activity_page::ActivityPage::default();
         match value("--record") {
@@ -334,6 +342,20 @@ impl App {
         if let Some(text) = value("--activity-filter") {
             activity.set_filter(text);
         }
+        // `--mcp-port N [--mcp-token KEY] [--mcp-allow read,trace,...|all]`:
+        // the MCP server on for this session (tests). A `--new` instance
+        // serves only when given it.
+        let mcp_port = value("--mcp-port").and_then(|p| p.parse::<u16>().ok());
+        if let Some(port) = mcp_port {
+            settings.mcp.enabled = true;
+            settings.mcp.port = port;
+            settings.mcp.token =
+                value("--mcp-token").map_or_else(|| anabolic_core::random_hex(32), str::to_string);
+            if let Some(list) = value("--mcp-allow") {
+                settings.mcp.allowed = crate::settings::McpKind::parse_list(list);
+            }
+        }
+        let serves_mcp = !args.iter().any(|a| a == "--new") || mcp_port.is_some();
         // `--network [programs|connections|listening|destinations]`.
         let mut network = crate::network_page::NetworkPage::default();
         if args.iter().any(|a| a == "--network") {
@@ -444,6 +466,13 @@ impl App {
                 ..Default::default()
             },
             move || crate::stalls::wake(&repaint),
+        );
+        let mcp_state = mcp::McpState::new(
+            &collector,
+            &cc.egui_ctx,
+            &settings.mcp,
+            elevated,
+            serves_mcp,
         );
         let repaint = cc.egui_ctx.clone();
         let (actions, outcomes) = ActionRunner::start(move || crate::stalls::wake(&repaint));
@@ -575,6 +604,7 @@ impl App {
             hotkey_for: None,
             hotkey_error: None,
             serves_hotkey: !args.iter().any(|a| a == "--new"),
+            mcp: mcp_state,
             relaunching: false,
             session_only,
         }
@@ -985,6 +1015,7 @@ impl eframe::App for App {
             Tab::Stutters => "Stutters".to_string(),
             Tab::Network => "Network".to_string(),
             Tab::Activity => "Activity".to_string(),
+            Tab::Mcp => "MCP".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
         if !self.title_bar_styled {
@@ -1197,6 +1228,17 @@ impl eframe::App for App {
                     );
                 });
             }
+            Tab::Mcp => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::mcp_page::show(
+                        ui,
+                        &mut self.settings.mcp,
+                        &mut self.mcp,
+                        self.elevated,
+                        &mut cmds,
+                    );
+                });
+            }
             Tab::Activity => {
                 egui::CentralPanel::default_margins().show(ui, |ui| {
                     crate::activity_page::show(
@@ -1296,25 +1338,6 @@ impl eframe::App for App {
         } else if self.settings.tab != Tab::Startup {
             self.startup_at = None;
         }
-        // Every connection, with its socket tables read each refresh: only
-        // while the Network page is on screen.
-        let want = self.settings.tab == Tab::Network;
-        if want != self.network_watched {
-            self.network_watched = want;
-            self.collector.send(Command::NetActivity(want));
-        }
-        // Context switch tracing costs CPU; run it only while it is on screen.
-        let want = self.settings.tab == Tab::Performance && self.perf_view == PerfView::Cpu;
-        if want != self.cores_traced {
-            self.cores_traced = want;
-            self.collector.send(Command::TraceCores(want));
-        }
-        let want = self.settings.tab == Tab::Performance
-            && matches!(self.perf_view, PerfView::Disk | PerfView::PhysicalDisk(_));
-        if want != self.disks_traced {
-            self.disks_traced = want;
-            self.collector.send(Command::TraceDisks(want));
-        }
         self.dialogs(&ctx);
         crate::help::show(&ctx, &mut self.help_open);
         let mut later = Vec::new();
@@ -1368,15 +1391,8 @@ impl eframe::App for App {
                 );
             }
         }
-        // Frames and DPCs: while their page is on screen, or always when
-        // asked to keep watching (a game played with the window closed).
-        let want =
-            self.settings.watch_stutters || (!self.hidden && self.settings.tab == Tab::Stutters);
-        if want != self.stutters_traced {
-            self.stutters_traced = want;
-            self.collector.send(Command::TraceFrames(want));
-            self.collector.send(Command::TraceLatency(want));
-        }
+        self.mcp_logic();
+        self.trace_logic();
         self.stutters.observe(&self.snapshot);
         self.growth.observe(&self.snapshot);
         // A recording goes on with the window closed.

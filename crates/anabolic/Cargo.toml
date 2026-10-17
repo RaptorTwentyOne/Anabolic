@@ -11,6 +11,14 @@ publish.workspace = true
 anabolic-core.workspace = true
 crossbeam-channel.workspace = true
 serde.workspace = true
+arc-swap.workspace = true
+# The MCP server (the MCP page): Streamable HTTP on 127.0.0.1, on a tokio
+# runtime of its own, off unless turned on.
+rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
+tokio-util = "0.7"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+serde_json = "1"
 # glow: OpenGL, only for GPUs without a Direct3D 12 driver (see renderer()
 # in main.rs).
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wgpu_no_default_features"] }

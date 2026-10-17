@@ -77,7 +77,17 @@ pub enum Command {
     TraceLatency(bool),
     /// Publish every connection and listening port (the Network page).
     NetActivity(bool),
+    /// Who started this process, and their parents, as far as this session
+    /// knows: answered on the channel.
+    Ancestry(ProcKey, Sender<Ancestry>),
     Shutdown,
+}
+
+/// A process' parent chain (nearest first) and its own start record.
+#[derive(Clone, Debug, Default)]
+pub struct Ancestry {
+    pub chain: Vec<crate::lineage::Ancestor>,
+    pub origin: Option<crate::lineage::Ancestor>,
 }
 
 pub struct Collector {
@@ -144,6 +154,16 @@ impl Collector {
     /// The most recent snapshot. Wait-free.
     pub fn latest(&self) -> Arc<Snapshot> {
         self.latest.load_full()
+    }
+
+    /// Where the snapshots are published, for readers on other threads.
+    pub fn shared(&self) -> Arc<ArcSwap<Snapshot>> {
+        self.latest.clone()
+    }
+
+    /// A sender of commands, for other threads (the MCP server).
+    pub fn commands(&self) -> Sender<Command> {
+        self.commands.clone()
     }
 
     pub fn send(&self, command: Command) {
@@ -713,6 +733,12 @@ impl State {
                     Ok(Command::TraceFrames(on)) => self.trace_frames(on),
                     Ok(Command::TraceLatency(on)) => self.trace_latency(on),
                     Ok(Command::NetActivity(on)) => self.net_activity = on,
+                    Ok(Command::Ancestry(key, reply)) => {
+                        let _ = reply.send(Ancestry {
+                            chain: self.lineage.ancestry(key),
+                            origin: self.lineage.get(key).cloned(),
+                        });
+                    }
                     // Dropping the old one writes what it holds.
                     Ok(Command::Record(config)) => self.recorder = config.map(Recorder::start),
                     Ok(Command::SetInterval(interval)) => {

@@ -57,6 +57,9 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::Num9) {
                 self.settings.tab = Tab::Activity;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::Num0) {
+                self.settings.tab = Tab::Mcp;
+            }
             if i.consume_key(Modifiers::NONE, Key::F5) {
                 self.collector.send(Command::RefreshNow);
             }
@@ -192,6 +195,7 @@ impl App {
             (Tab::Stutters, theme::icon::STUTTERS, "Stutters", "Ctrl+7"),
             (Tab::Network, theme::icon::NETWORK, "Network", "Ctrl+8"),
             (Tab::Activity, theme::icon::RECORD, "Activity", "Ctrl+9"),
+            (Tab::Mcp, theme::icon::MCP, "MCP", "Ctrl+0"),
         ];
         for (tab, icon, label, keys) in pages {
             let selected = self.settings.tab == tab;

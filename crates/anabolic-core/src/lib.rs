@@ -53,6 +53,8 @@ pub mod sysinfo;
 pub mod threads;
 pub mod topology;
 mod util;
+
+pub use util::random_hex;
 pub mod waits;
 pub mod winfile;
 

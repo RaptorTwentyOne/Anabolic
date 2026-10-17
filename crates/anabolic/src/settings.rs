@@ -214,6 +214,7 @@ pub enum Tab {
     Stutters,
     Network,
     Activity,
+    Mcp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -286,6 +287,154 @@ impl Hotkey {
     }
 }
 
+/// The MCP server: off until turned on on the MCP page.
+/// What MCP clients may do, chosen on the MCP page when the server is
+/// turned on. Each kind is allowed or not; nothing waits for an answer in
+/// Anabolic.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum McpKind {
+    /// Read what the PC is doing: processes, performance, history,
+    /// network, services, startup programs.
+    Read,
+    /// Turn a kernel trace on for a while (who runs on each core, which
+    /// files each disk serves, frame times): some CPU while it runs.
+    Trace,
+    /// Open a process to look inside: handles, modules, thread stacks,
+    /// wait chains. Each call also needs force=true after a warning.
+    Inspect,
+    /// Write a memory dump of a process. Also needs force=true.
+    Dump,
+    /// Record what processes do, step by step (files, registry, network,
+    /// programs started), from a kernel trace.
+    Record,
+    /// End processes.
+    End,
+    /// Suspend and resume processes, change priority, cores, efficiency mode.
+    Control,
+    /// Start, stop, pause and restart services, change how they start.
+    Services,
+    /// Close connections; block programs from the network and allow them
+    /// again (Windows Firewall rules).
+    Network,
+    /// Turn startup programs on and off.
+    Startup,
+}
+
+impl McpKind {
+    /// "read,trace,end" or "all" (a command line's list); unknown names
+    /// are left out.
+    pub fn parse_list(list: &str) -> Vec<McpKind> {
+        if list.trim().eq_ignore_ascii_case("all") {
+            return McpKind::ALL.to_vec();
+        }
+        list.split(',')
+            .filter_map(|name| {
+                McpKind::ALL
+                    .into_iter()
+                    .find(|k| format!("{k:?}").eq_ignore_ascii_case(name.trim()))
+            })
+            .collect()
+    }
+
+    pub const ALL: [McpKind; 10] = [
+        McpKind::Read,
+        McpKind::Trace,
+        McpKind::Inspect,
+        McpKind::Dump,
+        McpKind::Record,
+        McpKind::End,
+        McpKind::Control,
+        McpKind::Services,
+        McpKind::Network,
+        McpKind::Startup,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            McpKind::Read => "Read what the PC is doing",
+            McpKind::Trace => "Turn kernel traces on for a while",
+            McpKind::Inspect => "Look inside a process",
+            McpKind::Dump => "Write memory dumps",
+            McpKind::Record => "Record what processes do",
+            McpKind::End => "End processes",
+            McpKind::Control => "Suspend, resume and reprioritise processes",
+            McpKind::Services => "Control services",
+            McpKind::Network => "Close connections, block programs",
+            McpKind::Startup => "Turn startup programs on and off",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            McpKind::Read => {
+                "Processes, CPU, memory, disks, GPUs, network, history, services, startup \
+                 programs. Nothing is opened or changed."
+            }
+            McpKind::Trace => {
+                "Who runs on each core, which files each disk serves, every connection, frame \
+                 times and driver latency: a few seconds of kernel tracing, some CPU meanwhile."
+            }
+            McpKind::Inspect => {
+                "Handles, modules, thread stacks and wait chains. The process is opened, which \
+                 anti-cheat software can take badly: every call is refused until the client \
+                 repeats it with force=true, after its user agreed to the risk it was told."
+            }
+            McpKind::Dump => {
+                "All of a process' memory written to a file (passwords and keys it holds \
+                 included). Also needs force=true after the warning; never for lsass."
+            }
+            McpKind::Record => {
+                "Every file, registry key, connection and program a process touches, from a \
+                 kernel trace: nothing is opened, but recordings can hold private paths."
+            }
+            McpKind::End => "Ends processes, and the processes under them when asked.",
+            McpKind::Control => {
+                "Suspends and resumes processes, sets priority, cores and efficiency mode."
+            }
+            McpKind::Services => {
+                "Starts, stops, pauses and restarts services; sets their startup type."
+            }
+            McpKind::Network => {
+                "Closes TCP connections; blocks a program with Windows Firewall rules and \
+                 removes them."
+            }
+            McpKind::Startup => {
+                "Turns Run keys, Startup folder entries and sign-in tasks on and off."
+            }
+        }
+    }
+}
+
+/// The MCP server: off until turned on on the MCP page.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpSettings {
+    pub enabled: bool,
+    pub port: u16,
+    /// Every request carries it (Authorization: Bearer); made when the
+    /// server is first turned on.
+    pub token: String,
+    /// What clients may do.
+    pub allowed: Vec<McpKind>,
+}
+
+impl McpSettings {
+    pub fn allows(&self, kind: McpKind) -> bool {
+        self.allowed.contains(&kind)
+    }
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 47123,
+            token: String::new(),
+            allowed: vec![McpKind::Read],
+        }
+    }
+}
+
 fn unversioned() -> u32 {
     0
 }
@@ -318,6 +467,7 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// The keys that bring Anabolic to the front from any program.
     pub hotkey: Hotkey,
+    pub mcp: McpSettings,
     /// Frame times and driver timing are traced with the Stutters page
     /// closed too, so the stutters of a game played meanwhile are caught.
     pub watch_stutters: bool,
@@ -360,6 +510,7 @@ impl Default for Settings {
             rules: Vec::new(),
             close_to_tray: false,
             hotkey: Hotkey::default(),
+            mcp: McpSettings::default(),
             watch_stutters: false,
             game: Default::default(),
             blocked: Vec::new(),

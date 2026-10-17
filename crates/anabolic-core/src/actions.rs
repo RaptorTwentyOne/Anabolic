@@ -269,7 +269,9 @@ impl ActionRunner {
     }
 }
 
-fn perform(action: Action) -> Option<Outcome> {
+/// Carries out an action on the calling thread (the action thread, or the
+/// MCP server's): the outcome, or None for one that has nothing to report.
+pub fn perform(action: Action) -> Option<Outcome> {
     let result = match action {
         Action::Quiet(action) => {
             return perform(*action).filter(|o| matches!(o, Outcome::Error(_)));

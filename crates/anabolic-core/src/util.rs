@@ -83,3 +83,27 @@ pub fn error_text(e: &windows::core::Error) -> String {
         format!("{msg} (0x{:08X})", e.code().0 as u32)
     }
 }
+
+/// `bytes` random bytes from Windows' cryptographic generator, in hex: for
+/// secrets such as the MCP server's access key.
+pub fn random_hex(bytes: usize) -> String {
+    use windows::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+    };
+    let mut buf = vec![0u8; bytes];
+    let status = unsafe { BCryptGenRandom(None, &mut buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+    assert!(status.is_ok(), "BCryptGenRandom failed: {status:?}");
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod random_tests {
+    #[test]
+    fn random_hex_is_hex_and_differs() {
+        let a = super::random_hex(32);
+        let b = super::random_hex(32);
+        assert_eq!(a.len(), 64);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+}

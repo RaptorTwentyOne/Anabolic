@@ -59,6 +59,41 @@ recording the history and applying rules), so the keys work all day. During
 a full-screen game the window opens on another monitor. Windows' Task
 Manager and Ctrl+Shift+Esc are left as they are.
 
+## AI assistants (MCP)
+
+The MCP page (Ctrl+0) turns on a Model Context Protocol server, so Claude
+and other MCP clients can read what Anabolic sees and do what you allow.
+It speaks Streamable HTTP at `http://127.0.0.1:47123/mcp` (the port can be
+changed), listens on this computer only, and every request needs the access
+key the page shows. The page also gives the command for Claude Code and the
+JSON for other clients, and lists the clients that connected and every call
+they made.
+
+What clients may do is chosen on the page, kind by kind; a call of a kind
+that is off is refused and says where to turn it on:
+
+| Kind | Tools |
+|---|---|
+| Read what the PC is doing (on by default) | overview, CPU, memory, disks, GPUs, monitors, hardware, stutters, history, processes and their tree, one process in full (who started it, what it hosts, its connections), why a process will not end, leaks, connections, open ports, network usage, DNS lookups, services, startup programs |
+| Turn kernel traces on for a while | who runs on each core, which files each disk serves, traffic per connection, frame times |
+| Look inside a process | handles, modules, thread stacks, wait chains |
+| Write memory dumps | small or full dumps (never of lsass) |
+| Record what processes do | Process Monitor style recordings, of a process, a name or the whole machine |
+| End processes | end a process or a tree |
+| Suspend, resume and reprioritise | suspend, resume, priority, cores, efficiency mode |
+| Control services | start, stop, restart, pause, startup type |
+| Close connections, block programs | close a TCP connection, Windows Firewall block and unblock |
+| Turn startup programs on and off | the way Task Manager does |
+
+Tools that open a process (inspection and dumps), and actions on a game or
+an anti-cheat program, refuse the first call with the risks in words: the
+assistant has to tell you and call again with `force=true` only if you
+agree. Windows' critical processes and Anabolic itself are never acted on.
+
+The server also offers resources (`anabolic://overview`,
+`anabolic://process/{pid}` and others) and prompts for common questions
+("why is the PC slow", "why does my game stutter", "what happened at 14:32").
+
 ## Games and anti-cheat
 
 Anabolic watches from system-wide tables and kernel traces: its regular

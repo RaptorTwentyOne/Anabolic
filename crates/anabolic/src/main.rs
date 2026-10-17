@@ -19,6 +19,8 @@ mod graph;
 mod help;
 mod history_page;
 mod icons;
+mod mcp;
+mod mcp_page;
 mod netnames;
 mod network_page;
 mod origin;
