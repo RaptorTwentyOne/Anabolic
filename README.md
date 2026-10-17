@@ -2,6 +2,8 @@
   <img src="crates/anabolic/assets/logo/lockup.svg" alt="Anabolic" width="420">
 </p>
 
+<h3 align="center">Task Manager on steroids</h3>
+
 <p align="center">
   A Windows task manager that stays responsive when the machine does not,<br>
   and answers <em>who is doing this, and why</em>, not only <em>how much</em>.
@@ -38,6 +40,8 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 - **It is honest about what it measures.** A value it cannot read is shown as
   unavailable, with the reason, never as zero.
 
+![The Processes page: a Rust build in a terminal, with the compiler processes leading in CPU, memory and disk, next to VS Code, Chrome and Steam](docs/screenshots/processes.png)
+
 ## Contents
 
 - [What it does](#what-it-does)
@@ -63,6 +67,10 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 | **Network** | Traffic per program, every connection with its state and the other end's name, the ports open to others and who can reach them, and every DNS lookup with the program that made it. Close a TCP connection, or block a program in Windows Firewall and allow it again. |
 | **Activity** | Process Monitor style: every file, registry key, connection and program a process touches, in order, from a kernel trace. Start a program under recording, record a running one or its whole tree, or record the whole computer and filter afterwards. CSV export. |
 | **MCP** | A Model Context Protocol server for Claude and other AI assistants, off until you turn it on. See [below](#ai-assistants-mcp). |
+
+![The Performance page's CPU view: ten minutes of total and kernel time with two earlier builds and the one running now, the busiest processes, and one graph per logical processor naming the process that ran on it](docs/screenshots/performance.png)
+
+<sub>The screenshots show a made-up PC, not anyone's real one.</sub>
 
 And across the pages:
 
