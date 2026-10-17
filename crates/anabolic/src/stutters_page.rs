@@ -676,7 +676,7 @@ pub fn show(
         ui.label(
             RichText::new(
                 "From the events the graphics runtime and the kernel write; no game is opened \
-                 or touched, so it is safe beside anti-cheat.",
+                 or touched.",
             )
             .size(theme::META)
             .color(theme::TEXT_WEAK),

@@ -244,6 +244,48 @@ impl View {
     }
 }
 
+/// The keys that bring Anabolic to the front from any program, while it
+/// runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Hotkey {
+    Off,
+    #[default]
+    CtrlAltEsc,
+    CtrlShiftAltEsc,
+    CtrlShiftF12,
+}
+
+impl Hotkey {
+    pub const ALL: [Hotkey; 4] = [
+        Hotkey::Off,
+        Hotkey::CtrlAltEsc,
+        Hotkey::CtrlShiftAltEsc,
+        Hotkey::CtrlShiftF12,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Hotkey::Off => "Off",
+            Hotkey::CtrlAltEsc => "Ctrl+Alt+Esc",
+            Hotkey::CtrlShiftAltEsc => "Ctrl+Shift+Alt+Esc",
+            Hotkey::CtrlShiftF12 => "Ctrl+Shift+F12",
+        }
+    }
+
+    /// Modifiers and virtual key, as Windows registers them.
+    pub fn keys(self) -> Option<(u32, u32)> {
+        use anabolic_core::hotkey::{MOD_ALT, MOD_CONTROL, MOD_SHIFT};
+        const ESCAPE: u32 = 0x1B;
+        const F12: u32 = 0x7B;
+        match self {
+            Hotkey::Off => None,
+            Hotkey::CtrlAltEsc => Some((MOD_CONTROL | MOD_ALT, ESCAPE)),
+            Hotkey::CtrlShiftAltEsc => Some((MOD_CONTROL | MOD_SHIFT | MOD_ALT, ESCAPE)),
+            Hotkey::CtrlShiftF12 => Some((MOD_CONTROL | MOD_SHIFT, F12)),
+        }
+    }
+}
+
 fn unversioned() -> u32 {
     0
 }
@@ -274,6 +316,8 @@ pub struct Settings {
     /// Closing the window keeps Anabolic running in the notification area,
     /// recording the history and applying rules.
     pub close_to_tray: bool,
+    /// The keys that bring Anabolic to the front from any program.
+    pub hotkey: Hotkey,
     /// Frame times and driver timing are traced with the Stutters page
     /// closed too, so the stutters of a game played meanwhile are caught.
     pub watch_stutters: bool,
@@ -315,6 +359,7 @@ impl Default for Settings {
             history_days: 7,
             rules: Vec::new(),
             close_to_tray: false,
+            hotkey: Hotkey::default(),
             watch_stutters: false,
             game: Default::default(),
             blocked: Vec::new(),

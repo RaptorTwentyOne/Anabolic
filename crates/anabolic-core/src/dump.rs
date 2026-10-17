@@ -105,8 +105,23 @@ pub fn file_name(name: &str, pid: u32, kind: DumpKind) -> String {
     format!("{stem}-{pid}-{stamp}{small}.dmp")
 }
 
+/// The processes that hold the machine's sign-in secrets: the Local
+/// Security Authority and its isolated half. Their memory is never written
+/// to a file, whoever asks.
+const REFUSED: &[&str] = &["lsass.exe", "lsaiso.exe"];
+
+/// Whether a process of this name is never dumped.
+pub fn refused(name: &str) -> bool {
+    REFUSED.iter().any(|r| name.eq_ignore_ascii_case(r))
+}
+
 /// Writes a dump of `key` into `dir`, which is created if needed.
 pub fn write(key: ProcKey, name: &str, kind: DumpKind, dir: &Path) -> Result<DumpReport, String> {
+    if refused(name) {
+        return Err(format!(
+            "{name} holds the sign-in secrets of this PC: Anabolic does not write its memory to a file."
+        ));
+    }
     let started = Instant::now();
     std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
     let path = dir.join(file_name(name, key.pid, kind));
@@ -222,5 +237,20 @@ mod tests {
         let head = std::fs::read(&report.path).unwrap();
         assert_eq!(&head[..4], b"MDMP");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Refused by name before anything is opened or created.
+    #[test]
+    fn never_dumps_the_sign_in_secrets() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("anabolic-dump-refused-{pid}"));
+        let key = ProcKey {
+            pid,
+            create_time: 0,
+        };
+        assert!(write(key, "LSASS.EXE", DumpKind::Small, &dir).is_err());
+        assert!(!dir.exists());
+        assert!(refused("LsaIso.exe"));
+        assert!(!refused("lsass2.exe"));
     }
 }

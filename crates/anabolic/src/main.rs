@@ -1,7 +1,7 @@
 //! Anabolic: a Windows task manager that stays responsive when the machine
 //! does not.
 
-// Debug builds too: started by the Ctrl+Shift+Esc task, a console program
+// Debug builds too: started from Explorer or at sign-in, a console program
 // would bring a console window along. Run from a terminal, the parent's
 // console is attached below.
 #![windows_subsystem = "windows"]
@@ -64,7 +64,7 @@ fn main() -> eframe::Result {
             Claim::Unavailable => None,
         }
     };
-    // A full-screen game in front now (Ctrl+Shift+Esc mid-game): the
+    // A full-screen game in front now (Anabolic started mid-game): the
     // window opens on another monitor. Read before the window takes the
     // foreground.
     let avoid = anabolic_core::placement::fullscreen_monitor();
@@ -105,35 +105,54 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             if let Some(event) = activation {
                 let ctx = cc.egui_ctx.clone();
-                instance::serve(event, move || {
-                    activated();
-                    stalls::wake(&ctx);
-                });
+                instance::serve(event, move || come_forward(&ctx));
             }
             Ok(Box::new(app::App::new(cc, hardening, elevated, avoid)))
         }),
     );
     // A window program has nowhere to print why it could not start.
     if let Err(e) = &result {
-        use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-        let text: Vec<u16> = format!(
-            "Anabolic could not start: {e}\n\nIt draws with Direct3D 12, which Windows 10 and 11 \
-             have on every PC: through the graphics driver, or without one through Windows' \
-             own software renderer. Updating the graphics driver usually helps."
-        )
-        .encode_utf16()
-        .chain([0])
-        .collect();
-        unsafe {
-            MessageBoxW(
-                None,
-                windows::core::PCWSTR(text.as_ptr()),
-                windows::core::w!("Anabolic"),
-                MB_OK | MB_ICONERROR,
-            );
-        }
+        message_box(
+            &format!(
+                "Anabolic could not start: {e}\n\nIt draws with Direct3D 12, which Windows 10 and \
+                 11 have on every PC: through the graphics driver, or without one through \
+                 Windows' own software renderer. Updating the graphics driver usually helps."
+            ),
+            true,
+        );
     }
     result
+}
+
+/// What a window program has to say before (or instead of) its window.
+fn message_box(text: &str, error: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW,
+    };
+    let text: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    let icon = if error {
+        MB_ICONERROR
+    } else {
+        MB_ICONINFORMATION
+    };
+    unsafe {
+        MessageBoxW(
+            None,
+            windows::core::PCWSTR(text.as_ptr()),
+            windows::core::w!("Anabolic"),
+            MB_OK | icon,
+        );
+    }
+}
+
+/// Shows the window and brings it to the front: another start of Anabolic,
+/// the hotkey or the notification area icon asked for it. egui is told as
+/// well as Windows, or it would still take the window for hidden, and
+/// closing it again would do nothing.
+pub(crate) fn come_forward(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    activated();
+    stalls::wake(ctx);
 }
 
 /// What draws the window.
@@ -279,7 +298,7 @@ fn pick_adapter(
         .ok_or_else(|| "no Direct3D 12 adapter can show the window".to_string())
 }
 
-/// Another instance or the Ctrl+Shift+Esc launcher asked for us. Tests set
+/// Another start, the hotkey or the tray icon asked for us. Tests set
 /// ANABOLIC_ACTIVATE_LOG to see that happen without the window taking the
 /// foreground from whoever is using the machine.
 fn activated() {

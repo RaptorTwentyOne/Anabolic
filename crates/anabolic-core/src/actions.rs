@@ -134,13 +134,6 @@ pub enum Action {
         handle: u64,
         name: String,
     },
-    /// Make Ctrl+Shift+Esc open Anabolic (or stop doing so).
-    ReplaceTaskManager {
-        on: bool,
-        launcher: &'static [u8],
-    },
-    /// Read what Ctrl+Shift+Esc starts now.
-    QueryTaskManager,
     /// Put text on the clipboard, which another program may be holding.
     Copy(String),
     /// Start this program again elevated. Waits on the UAC prompt.
@@ -193,8 +186,6 @@ pub enum Outcome {
         keys: Vec<ProcKey>,
         message: String,
     },
-    /// What Ctrl+Shift+Esc starts, read at startup and after every change.
-    TaskManager(crate::taskmgr::Registration),
     /// The elevated instance is starting: this one should close.
     Relaunched,
     Affinity {
@@ -338,17 +329,6 @@ fn perform(action: Action) -> Option<Outcome> {
                 Ok(name) => Outcome::PowerRestored(name),
                 Err(e) => Outcome::Error(format!("Could not put the power plan back: {e}")),
             });
-        }
-        Action::ReplaceTaskManager { on, launcher } => {
-            return Some(match crate::taskmgr::set_replaced(on, launcher) {
-                Ok(()) => Outcome::TaskManager(crate::taskmgr::registration()),
-                Err(e) => Outcome::Error(format!(
-                    "Could not change the Task Manager replacement: {e}"
-                )),
-            });
-        }
-        Action::QueryTaskManager => {
-            return Some(Outcome::TaskManager(crate::taskmgr::registration()));
         }
         Action::Copy(text) => arboard::Clipboard::new()
             .and_then(|mut c| c.set_text(text))

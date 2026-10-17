@@ -1,5 +1,5 @@
 //! Keeping Anabolic's window where it is of use: off the monitor a
-//! full-screen game fills (Ctrl+Shift+Esc during a game should not cover
+//! full-screen game fills (called up during a game, it should not cover
 //! it), and on a monitor that exists (one unplugged or switched off would
 //! otherwise keep it out of sight).
 

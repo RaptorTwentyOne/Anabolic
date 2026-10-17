@@ -91,9 +91,8 @@ fn add_icon(hwnd: HWND, icon: HICON) -> bool {
 }
 
 fn open(state: &State) {
-    anabolic_core::instance::bring_to_front();
+    crate::come_forward(&state.ctx);
     let _ = state.events.send(TrayEvent::Open);
-    state.ctx.request_repaint();
 }
 
 fn menu(hwnd: HWND, state: &State) {

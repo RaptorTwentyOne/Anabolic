@@ -1,0 +1,19 @@
+# Licenses of the crates compiled into anabolic.exe, for
+# THIRD-PARTY-NOTICES.html (cargo about generate about.hbs). Where a crate
+# offers a choice, the first accepted one here is used.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "Zlib",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

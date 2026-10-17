@@ -1,2 +1,5 @@
 target/
 .idea/
+
+# Generated for releases from about.hbs.
+THIRD-PARTY-NOTICES.html

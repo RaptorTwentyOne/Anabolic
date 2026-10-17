@@ -1,7 +1,6 @@
 //! The program in front: whose window has the foreground, and whether that
 //! window covers its whole monitor (a game, full screen or borderless).
-//! Window manager queries only; the program is not asked anything, so this
-//! is safe beside anti-cheat.
+//! Window manager queries only; the program is not asked anything.
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{

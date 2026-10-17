@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/anabolic-core", "crates/anabolic"]
-# Built by crates/anabolic/build.rs and embedded into anabolic.exe.
-exclude = ["crates/anabolic-launch"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
 
 [workspace.dependencies]
 anabolic-core = { path = "crates/anabolic-core" }

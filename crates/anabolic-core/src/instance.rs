@@ -1,9 +1,7 @@
 //! One Anabolic per session. The first instance creates a named event and
-//! waits on it; a later one (a second double-click, Ctrl+Shift+Esc pressed
-//! again while the first is still starting) signals it and exits, and the
-//! first brings its window to the front. The Ctrl+Shift+Esc launcher signals
-//! the same event itself, so a running Anabolic comes up at once without
-//! anything being started.
+//! waits on it; a later one (a second double-click, a shortcut clicked
+//! while the first is still starting) signals it and exits, and the first
+//! brings its window to the front.
 //!
 //! The event is created before anything else happens at startup, so two
 //! instances starting together cannot both miss each other the way a search
@@ -31,12 +29,11 @@ use windows::core::{BOOL, PCWSTR, w};
 
 use crate::util::{OwnedHandle, wide};
 
-/// Must match the launcher's copy (crates/anabolic-launch).
 pub const ACTIVATE_EVENT: &str = r"Local\Anabolic-Activate";
 
-/// Anyone signed in may signal it (the launcher runs unelevated while
-/// Anabolic usually runs elevated), and the low integrity label lets a
-/// medium integrity process write to an object a high one created.
+/// Anyone signed in may signal it (a second start may run unelevated while
+/// the first runs elevated), and the low integrity label lets a medium
+/// integrity process write to an object a high one created.
 const SECURITY: PCWSTR = w!("D:(A;;0x1F0003;;;AU)(A;;0x1F0003;;;SY)S:(ML;;NW;;;LW)");
 
 pub enum Claim {
@@ -108,8 +105,8 @@ pub fn await_exit(pid: u32, timeout: Duration) {
     }
 }
 
-/// Runs `on_activate` on a thread of its own every time another instance or
-/// the launcher asks for this one.
+/// Runs `on_activate` on a thread of its own every time another instance
+/// asks for this one.
 pub fn serve(event: OwnedHandle, on_activate: impl Fn() + Send + 'static) {
     // Stays open as long as the process: it is what makes this instance the
     // one the others find.
@@ -133,7 +130,7 @@ pub fn serve(event: OwnedHandle, on_activate: impl Fn() + Send + 'static) {
 pub fn bring_to_front() -> bool {
     for _ in 0..50 {
         if let Some(hwnd) = own_window() {
-            // Ctrl+Shift+Esc during a full-screen game: open beside it, on
+            // Called up during a full-screen game: open beside it, on
             // another monitor, rather than over it. Before anything else,
             // while the game is still the foreground window.
             if let Some(game) = crate::placement::fullscreen_monitor() {
@@ -146,8 +143,9 @@ pub fn bring_to_front() -> bool {
                 } else if !IsWindowVisible(hwnd).as_bool() {
                     let _ = ShowWindow(hwnd, SW_SHOW);
                 }
-                // The launcher passed on its right to take the foreground;
-                // if that did not reach us, do what Alt+Tab does.
+                // The hotkey, the tray icon or a second start gave us the
+                // right to take the foreground; if that did not reach us,
+                // do what Alt+Tab does.
                 if !SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() != hwnd {
                     SwitchToThisWindow(hwnd, true);
                 }

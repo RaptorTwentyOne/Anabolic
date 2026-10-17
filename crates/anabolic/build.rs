@@ -6,45 +6,10 @@
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-/// Builds the tiny Ctrl+Shift+Esc launcher (its own workspace, its own target
-/// dir under OUT_DIR) so anabolic.exe can carry it and drop it next to itself
-/// however anabolic itself was built.
-fn build_launcher(out: &Path) {
-    let crate_dir =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../anabolic-launch");
-    println!(
-        "cargo:rerun-if-changed={}",
-        crate_dir.join("src/main.rs").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        crate_dir.join("Cargo.toml").display()
-    );
-    let target = out.join("launch-target");
-    let status = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
-        .args(["build", "--release", "--manifest-path"])
-        .arg(crate_dir.join("Cargo.toml"))
-        .arg("--target-dir")
-        .arg(&target)
-        .env_remove("CARGO_TARGET_DIR")
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .status()
-        .expect("could not run cargo for anabolic-launch");
-    assert!(status.success(), "building anabolic-launch failed");
-    fs::copy(
-        target.join("release/anabolic-launch.exe"),
-        out.join("anabolic-launch.exe"),
-    )
-    .unwrap();
-}
+use std::path::PathBuf;
 
 fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
-    build_launcher(&out);
     println!("cargo:rerun-if-changed=anabolic.exe.manifest");
     println!("cargo:rerun-if-changed=assets/logo/anabolic.ico");
     println!("cargo:rerun-if-changed=build.rs");

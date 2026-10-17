@@ -870,22 +870,24 @@ pub fn context_menu(
         },
     );
     item(ui, out, "Live activity", "", UiCmd::LiveActivity(p.key));
-    ui.menu_button("Create dump file", |ui| {
-        item(
-            ui,
-            out,
-            "Full: all of its memory\u{2026}",
-            "",
-            UiCmd::ConfirmDump(p.key, anabolic_core::dump::DumpKind::Full),
-        );
-        item(
-            ui,
-            out,
-            "Small: threads, stacks, modules\u{2026}",
-            "",
-            UiCmd::ConfirmDump(p.key, anabolic_core::dump::DumpKind::Small),
-        );
-    });
+    if !anabolic_core::dump::refused(&p.name) {
+        ui.menu_button("Create dump file", |ui| {
+            item(
+                ui,
+                out,
+                "Full: all of its memory\u{2026}",
+                "",
+                UiCmd::ConfirmDump(p.key, anabolic_core::dump::DumpKind::Full),
+            );
+            item(
+                ui,
+                out,
+                "Small: threads, stacks, modules\u{2026}",
+                "",
+                UiCmd::ConfirmDump(p.key, anabolic_core::dump::DumpKind::Small),
+            );
+        });
+    }
 
     let path = d.and_then(|d| d.path.clone());
     if let Some(path) = &path {

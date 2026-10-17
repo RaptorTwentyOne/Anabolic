@@ -56,7 +56,7 @@ const LOG: usize = 40;
 
 /// Never lowered: Windows' core, the shell, audio (lowering it makes sound
 /// crackle), and Anabolic.
-const NEVER: [&str; 19] = [
+const NEVER: [&str; 18] = [
     "system",
     "registry",
     "secure system",
@@ -75,7 +75,6 @@ const NEVER: [&str; 19] = [
     "sihost.exe",
     "ctfmon.exe",
     "anabolic.exe",
-    "anabolic-launch.exe",
 ];
 
 /// Parts of the names of anti-cheat programs: left alone entirely.
