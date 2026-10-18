@@ -46,14 +46,15 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     attach_parent_console();
-    // "Restart as admin" starts us while the instance it replaces closes.
+    // "Restart as admin" and updates start us while the instance we replace
+    // closes.
     let args: Vec<String> = std::env::args().collect();
     if let Some(pid) = args
         .iter()
         .position(|a| a == "--after")
         .and_then(|i| args.get(i + 1)?.parse().ok())
     {
-        instance::await_exit(pid, std::time::Duration::from_secs(10));
+        instance::await_exit(pid, std::time::Duration::from_secs(30));
     }
     // One Anabolic per session: a second start brings the first to the front.
     // `--new` opts out (and leaves activation requests to someone else).

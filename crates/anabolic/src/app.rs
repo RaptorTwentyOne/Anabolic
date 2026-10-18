@@ -36,6 +36,7 @@ mod commands;
 mod inspect;
 pub(crate) mod mcp;
 mod settings_page;
+mod update;
 mod window;
 
 const INTERVALS: [(u64, &str); 6] = [
@@ -247,6 +248,8 @@ pub struct App {
     tip_at: Instant,
     /// Started with command line overrides: do not persist settings.
     session_only: bool,
+    /// New releases: checked for, installed, announced.
+    update: update::UpdateState,
 }
 
 impl App {
@@ -612,6 +615,7 @@ impl App {
             mcp: mcp_state,
             relaunching: false,
             session_only,
+            update: update::UpdateState::new(&cc.egui_ctx),
         }
     }
 
@@ -1098,6 +1102,15 @@ impl eframe::App for App {
                 )
                 .show(ui, |ui| self.alert_bar(ui, &mut cmds));
         }
+        if self.update.bar_wanted() {
+            egui::Panel::top("update")
+                .frame(
+                    Frame::new()
+                        .fill(theme::RAISED)
+                        .inner_margin(Margin::symmetric(10, 5)),
+                )
+                .show(ui, |ui| self.update_bar(ui));
+        }
 
         match self.settings.tab {
             Tab::Processes => {
@@ -1377,6 +1390,7 @@ impl eframe::App for App {
         }
         self.tray_logic(ctx);
         self.hotkey_logic(ctx);
+        self.update_logic(ctx);
         // Closing hides the window when its icon can bring it back. Here
         // rather than in `ui`: while eframe takes the window for minimized
         // or hidden it runs only `logic`, and a close not cancelled there

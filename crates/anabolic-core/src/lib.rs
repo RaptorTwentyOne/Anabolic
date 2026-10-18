@@ -52,6 +52,7 @@ pub mod startup;
 pub mod sysinfo;
 pub mod threads;
 pub mod topology;
+pub mod update;
 mod util;
 
 pub use util::random_hex;

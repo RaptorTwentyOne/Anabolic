@@ -106,6 +106,15 @@ what is missing and why; Settings has **Restart as admin**.
 > Releases are not code-signed yet, so Windows SmartScreen may warn on first
 > run. Choose **More info** → **Run anyway**, or build it yourself.
 
+### Updates
+
+Anabolic keeps itself up to date. Soon after it starts, and then once a day,
+it asks GitHub whether a newer release is out. A new release is downloaded,
+checked against the SHA-256 checksum GitHub lists for it, and put in place of
+the old `anabolic.exe`; it runs from the next start, or at once from the bar
+that says it is installed. In Settings → Updates it can ask first instead, or
+not check at all. Copies built from source are left to their source.
+
 ### Bringing it up from anywhere
 
 **Ctrl+Alt+Esc** brings Anabolic to the front from any program while it runs;
@@ -187,9 +196,14 @@ no promise on their behalf.
 
 ## Privacy
 
-Anabolic sends nothing anywhere by itself and has no telemetry. Looking a file
-up on VirusTotal or an address on ipinfo.io opens your browser, and only when
-you ask. Remote addresses get their names from Windows' DNS.
+Anabolic has no telemetry. The one request it makes by itself is the update
+check: GitHub's API is asked for the latest release, and the request carries
+nothing about this PC beyond what any download does (its address, and
+`Anabolic/<version>` as the program asking). Settings → Updates turns it off.
+
+Looking a file up on VirusTotal or an address on ipinfo.io opens your
+browser, and only when you ask. Remote addresses get their names from
+Windows' DNS.
 
 Everything it keeps stays on this computer:
 

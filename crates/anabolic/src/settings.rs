@@ -246,6 +246,30 @@ impl View {
     }
 }
 
+/// What Anabolic does about newer releases on GitHub.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Updates {
+    /// Downloads and installs them; they run from the next start.
+    #[default]
+    Install,
+    /// Says one is out, and installs it when asked.
+    Ask,
+    /// Does not look (a check from Settings still does).
+    Off,
+}
+
+impl Updates {
+    pub const ALL: [Updates; 3] = [Updates::Install, Updates::Ask, Updates::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Updates::Install => "Install automatically",
+            Updates::Ask => "Ask first",
+            Updates::Off => "Don't check",
+        }
+    }
+}
+
 /// The keys that bring Anabolic to the front from any program, while it
 /// runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -480,6 +504,7 @@ pub struct Settings {
     /// Programs Anabolic cut off the network (Windows Firewall rules), by
     /// path.
     pub blocked: Vec<String>,
+    pub updates: Updates,
 }
 
 impl Default for Settings {
@@ -520,6 +545,7 @@ impl Default for Settings {
             dump_sign_in_secrets: false,
             game: Default::default(),
             blocked: Vec::new(),
+            updates: Updates::default(),
         }
     }
 }

@@ -212,7 +212,11 @@ fn reproducible(file: &mut std::fs::File, head: &[u8]) -> bool {
 
 /// SHA-256 of the whole file, as VirusTotal and friends know it.
 pub fn sha256(path: &str) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
+    sha256_of(std::fs::File::open(path).ok()?)
+}
+
+/// SHA-256 of everything `data` reads, in lowercase hex.
+pub fn sha256_of(mut data: impl Read) -> Option<String> {
     let mut alg = BCRYPT_ALG_HANDLE::default();
     let status = unsafe {
         BCryptOpenAlgorithmProvider(
@@ -232,7 +236,7 @@ pub fn sha256(path: &str) -> Option<String> {
             .ok()?;
         let mut buf = vec![0u8; 1024 * 1024];
         loop {
-            let n = file.read(&mut buf).ok()?;
+            let n = data.read(&mut buf).ok()?;
             if n == 0 {
                 break;
             }

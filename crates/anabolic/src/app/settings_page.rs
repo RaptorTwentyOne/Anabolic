@@ -14,7 +14,7 @@ const PAGE_WIDTH: f32 = 780.0;
 const CONTROL_WIDTH: f32 = 250.0;
 
 /// A section: more room above the heading than below, and a hairline.
-fn heading(ui: &mut Ui, title: &str) {
+pub(super) fn heading(ui: &mut Ui, title: &str) {
     ui.add_space(26.0);
     ui.label(widgets::strong(title, theme::SUBTITLE));
     ui.add_space(4.0);
@@ -25,7 +25,7 @@ fn heading(ui: &mut Ui, title: &str) {
 
 /// One setting: its name and what it does on the left, wrapped to the
 /// column; its control on the right, in a column of its own.
-fn row(ui: &mut Ui, name: &str, about: &str, control: impl FnOnce(&mut Ui)) {
+pub(super) fn row(ui: &mut Ui, name: &str, about: &str, control: impl FnOnce(&mut Ui)) {
     let text_width = (ui.available_width() - CONTROL_WIDTH - 20.0).max(260.0);
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(text_width, 0.0), Layout::top_down(Align::Min), |ui| {
@@ -86,6 +86,7 @@ impl App {
                 self.stutter_section(ui);
                 self.dump_section(ui);
                 self.assistant_section(ui);
+                self.updates_section(ui);
                 self.about_section(ui);
                 ui.add_space(24.0);
             });

@@ -126,6 +126,8 @@ pub mod icon {
     pub const RECORD: &str = "\u{E7C8}";
     /// A robot: AI assistants (the MCP page).
     pub const MCP: &str = "\u{E99A}";
+    /// An arrow into a tray: a new release.
+    pub const UPDATE: &str = "\u{E896}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

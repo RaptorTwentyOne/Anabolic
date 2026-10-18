@@ -12,6 +12,11 @@ publish.workspace = true
 arboard = { version = "3.7", default-features = false }
 arc-swap.workspace = true
 crossbeam-channel.workspace = true
+# Updates: the release zip (deflate, CRC-32) and GitHub's answer.
+crc32fast = "1.5"
+miniz_oxide = "0.8"
+serde.workspace = true
+serde_json = "1"
 
 [dependencies.windows]
 workspace = true
@@ -26,6 +31,7 @@ features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_Security_Authorization",
