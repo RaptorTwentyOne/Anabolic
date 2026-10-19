@@ -265,6 +265,17 @@ pub struct App {
     session_only: bool,
     /// New releases: checked for, installed, announced.
     update: update::UpdateState,
+    /// The window is a Wayland one: closing into the notification area
+    /// closes it (see `windowless`).
+    #[cfg(target_os = "linux")]
+    wayland: bool,
+    /// The window closed into the notification area: Anabolic goes on
+    /// without one until it is asked for.
+    #[cfg(target_os = "linux")]
+    away: bool,
+    /// The window's context, for running without the window.
+    #[cfg(target_os = "linux")]
+    ctx: egui::Context,
 }
 
 impl App {
@@ -275,6 +286,8 @@ impl App {
         #[cfg_attr(not(windows), allow(unused_variables))] avoid_monitor: Option<isize>,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
+        #[cfg(target_os = "linux")]
+        crate::windowless::attach(&cc.egui_ctx);
         let mut settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
@@ -597,14 +610,7 @@ impl App {
             started: Instant::now(),
             ui_time: Duration::ZERO,
             stalls: Default::default(),
-            mark: cc.egui_ctx.load_texture(
-                "anabolic-mark",
-                egui::ColorImage::from_rgba_unmultiplied(
-                    [64, 64],
-                    include_bytes!("../assets/logo/mark-64.rgba"),
-                ),
-                egui::TextureOptions::LINEAR,
-            ),
+            mark: mark(&cc.egui_ctx),
             #[cfg(windows)]
             title_bar_styled: false,
             pinned: None,
@@ -635,6 +641,12 @@ impl App {
             relaunching: false,
             session_only,
             update: update::UpdateState::new(&cc.egui_ctx),
+            #[cfg(target_os = "linux")]
+            wayland: crate::windowless::on_wayland(cc),
+            #[cfg(target_os = "linux")]
+            away: false,
+            #[cfg(target_os = "linux")]
+            ctx: cc.egui_ctx.clone(),
         }
     }
 
@@ -1097,7 +1109,11 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         // `ui` runs only while the window is on screen (`logic` has pumped),
         // unless `logic` has just hidden it on a close.
-        if !(self.hidden && ctx.input(|i| i.viewport().close_requested())) {
+        #[cfg(target_os = "linux")]
+        let closing = self.away;
+        #[cfg(windows)]
+        let closing = false;
+        if !(self.hidden && (closing || ctx.input(|i| i.viewport().close_requested()))) {
             self.hidden = false;
         }
         // Names for addresses: what programs looked up, as it comes in.
@@ -1384,7 +1400,7 @@ impl eframe::App for App {
                 .name("anabolic-displays".into())
                 .spawn(move || {
                     let _ = tx.send(anabolic_core::displays::displays());
-                    wake.request_repaint();
+                    crate::repaint(&wake);
                 });
             self.displays_rx = Some(rx);
         }
@@ -1411,10 +1427,37 @@ impl eframe::App for App {
         self.ui_time = started.elapsed();
     }
 
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.tick(ctx);
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::bench::inject(raw_input);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Closed into the notification area: everything goes on.
+        #[cfg(target_os = "linux")]
+        if self.away() {
+            return;
+        }
+        // Stops the ETW session before the process goes away.
+        self.collector.shutdown();
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.session_only {
+            return;
+        }
+        eframe::set_value(storage, eframe::APP_KEY, &self.settings);
+    }
+}
+
+impl App {
     /// Runs before every frame, and while the window is closed into the
     /// notification area whenever new data arrives (no frame is drawn
     /// then): what must go on without a window lives here.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn tick(&mut self, ctx: &egui::Context) {
         self.pump(ctx);
         // Rules: standing orders go to the action thread quietly; alerts
         // become toasts, or notifications while the window is closed.
@@ -1440,8 +1483,20 @@ impl eframe::App for App {
             && self.tray.is_some()
             && (self.settings.close_to_tray || self.start_in_tray)
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // Wayland cannot hide a window, only close it: then Anabolic
+            // goes on without one (see `windowless`).
+            #[cfg(target_os = "linux")]
+            let closes = self.wayland;
+            #[cfg(windows)]
+            let closes = false;
+            if !closes {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                self.away = closes;
+            }
             self.hidden = true;
             if !std::mem::replace(&mut self.told_hidden, true)
                 && let Some(tray) = &self.tray
@@ -1467,23 +1522,27 @@ impl eframe::App for App {
         ) {
             self.actions.run(action);
         }
-    }
-
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        crate::bench::inject(raw_input);
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Stops the ETW session before the process goes away.
-        self.collector.shutdown();
-    }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        if self.session_only {
-            return;
+        // `--tray` on Wayland: a window cannot start hidden there, so the
+        // first closes at once and Anabolic goes on without it.
+        #[cfg(target_os = "linux")]
+        if self.wayland && self.hidden && !self.away && self.tray.is_some() {
+            self.away = true;
+            self.told_hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        eframe::set_value(storage, eframe::APP_KEY, &self.settings);
     }
+}
+
+/// The logo mark beside the wordmark in the rail.
+fn mark(ctx: &egui::Context) -> egui::TextureHandle {
+    ctx.load_texture(
+        "anabolic-mark",
+        egui::ColorImage::from_rgba_unmultiplied(
+            [64, 64],
+            include_bytes!("../assets/logo/mark-64.rgba"),
+        ),
+        egui::TextureOptions::LINEAR,
+    )
 }
 
 #[cfg(test)]

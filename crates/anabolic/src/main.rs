@@ -46,6 +46,9 @@ mod theme;
 mod tray;
 mod tree;
 mod widgets;
+#[cfg(target_os = "linux")]
+#[path = "linux/windowless.rs"]
+mod windowless;
 
 use anabolic_core::instance::{self, Claim};
 use eframe::egui;
@@ -132,6 +135,7 @@ fn main() -> eframe::Result {
             options.persistence_path = data_dir().map(|dir| dir.join("app.ron"));
         }
     }
+    #[cfg(windows)]
     let result = eframe::run_native(
         "Anabolic",
         options,
@@ -143,6 +147,31 @@ fn main() -> eframe::Result {
             Ok(Box::new(app::App::new(cc, hardening, elevated, avoid)))
         }),
     );
+    // Closing into the notification area closes a Wayland window for real,
+    // and a later one opens when asked for (see `windowless`).
+    #[cfg(target_os = "linux")]
+    let result = {
+        let mut first = options.clone();
+        // `--tray`: a Wayland window cannot start hidden either. The first
+        // is a speck that closes at once, its size and place not kept.
+        if std::env::args().any(|a| a == "--tray") && windowless::wayland_likely() {
+            first.viewport = first
+                .viewport
+                .with_inner_size([1.0, 1.0])
+                .with_min_inner_size([1.0, 1.0])
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_active(false);
+            first.persist_window = false;
+        }
+        windowless::run(first, options, move |cc| {
+            if let Some(event) = activation {
+                let ctx = cc.egui_ctx.clone();
+                instance::serve(event, move || come_forward(&ctx));
+            }
+            app::App::new(cc, hardening, elevated, avoid)
+        })
+    };
     // A window program has nowhere to print why it could not start.
     if let Err(e) = &result {
         message_box(
@@ -175,11 +204,37 @@ fn message_box(text: &str, error: bool) {
     }
 }
 
+/// Wakes the UI from another thread. On Linux the window `ctx` came from
+/// may have closed since: the window up now is woken, or the loop that runs
+/// while there is none (see `windowless`).
+pub(crate) fn repaint(ctx: &egui::Context) {
+    #[cfg(windows)]
+    ctx.request_repaint();
+    #[cfg(target_os = "linux")]
+    {
+        let _ = ctx;
+        windowless::repaint();
+    }
+}
+
 /// Shows the window and brings it to the front: another start of Anabolic,
 /// the hotkey or the notification area icon asked for it. egui is told as
 /// well as Windows, or it would still take the window for hidden, and
 /// closing it again would do nothing.
 pub(crate) fn come_forward(ctx: &egui::Context) {
+    // On Linux the window `ctx` came from may have closed since: the one up
+    // now is brought forward, or a new one opens.
+    #[cfg(target_os = "linux")]
+    let window = {
+        let _ = ctx;
+        windowless::window()
+    };
+    #[cfg(target_os = "linux")]
+    let Some(ctx) = window.as_ref() else {
+        windowless::show();
+        activated();
+        return;
+    };
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     // On Wayland the compositor decides; this asks it (xdg-activation).
     #[cfg(target_os = "linux")]

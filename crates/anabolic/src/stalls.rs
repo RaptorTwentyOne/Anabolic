@@ -49,7 +49,7 @@ static LAST_WAKE: AtomicU64 = AtomicU64::new(0);
 /// measured from now and not from the end of the idle gap before it.
 pub fn wake(ctx: &egui::Context) {
     LAST_WAKE.store(epoch().elapsed().as_nanos() as u64, Ordering::Relaxed);
-    ctx.request_repaint();
+    crate::repaint(ctx);
 }
 
 impl Stalls {

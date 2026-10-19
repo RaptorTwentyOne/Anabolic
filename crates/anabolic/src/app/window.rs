@@ -353,3 +353,57 @@ impl App {
         self.pinned = Some(hardening::pin_working_set(target).map(|_| target as u64));
     }
 }
+
+/// Without a window on Wayland (see `windowless`).
+#[cfg(target_os = "linux")]
+impl App {
+    /// The window closed into the notification area, and Quit was not
+    /// chosen since.
+    pub fn away(&self) -> bool {
+        self.away && !self.quitting
+    }
+
+    /// Goes on without a window: whenever something wakes `wait` (new
+    /// data, the icon), or at least once per refresh. True when a window is
+    /// asked for, false when Quit is chosen.
+    pub fn run_away(&mut self, wait: fn(Duration) -> bool) -> bool {
+        // The last window's context, for the passes that run without it.
+        // Its wake-ups went to that window; nothing waits on them now.
+        let ctx = self.ctx.clone();
+        ctx.set_request_repaint_callback(|_| {});
+        loop {
+            let asked = wait(Duration::from_millis(self.settings.interval_ms.max(250)));
+            ctx.begin_pass(egui::RawInput::default());
+            self.tick(&ctx);
+            let _ = ctx.end_pass();
+            if self.quitting {
+                return false;
+            }
+            if asked || !self.hidden {
+                return true;
+            }
+        }
+    }
+
+    /// A new window for an App that went on without one: what belonged to
+    /// the last window's context is made again for this one.
+    pub fn reopened(&mut self, cc: &eframe::CreationContext<'_>) {
+        theme::apply(&cc.egui_ctx);
+        crate::windowless::attach(&cc.egui_ctx);
+        self.mark = super::mark(&cc.egui_ctx);
+        self.icons = IconCache::default();
+        self.stalls = Default::default();
+        self.ctx = cc.egui_ctx.clone();
+        self.wayland = crate::windowless::on_wayland(cc);
+        self.away = false;
+        self.hidden = false;
+    }
+
+    /// Quit chosen without a window: what eframe does when its window
+    /// closes, saving into `storage`.
+    pub fn quit_away(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::App::save(self, storage);
+        storage.flush();
+        self.collector.shutdown();
+    }
+}

@@ -240,7 +240,7 @@ impl AnabolicMcp {
             self.shared
                 .wants
                 .want(trace, Duration::from_secs(secs as u64 + 5));
-            self.shared.ctx.request_repaint();
+            crate::repaint(&self.shared.ctx);
             for done in 0..secs {
                 progress(context, done as f64, Some(secs as f64), "tracing").await;
                 tokio::time::sleep(Duration::from_secs(1)).await;

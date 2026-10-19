@@ -43,7 +43,7 @@ impl Shared {
 
     fn quit(&self) {
         let _ = self.events.send(TrayEvent::Quit);
-        self.ctx.request_repaint();
+        crate::repaint(&self.ctx);
     }
 }
 

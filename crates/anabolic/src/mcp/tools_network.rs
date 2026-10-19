@@ -111,7 +111,7 @@ impl AnabolicMcp {
         self.shared
             .wants
             .want(Trace::Network, Duration::from_secs(secs as u64 + 5));
-        self.shared.ctx.request_repaint();
+        crate::repaint(&self.shared.ctx);
         for done in 0..secs {
             progress(
                 context,

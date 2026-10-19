@@ -63,7 +63,7 @@ pub struct Shared {
 impl Shared {
     pub fn event(&self, event: McpEvent) {
         let _ = self.events.send(event);
-        self.ctx.request_repaint();
+        crate::repaint(&self.ctx);
     }
 
     /// Whether clients may do `kind`; the refusal says where to allow it.

@@ -35,6 +35,10 @@ eframe = { version = "0.36", default-features = false, features = ["wayland", "x
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 libc = "0.2"
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# Without a window on Wayland (see linux/windowless.rs): which display the
+# window is on, and eframe's saved state written without it.
+raw-window-handle = "0.6"
+ron = "0.12"
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
