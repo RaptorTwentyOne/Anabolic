@@ -341,6 +341,12 @@ pub struct SystemStats {
     pub process_objects: u32,
     pub net: NetStats,
     pub gpus: Vec<AdapterGpuStats>,
+    /// Temperatures, fans and power draw, grouped by device, the
+    /// processor's first.
+    pub sensors: Vec<crate::sensors::Sensor>,
+    /// °C: the processor's package (Intel) or control temperature (AMD).
+    /// None where only drivers may read it (Windows).
+    pub cpu_temperature: Option<f32>,
     /// Why per-process network traffic is unavailable, if it is.
     pub net_trace_error: Option<String>,
     /// Per logical processor; empty unless core tracing is on.

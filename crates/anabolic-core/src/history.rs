@@ -57,6 +57,8 @@ pub struct GpuHistory {
     pub usage: Ring,
     pub engines: Vec<Ring>,
     pub dedicated: Ring,
+    /// °C; empty when the GPU reports none.
+    pub temperature: Ring,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +80,8 @@ pub struct AdapterHistory {
 pub struct History {
     pub cpu: Ring,
     pub cpu_kernel: Ring,
+    /// °C; empty when the processor's temperature cannot be read.
+    pub cpu_temperature: Ring,
     pub cores: Vec<Ring>,
     pub core_kernel: Vec<Ring>,
     pub memory_used: Ring,
@@ -100,6 +104,7 @@ impl History {
         Self {
             cpu: Ring::new(capacity),
             cpu_kernel: Ring::new(capacity),
+            cpu_temperature: Ring::new(capacity),
             cores: (0..cores).map(|_| Ring::new(capacity)).collect(),
             core_kernel: (0..cores).map(|_| Ring::new(capacity)).collect(),
             memory_used: Ring::new(capacity),
@@ -118,6 +123,7 @@ impl History {
                     usage: Ring::new(capacity),
                     engines: (0..engines).map(|_| Ring::new(capacity)).collect(),
                     dedicated: Ring::new(capacity),
+                    temperature: Ring::new(capacity),
                 })
                 .collect(),
         }

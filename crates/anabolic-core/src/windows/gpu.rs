@@ -1,5 +1,6 @@
 //! GPU engine utilisation and video memory from the kernel graphics
-//! statistics interface (D3DKMT), the same source Task Manager reads.
+//! statistics interface (D3DKMT), the same source Task Manager reads; and
+//! the temperature and fan speed the driver reports through it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,11 +10,13 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use windows::Wdk::Graphics::Direct3D::{
-    D3DKMT_ADAPTERINFO, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2, D3DKMT_NODEMETADATA,
-    D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS, D3DKMT_QUERYSTATISTICS_ADAPTER,
-    D3DKMT_QUERYSTATISTICS_NODE, D3DKMT_QUERYSTATISTICS_PROCESS_NODE,
-    D3DKMT_QUERYSTATISTICS_SEGMENT, D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTCloseAdapter,
-    D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo, D3DKMTQueryStatistics, KMTQAITYPE_NODEMETADATA,
+    D3DKMT_ADAPTER_PERFDATA, D3DKMT_ADAPTER_PERFDATACAPS, D3DKMT_ADAPTERINFO, D3DKMT_CLOSEADAPTER,
+    D3DKMT_ENUMADAPTERS2, D3DKMT_NODEMETADATA, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS,
+    D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
+    D3DKMT_QUERYSTATISTICS_PROCESS_NODE, D3DKMT_QUERYSTATISTICS_SEGMENT,
+    D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo,
+    D3DKMTQueryStatistics, KMTQAITYPE_ADAPTERPERFDATA, KMTQAITYPE_ADAPTERPERFDATA_CAPS,
+    KMTQAITYPE_NODEMETADATA, KMTQUERYADAPTERINFOTYPE,
 };
 use windows::Win32::Foundation::{HANDLE, LUID};
 use windows::Win32::Graphics::Dxgi::{
@@ -23,6 +26,7 @@ use windows::Win32::System::ProcessStatus::K32EnumProcesses;
 use windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION};
 
 use crate::model::ProcKey;
+use crate::sensors::{Sensor, SensorKind};
 use crate::util::{OwnedHandle, filetime_to_i64, from_wide};
 
 use super::*;
@@ -44,6 +48,25 @@ fn query(
     unsafe { D3DKMTQueryStatistics(&q) }.is_ok().then_some(q)
 }
 
+/// Asks an adapter's driver for one block of facts.
+fn adapter_info<T: Default>(handle: u32, kind: KMTQUERYADAPTERINFOTYPE) -> Option<T> {
+    let mut data = T::default();
+    let mut info = D3DKMT_QUERYADAPTERINFO {
+        hAdapter: handle,
+        Type: kind,
+        pPrivateDriverData: (&raw mut data).cast(),
+        PrivateDriverDataSize: size_of::<T>() as u32,
+    };
+    unsafe { D3DKMTQueryAdapterInfo(&mut info) }
+        .is_ok()
+        .then_some(data)
+}
+
+/// Tenths of a degree, as the driver reports them; 0 is no sensor.
+fn deci_celsius(value: u32) -> Option<f32> {
+    (value > 0 && value < 2000).then(|| value as f32 / 10.0)
+}
+
 struct Node {
     name: Arc<str>,
     prev: i64,
@@ -51,11 +74,18 @@ struct Node {
 
 struct Adapter {
     luid: LUID,
+    /// Kept open for the driver's performance data.
+    handle: u32,
     name: Arc<str>,
     nodes: Vec<Node>,
     segments: u32,
     dedicated_total: u64,
     shared_total: u64,
+    /// Where the driver warns, and the most it allows.
+    warning: Option<f32>,
+    max: Option<f32>,
+    /// It has a fan the driver reports (stopped or not).
+    fan: bool,
 }
 
 /// Engine names on this adapter, deduplicated ("Copy", "Copy 2").
@@ -163,8 +193,17 @@ impl GpuSampler {
                             query(D3DKMT_QUERYSTATISTICS_ADAPTER, luid, HANDLE::default(), 0)
                     {
                         let stats = unsafe { q.QueryResult.AdapterInformation };
+                        let caps = adapter_info::<D3DKMT_ADAPTER_PERFDATACAPS>(
+                            info.hAdapter,
+                            KMTQAITYPE_ADAPTERPERFDATA_CAPS,
+                        )
+                        .unwrap_or_default();
                         adapters.push(Adapter {
                             luid,
+                            handle: info.hAdapter,
+                            warning: deci_celsius(caps.TemperatureWarning),
+                            max: deci_celsius(caps.TemperatureMax),
+                            fan: caps.MaxFanRPM > 0,
                             name: Arc::from(name.as_str()),
                             nodes: node_names(info.hAdapter, stats.NodeCount)
                                 .into_iter()
@@ -178,12 +217,10 @@ impl GpuSampler {
                 }
             }
             for info in &infos {
-                let close = D3DKMT_CLOSEADAPTER {
-                    hAdapter: info.hAdapter,
-                };
-                unsafe {
-                    let _ = D3DKMTCloseAdapter(&close);
+                if adapters.iter().any(|a: &Adapter| a.handle == info.hAdapter) {
+                    continue;
                 }
+                close_adapter(info.hAdapter);
             }
         }
         Self {
@@ -214,10 +251,16 @@ impl GpuSampler {
         self.adapters
             .iter_mut()
             .map(|a| {
+                let sensors = sensors(a);
                 let mut out = AdapterGpuStats {
                     name: a.name.clone(),
                     dedicated_total: a.dedicated_total,
                     shared_total: a.shared_total,
+                    temperature: sensors
+                        .iter()
+                        .find(|s| s.kind == SensorKind::Temperature)
+                        .map(|s| s.value),
+                    sensors,
                     ..Default::default()
                 };
                 for (id, node) in a.nodes.iter_mut().enumerate() {
@@ -267,6 +310,58 @@ impl Default for GpuSampler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl Drop for GpuSampler {
+    fn drop(&mut self) {
+        for a in &self.adapters {
+            close_adapter(a.handle);
+        }
+    }
+}
+
+fn close_adapter(handle: u32) {
+    let close = D3DKMT_CLOSEADAPTER { hAdapter: handle };
+    unsafe {
+        let _ = D3DKMTCloseAdapter(&close);
+    }
+}
+
+/// The temperature and fan speed the driver reports (Task Manager's "GPU
+/// temperature"); integrated GPUs report none.
+fn sensors(a: &Adapter) -> Vec<Sensor> {
+    let Some(perf) = adapter_info::<D3DKMT_ADAPTER_PERFDATA>(a.handle, KMTQAITYPE_ADAPTERPERFDATA)
+    else {
+        return Vec::new();
+    };
+    let sensor = |label: &str, kind, value, high, critical| Sensor {
+        device: a.name.clone(),
+        label: Arc::from(label),
+        kind,
+        value,
+        high,
+        critical,
+    };
+    let mut out = Vec::new();
+    if let Some(t) = deci_celsius(perf.Temperature) {
+        out.push(sensor(
+            "Temperature",
+            SensorKind::Temperature,
+            t,
+            a.warning,
+            a.max,
+        ));
+    }
+    if a.fan || perf.FanRPM > 0 {
+        out.push(sensor(
+            "Fan",
+            SensorKind::Fan,
+            perf.FanRPM as f32,
+            None,
+            None,
+        ));
+    }
+    out
 }
 
 struct Tracked {
@@ -400,6 +495,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reads_tenths_of_a_degree() {
+        assert_eq!(deci_celsius(0), None);
+        assert_eq!(deci_celsius(452), Some(45.2));
+        assert_eq!(deci_celsius(u32::MAX), None);
+    }
+
+    #[test]
     fn samples_adapters() {
         let mut sampler = GpuSampler::new();
         let first = sampler.sample();
@@ -411,10 +513,11 @@ mod tests {
             assert!(a.engines.iter().all(|e| (0.0..=100.0).contains(&e.usage)));
             assert!(a.dedicated_used <= a.dedicated_total.max(a.dedicated_used));
             println!(
-                "{}: {:.1}% {:?}",
+                "{}: {:.1}% {:?} {:?} °C",
                 a.name,
                 a.usage,
-                a.engines.iter().map(|e| &*e.name).collect::<Vec<_>>()
+                a.engines.iter().map(|e| &*e.name).collect::<Vec<_>>(),
+                a.temperature
             );
         }
     }

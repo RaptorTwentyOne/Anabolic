@@ -1,11 +1,13 @@
 //! Tools about the whole machine: the overview, CPU, memory, disks, GPUs,
-//! monitors, hardware, frame times and driver latency, and the history.
+//! sensors, monitors, hardware, frame times and driver latency, and the
+//! history.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anabolic_core::Snapshot;
 use anabolic_core::model::ProcState;
+use anabolic_core::sensors::{self, Heat, Sensor, SensorKind};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::service::RequestContext;
@@ -148,6 +150,31 @@ fn disks_json(snap: &Snapshot) -> Vec<Value> {
         .collect()
 }
 
+fn sensor_json(s: &Sensor) -> Value {
+    json!({
+        "device": &*s.device,
+        "sensor": &*s.label,
+        "kind": match s.kind {
+            SensorKind::Temperature => "temperature",
+            SensorKind::Fan => "fan",
+            SensorKind::Power => "power",
+        },
+        "value": pct(s.value),
+        "unit": match s.kind {
+            SensorKind::Temperature => "celsius",
+            SensorKind::Fan => "rpm",
+            SensorKind::Power => "watts",
+        },
+        "high": s.high.map(pct),
+        "critical": s.critical.map(pct),
+        "heat": (s.kind == SensorKind::Temperature).then(|| match s.heat() {
+            Heat::Normal => "normal",
+            Heat::Warm => "warm",
+            Heat::Hot => "hot",
+        }),
+    })
+}
+
 fn gpus_json(snap: &Snapshot) -> Vec<Value> {
     snap.system
         .gpus
@@ -159,6 +186,8 @@ fn gpus_json(snap: &Snapshot) -> Vec<Value> {
                 "dedicated_used_bytes": g.dedicated_used,
                 "dedicated_total_bytes": g.dedicated_total,
                 "shared_used_bytes": g.shared_used,
+                "temperature_c": g.temperature.map(pct),
+                "sensors": g.sensors.iter().map(sensor_json).collect::<Vec<_>>(),
                 "engines": g.engines.iter().filter(|e| e.usage > 0.0).map(|e| json!({
                     "engine": &*e.name,
                     "usage_percent": pct(e.usage),
@@ -271,6 +300,17 @@ impl AnabolicMcp {
         for leak in self.shared.leaks.load().iter() {
             attention.push(fmt::leak(leak));
         }
+        for t in s.sensors.iter().filter(|t| t.heat() == Heat::Hot) {
+            attention.push(format!(
+                "{} {} is at {:.0} °C{}.",
+                t.device,
+                t.label,
+                t.value,
+                t.critical.map_or(String::new(), |c| format!(
+                    ", close to its critical {c:.0} °C"
+                ))
+            ));
+        }
         ok(json!({
             "anabolic_elevated": self.shared.elevated,
             "uptime_seconds": s.uptime.as_secs(),
@@ -279,6 +319,13 @@ impl AnabolicMcp {
             "threads": s.threads,
             "handles": s.handles,
             "cpu": json::cpu_times(&s.cpu),
+            "cpu_temperature_c": s.cpu_temperature.map(pct),
+            "hottest_sensor": s
+                .sensors
+                .iter()
+                .filter(|t| t.kind == SensorKind::Temperature)
+                .max_by(|a, b| a.value.total_cmp(&b.value))
+                .map(sensor_json),
             "logical_processors": s.cores.len(),
             "memory": memory_json(&snap),
             "disks": disks_json(&snap),
@@ -353,6 +400,13 @@ impl AnabolicMcp {
             "interrupts_per_second": s.cpu.interrupt_rate.round(),
             "dpcs_per_second": s.cpu.dpc_rate.round(),
             "context_switches_per_second": s.cpu.context_switch_rate.round(),
+            "temperature_c": s.cpu_temperature.map(pct),
+            "temperatures": s
+                .sensors
+                .iter()
+                .filter(|t| &*t.device == sensors::CPU)
+                .map(sensor_json)
+                .collect::<Vec<_>>(),
             "physical_cores": topology.cores,
             "logical_processors": s.cores.len(),
             "per_logical_processor": cores,
@@ -427,8 +481,28 @@ impl AnabolicMcp {
     }
 
     #[tool(
+        description = "Temperatures, fan speeds and power draw: every sensor Anabolic reads (the \
+                       processor's package and cores, GPUs, disks, memory modules, network \
+                       adapters, thermal zones, fans), each with the hardware's high and \
+                       critical marks and how close it is to them. On Windows only drivers may \
+                       read the processor's own sensors; the firmware's thermal zones stand in.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn get_sensors(&self) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let snap = self.snapshot().await;
+        let s = &snap.system;
+        ok(json!({
+            "cpu_temperature_c": s.cpu_temperature.map(pct),
+            "sensors": s.sensors.iter().map(sensor_json).collect::<Vec<_>>(),
+        }))
+    }
+
+    #[tool(
         description = "GPUs: each adapter's usage, engines (3D, copy, video...), dedicated and \
-                       shared memory, and the processes using the GPU most.",
+                       shared memory, temperature, and the processes using the GPU most.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_gpus(&self) -> Result<CallToolResult, ErrorData> {

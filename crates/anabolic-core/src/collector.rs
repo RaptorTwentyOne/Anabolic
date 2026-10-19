@@ -31,6 +31,7 @@ use crate::net::NetSampler;
 use crate::nettrace::{ConnKey, NetTracer, Traffic};
 use crate::recorder::{Recorder, RecorderConfig};
 use crate::scan::{self, Entry, ProcessScanner};
+use crate::sensors::{self, Sensor};
 
 #[derive(Clone, Debug)]
 pub struct CollectorConfig {
@@ -236,6 +237,8 @@ struct State {
     gpu_procs: Arc<ArcSwap<GpuProcessMap>>,
     /// Shared with the GPU thread so it samples at the same pace.
     interval_ms: Arc<AtomicU64>,
+    /// The latest readings from the sensor thread.
+    sensors: Arc<ArcSwap<Vec<Sensor>>>,
     net_trace: Option<NetTracer>,
     net_trace_error: Option<String>,
     conns: HashMap<ConnKey, ConnState>,
@@ -301,6 +304,11 @@ impl State {
             gpu,
             gpu_procs,
             interval_ms,
+            sensors: {
+                let latest = Arc::new(ArcSwap::from_pointee(Vec::new()));
+                sensors::spawn(latest.clone());
+                latest
+            },
             net_trace,
             net_trace_error,
             conns: HashMap::new(),
@@ -1006,6 +1014,8 @@ impl State {
         system.page_files = self.page_files.clone();
         system.net = self.net.sample(secs);
         system.gpus = self.gpu.sample();
+        system.sensors = sensors::merge(&self.sensors.load(), &system.gpus, &system.disks);
+        system.cpu_temperature = sensors::cpu_sensor(&system.sensors).map(|s| s.value);
         system.net_trace_error = self.net_trace_error.clone();
         system.core_trace_error = self.core_trace_error.clone();
         if tracing_cores {
@@ -1077,6 +1087,9 @@ impl State {
             let h = &mut self.history;
             h.cpu.push(system.cpu.total);
             h.cpu_kernel.push(system.cpu.kernel);
+            if let Some(t) = system.cpu_temperature {
+                h.cpu_temperature.push(t);
+            }
             for (ring, core) in h.cores.iter_mut().zip(&system.cores) {
                 ring.push(core.total);
             }
@@ -1108,6 +1121,9 @@ impl State {
                     ring.push(engine.usage);
                 }
                 gh.dedicated.push(gs.dedicated_used as f32);
+                if let Some(t) = gs.temperature {
+                    gh.temperature.push(t);
+                }
             }
             self.published_history = Arc::new(self.history.clone());
         }

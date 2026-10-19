@@ -1,6 +1,7 @@
 //! GPU usage per adapter and engine, and per process.
 
 use crate::model::ProcKey;
+use crate::sensors::{Sensor, SensorKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,6 +27,21 @@ pub struct AdapterGpuStats {
     pub dedicated_total: u64,
     pub shared_used: u64,
     pub shared_total: u64,
+    /// °C, as its driver reports it; None when it reports none, or the GPU
+    /// sleeps and is not woken to be asked.
+    pub temperature: Option<f32>,
+    /// Everything its driver reports: temperatures with their limits,
+    /// fans, power draw.
+    pub sensors: Vec<Sensor>,
+}
+
+impl AdapterGpuStats {
+    /// The temperature sensor `temperature` comes from, with its limits.
+    pub fn temperature_sensor(&self) -> Option<&Sensor> {
+        self.sensors
+            .iter()
+            .find(|s| s.kind == SensorKind::Temperature)
+    }
 }
 
 /// GPU share per process (busiest engine), published by its own thread.

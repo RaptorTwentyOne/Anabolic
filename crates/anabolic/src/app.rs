@@ -410,6 +410,7 @@ impl App {
                 Some("cpuinfo") => perf_view = PerfView::CpuInfo,
                 Some("meminfo") => perf_view = PerfView::MemoryInfo,
                 Some("displays") => perf_view = PerfView::Displays,
+                Some("sensors") => perf_view = PerfView::Sensors,
                 Some(v) if v.starts_with("disk") => {
                     if let Ok(n) = v[4..].parse() {
                         perf_view = PerfView::PhysicalDisk(n);

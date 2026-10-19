@@ -47,6 +47,7 @@ pub mod power;
 pub mod recorder;
 pub mod resolver;
 pub mod scan;
+pub mod sensors;
 pub mod services;
 pub mod sockets;
 pub mod startup;

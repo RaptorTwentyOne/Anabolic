@@ -35,35 +35,42 @@ pub(super) fn cpu(
     );
     legend(ui, &[(theme::CPU, "Total"), (theme::KERNEL, "Kernel")]);
     ui.add_space(8.0);
+    // The package's (Intel) or control temperature (AMD); Windows keeps it
+    // for drivers.
+    let temperature = anabolic_core::sensors::cpu_sensor(&s.sensors);
     band(
         ui,
         |ui| {
-            stats(
-                ui,
-                &[
-                    ("Utilization", format!("{:.1} %", s.cpu.total)),
-                    ("Speed", ghz(s.cpu.mhz)),
-                    ("Kernel", format!("{:.1} %", s.cpu.kernel)),
-                    (DEFERRED, format!("{:.2} %", s.cpu.dpc)),
-                    ("Interrupts", format!("{:.2} %", s.cpu.interrupt)),
-                    ("Processes", fmt::count(s.processes as u64)),
-                    ("Threads", fmt::count(s.threads as u64)),
-                    (
-                        if cfg!(windows) {
-                            "Handles"
-                        } else {
-                            "Open files"
-                        },
-                        fmt::count(s.handles as u64),
-                    ),
-                    ("Up time", fmt::duration(s.uptime)),
-                    (
-                        "Context switches/s",
-                        fmt::count(s.cpu.context_switch_rate as u64),
-                    ),
-                    ("Interrupts/s", fmt::count(s.cpu.interrupt_rate as u64)),
-                ],
-            )
+            let mut items = vec![
+                ("Utilization", format!("{:.1} %", s.cpu.total)),
+                ("Speed", ghz(s.cpu.mhz)),
+                ("Kernel", format!("{:.1} %", s.cpu.kernel)),
+                (DEFERRED, format!("{:.2} %", s.cpu.dpc)),
+                ("Interrupts", format!("{:.2} %", s.cpu.interrupt)),
+                ("Processes", fmt::count(s.processes as u64)),
+                ("Threads", fmt::count(s.threads as u64)),
+                (
+                    if cfg!(windows) {
+                        "Handles"
+                    } else {
+                        "Open files"
+                    },
+                    fmt::count(s.handles as u64),
+                ),
+                ("Up time", fmt::duration(s.uptime)),
+                (
+                    "Context switches/s",
+                    fmt::count(s.cpu.context_switch_rate as u64),
+                ),
+                ("Interrupts/s", fmt::count(s.cpu.interrupt_rate as u64)),
+            ]
+            .into_iter()
+            .map(|(caption, value)| (caption, RichText::new(value)))
+            .collect::<Vec<_>>();
+            if let Some(t) = temperature {
+                items.insert(2, ("Temperature", reading_text(t)));
+            }
+            rich_stats(ui, &items)
         },
         |ui| {
             top(
@@ -77,6 +84,17 @@ pub(super) fn cpu(
         },
     );
     ui.add_space(10.0);
+    if let Some(t) = temperature
+        && !h.cpu_temperature.is_empty()
+    {
+        ui.label(
+            RichText::new(format!("Temperature ({})", t.label))
+                .small()
+                .color(theme::TEXT_WEAK),
+        );
+        temperature_graph(ui, snap, &h.cpu_temperature, t, theme::CPU, 80.0);
+        ui.add_space(10.0);
+    }
 
     // One small graph per logical processor.
     let activity = &s.core_activity;

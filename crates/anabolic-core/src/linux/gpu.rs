@@ -7,6 +7,8 @@
 //! - NVIDIA's driver reports nothing there; its management library does.
 //!   A laptop's NVIDIA GPU sleeps while unused, and asking NVML anything
 //!   wakes it, so it is asked only while the GPU is awake anyway.
+//! - Temperatures, fans and power: the other drivers' hardware monitor,
+//!   NVML for NVIDIA's; again only while the GPU is awake.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_uint, c_ulonglong, c_void};
@@ -19,6 +21,7 @@ use arc_swap::ArcSwap;
 
 use crate::model::ProcKey;
 use crate::procfs;
+use crate::sensors::{Sensor, SensorKind, Source, hwmon_sources, plain_label};
 
 use super::*;
 
@@ -79,6 +82,8 @@ struct Adapter {
     name: Arc<str>,
     driver: String,
     engines: &'static [EngineKey],
+    /// Its hardware monitor's readings (not NVIDIA's driver: NVML has them).
+    hwmon: Vec<Source>,
 }
 
 /// What the per-process thread measured last, per adapter.
@@ -163,12 +168,20 @@ impl GpuSampler {
             if adapters.iter().any(|a: &Adapter| a.pdev == pdev) {
                 continue;
             }
-            let name = pci_name(&pdev).unwrap_or_else(|| format!("{driver} GPU"));
+            let name: Arc<str> =
+                Arc::from(pci_name(&pdev).unwrap_or_else(|| format!("{driver} GPU")));
+            let hwmon = std::fs::read_dir(format!("/sys/bus/pci/devices/{pdev}/hwmon"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .flat_map(|e| hwmon_sources(&e.path(), &name, None, plain_label))
+                .collect();
             adapters.push(Adapter {
                 engines: engines_of(&driver),
-                name: Arc::from(name),
+                name,
                 pdev,
                 driver,
+                hwmon,
             });
         }
         let measured = adapters
@@ -195,13 +208,23 @@ impl GpuSampler {
             .iter()
             .zip(measured)
             .map(|(adapter, measured)| {
-                let (usages, dedicated, dedicated_total) = if adapter.driver == "nvidia" {
-                    nvidia_sample(&adapter.pdev)
-                        .unwrap_or_else(|| (vec![0.0; adapter.engines.len()], 0, 0))
+                let (usages, dedicated, dedicated_total, sensors) = if adapter.driver == "nvidia" {
+                    nvidia_sample(&adapter.pdev, &adapter.name)
+                        .unwrap_or_else(|| (vec![0.0; adapter.engines.len()], 0, 0, Vec::new()))
                 } else {
-                    (measured.engines, measured.dedicated, 0)
+                    let sensors = if awake(&adapter.pdev) {
+                        adapter.hwmon.iter().filter_map(Source::read).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (measured.engines, measured.dedicated, 0, sensors)
                 };
                 AdapterGpuStats {
+                    temperature: sensors
+                        .iter()
+                        .find(|s| s.kind == SensorKind::Temperature)
+                        .map(|s| s.value),
+                    sensors,
                     name: adapter.name.clone(),
                     usage: usages.iter().copied().fold(0.0, f32::max),
                     engines: adapter
@@ -489,6 +512,11 @@ type PciFn = unsafe extern "C" fn(NvmlDevice, *mut NvmlPciInfo) -> NvmlReturn;
 type UtilizationFn = unsafe extern "C" fn(NvmlDevice, *mut NvmlUtilization) -> NvmlReturn;
 type CodecFn = unsafe extern "C" fn(NvmlDevice, *mut c_uint, *mut c_uint) -> NvmlReturn;
 type MemoryFn = unsafe extern "C" fn(NvmlDevice, *mut NvmlMemory) -> NvmlReturn;
+/// nvmlDeviceGetTemperature and nvmlDeviceGetTemperatureThreshold: which
+/// sensor or threshold, in °C.
+type TemperatureFn = unsafe extern "C" fn(NvmlDevice, c_uint, *mut c_uint) -> NvmlReturn;
+/// Milliwatts.
+type PowerFn = unsafe extern "C" fn(NvmlDevice, *mut c_uint) -> NvmlReturn;
 type ProcessesFn = unsafe extern "C" fn(
     NvmlDevice,
     *mut NvmlProcessSample,
@@ -505,7 +533,14 @@ struct Nvml {
     decoder: CodecFn,
     memory: MemoryFn,
     processes: ProcessesFn,
+    temperature: Option<TemperatureFn>,
+    threshold: Option<TemperatureFn>,
+    power: Option<PowerFn>,
 }
+
+const NVML_TEMPERATURE_GPU: c_uint = 0;
+const NVML_TEMPERATURE_THRESHOLD_SHUTDOWN: c_uint = 0;
+const NVML_TEMPERATURE_THRESHOLD_SLOWDOWN: c_uint = 1;
 
 // The library's functions may be called from any thread.
 unsafe impl Send for Nvml {}
@@ -551,6 +586,12 @@ fn nvml() -> Option<&'static Nvml> {
             processes: std::mem::transmute::<*mut c_void, ProcessesFn>(sym(
                 c"nvmlDeviceGetProcessUtilization",
             )?),
+            temperature: sym(c"nvmlDeviceGetTemperature")
+                .map(|f| std::mem::transmute::<*mut c_void, TemperatureFn>(f)),
+            threshold: sym(c"nvmlDeviceGetTemperatureThreshold")
+                .map(|f| std::mem::transmute::<*mut c_void, TemperatureFn>(f)),
+            power: sym(c"nvmlDeviceGetPowerUsage")
+                .map(|f| std::mem::transmute::<*mut c_void, PowerFn>(f)),
         })
     })
     .as_ref()
@@ -588,10 +629,49 @@ fn nvidia_device(pdev: &str) -> Option<(&'static Nvml, NvmlDevice)> {
     None
 }
 
-/// (3D, encode, decode) busy shares, used and total memory.
-fn nvidia_sample(pdev: &str) -> Option<(Vec<f32>, u64, u64)> {
+/// (3D, encode, decode) busy shares, used and total memory, temperature
+/// and power draw.
+fn nvidia_sample(pdev: &str, name: &Arc<str>) -> Option<(Vec<f32>, u64, u64, Vec<Sensor>)> {
     let (nvml, device) = nvidia_device(pdev)?;
+    let sensor = |label: &str, kind, value: f32, high, critical| Sensor {
+        device: name.clone(),
+        label: Arc::from(label),
+        kind,
+        value,
+        high,
+        critical,
+    };
+    let mut sensors = Vec::new();
     unsafe {
+        let threshold = |which| {
+            let mut t = 0;
+            let f = nvml.threshold?;
+            (f(device, which, &mut t) == 0 && t > 0).then_some(t as f32)
+        };
+        let mut t = 0;
+        if let Some(f) = nvml.temperature
+            && f(device, NVML_TEMPERATURE_GPU, &mut t) == 0
+        {
+            sensors.push(sensor(
+                "Temperature",
+                SensorKind::Temperature,
+                t as f32,
+                threshold(NVML_TEMPERATURE_THRESHOLD_SLOWDOWN),
+                threshold(NVML_TEMPERATURE_THRESHOLD_SHUTDOWN),
+            ));
+        }
+        let mut mw = 0;
+        if let Some(f) = nvml.power
+            && f(device, &mut mw) == 0
+        {
+            sensors.push(sensor(
+                "Power",
+                SensorKind::Power,
+                mw as f32 / 1000.0,
+                None,
+                None,
+            ));
+        }
         let mut rates = NvmlUtilization::default();
         (nvml.utilization)(device, &mut rates);
         let (mut enc, mut dec, mut period) = (0, 0, 0);
@@ -603,6 +683,7 @@ fn nvidia_sample(pdev: &str) -> Option<(Vec<f32>, u64, u64)> {
             vec![rates.gpu as f32, enc as f32, dec as f32],
             memory.used,
             memory.total,
+            sensors,
         ))
     }
 }
@@ -666,5 +747,26 @@ mod tests {
         let layout = sampler.layout();
         assert_eq!(layout.len(), sampler.adapters.len());
         assert!(layout.iter().all(|&n| n > 0));
+    }
+
+    #[test]
+    fn temperatures_only_from_awake_gpus() {
+        let mut sampler = GpuSampler::new();
+        let stats = sampler.sample();
+        for (adapter, stats) in sampler.adapters.iter().zip(&stats) {
+            println!(
+                "{} ({}, awake {}): {:?}",
+                stats.name,
+                adapter.driver,
+                awake(&adapter.pdev),
+                stats.sensors
+            );
+            if !awake(&adapter.pdev) {
+                assert!(stats.sensors.is_empty());
+            }
+            if let Some(t) = stats.temperature {
+                assert!((0.0..150.0).contains(&t));
+            }
+        }
     }
 }

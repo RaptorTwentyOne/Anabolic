@@ -18,9 +18,11 @@ use crate::widgets;
 mod cpu;
 mod disk;
 mod info;
+mod sensors;
 use cpu::*;
 use disk::*;
 use info::*;
+use sensors::*;
 
 /// Result of the on-demand "who keeps exited processes alive" scan.
 #[derive(Default)]
@@ -42,6 +44,7 @@ pub enum PerfView {
     Adapter(u64),
     Io,
     Gpu(usize),
+    Sensors,
     Displays,
 }
 
@@ -84,6 +87,7 @@ pub fn show(
             PerfView::Adapter(luid) => adapter(ui, snap, luid),
             PerfView::Io => io(ui, snap, out),
             PerfView::Gpu(i) => gpu(ui, snap, i, out),
+            PerfView::Sensors => sensors(ui, snap),
             PerfView::Displays => crate::displays_view::show(ui, displays),
         });
         crate::bench::scrolled_to(output.state.offset.y, output.content_size.y);
@@ -255,6 +259,21 @@ fn nav(
             Graph::new(Some(100.0)).series(&gh.usage, theme::GPU, true),
         ));
     }
+    let temperature =
+        anabolic_core::sensors::cpu_sensor(&s.sensors).filter(|_| !h.cpu_temperature.is_empty());
+    cards.push(Card {
+        view: PerfView::Sensors,
+        title: "Sensors".into(),
+        value: summary(&s.sensors),
+        graph: temperature.map(|cpu| {
+            Graph::new(Some(cpu.critical.or(cpu.high).unwrap_or(100.0))).series(
+                &h.cpu_temperature,
+                heat_line(cpu.heat(), theme::CPU),
+                true,
+            )
+        }),
+        child: false,
+    });
     cards.push(Card {
         view: PerfView::Displays,
         title: "Displays".into(),
@@ -534,16 +553,20 @@ fn legend(ui: &mut Ui, items: &[(egui::Color32, &str)]) {
 }
 
 fn stats(ui: &mut Ui, items: &[(&str, String)]) {
+    let items: Vec<(&str, RichText)> = items
+        .iter()
+        .map(|(caption, value)| (*caption, RichText::new(value)))
+        .collect();
+    rich_stats(ui, &items);
+}
+
+/// `stats` with values the caller styles (a temperature's colour).
+fn rich_stats(ui: &mut Ui, items: &[(&str, RichText)]) {
     for chunk in items.chunks(4) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 18.0;
             for (caption, value) in chunk {
-                widgets::stat(
-                    ui,
-                    160.0,
-                    caption,
-                    RichText::new(value).size(theme::SUBTITLE),
-                );
+                widgets::stat(ui, 160.0, caption, value.clone().size(theme::SUBTITLE));
             }
         });
     }
@@ -1072,29 +1095,35 @@ fn gpu(ui: &mut Ui, snap: &Snapshot, index: usize, out: &mut Vec<UiCmd>) {
             |v| fmt::bytes(v as u64),
         );
     }
+    if let Some(sensor) = g.temperature_sensor()
+        && !gh.temperature.is_empty()
+    {
+        ui.label(RichText::new("Temperature").small().color(theme::TEXT_WEAK));
+        temperature_graph(ui, snap, &gh.temperature, sensor, theme::GPU, 80.0);
+    }
     ui.add_space(10.0);
-    stats(
-        ui,
-        &[
-            ("Utilization", format!("{:.1} %", g.usage)),
-            (
-                "Dedicated memory",
-                format!(
-                    "{} / {}",
-                    fmt::bytes(g.dedicated_used),
-                    fmt::bytes(g.dedicated_total)
-                ),
-            ),
-            (
-                "Shared memory",
-                format!(
-                    "{} / {}",
-                    fmt::bytes(g.shared_used),
-                    fmt::bytes(g.shared_total)
-                ),
-            ),
-        ],
-    );
+    let mut items = vec![
+        ("Utilization", RichText::new(format!("{:.1} %", g.usage))),
+        (
+            "Dedicated memory",
+            RichText::new(format!(
+                "{} / {}",
+                fmt::bytes(g.dedicated_used),
+                fmt::bytes(g.dedicated_total)
+            )),
+        ),
+        (
+            "Shared memory",
+            RichText::new(format!(
+                "{} / {}",
+                fmt::bytes(g.shared_used),
+                fmt::bytes(g.shared_total)
+            )),
+        ),
+    ];
+    // What its driver reports: temperatures, fan, power draw.
+    items.extend(g.sensors.iter().map(|s| (&*s.label, reading_text(s))));
+    rich_stats(ui, &items);
     top(
         ui,
         snap,
