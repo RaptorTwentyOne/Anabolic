@@ -91,7 +91,11 @@ pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut 
             );
         });
     }
+    // A single disk has no card of its own: what its view shows comes here.
     if let [only] = s.disks.as_slice() {
+        if !only.partitions.is_empty() {
+            partitions(ui, only);
+        }
         disk_users(ui, snap, only.number, out);
     } else if s.disk_tracing {
         ui.label(
