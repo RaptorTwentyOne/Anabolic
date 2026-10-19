@@ -127,6 +127,22 @@ fn disks_json(snap: &Snapshot) -> Vec<Value> {
                     "total_bytes": v.total,
                     "free_bytes": v.free,
                 })).collect::<Vec<_>>(),
+                "partition_style": d.style.name(),
+                "partitions": d.partitions.iter().map(|p| json!({
+                    "number": p.number,
+                    "device": (!p.device.is_empty()).then_some(&p.device),
+                    "offset_bytes": p.offset,
+                    "size_bytes": p.size,
+                    "type": p.kind,
+                    "role": p.role.name(),
+                    "name": p.name,
+                    "label": p.label,
+                    "file_system": p.file_system,
+                    "mounted_at": p.mounts,
+                    "total_bytes": (p.total > 0).then_some(p.total),
+                    "free_bytes": (p.total > 0).then_some(p.free),
+                    "holds_running_system": p.system,
+                })).collect::<Vec<_>>(),
             })
         })
         .collect()
@@ -367,7 +383,8 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Disks: every physical disk with its volumes, activity, throughput, IOPS, \
+        description = "Disks: every physical disk with its partitions (type, file system, \
+                       where mounted, space) and volumes, activity, throughput, IOPS, \
                        response time, queue and temperature. With trace_seconds > 0, also which \
                        processes read and write each disk and which files, from a disk I/O \
                        trace.",

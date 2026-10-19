@@ -1,24 +1,31 @@
 //! Physical disks: throughput, active time and latency from the partition
-//! manager's counters (IOCTL_DISK_PERFORMANCE), plus identity and volumes.
-//! None of these queries sends I/O to the device, so a sleeping disk stays
-//! asleep; the temperature query does, so it is SSD-only and infrequent.
+//! manager's counters (IOCTL_DISK_PERFORMANCE), plus identity, partitions
+//! and volumes. None of the frequent queries sends I/O to the device, so a
+//! sleeping disk stays asleep; the temperature query does, so it is
+//! SSD-only and infrequent, and the partition table is read only when
+//! volumes come or go.
 
 use core::ffi::c_void;
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDiskFreeSpaceExW,
-    GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-    OPEN_EXISTING,
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FindFirstVolumeW,
+    FindNextVolumeW, FindVolumeClose, GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW,
+    GetVolumePathNamesForVolumeNameW, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
+};
+use windows::Win32::System::Diagnostics::Debug::{
+    SEM_FAILCRITICALERRORS, SetThreadErrorMode, THREAD_ERROR_MODE,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{
-    DEVICE_SEEK_PENALTY_DESCRIPTOR, DISK_GEOMETRY_EX, DISK_PERFORMANCE,
-    IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_DISK_PERFORMANCE, IOCTL_STORAGE_QUERY_PROPERTY,
-    PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_ID, STORAGE_PROPERTY_QUERY,
-    STORAGE_TEMPERATURE_DATA_DESCRIPTOR, StorageDeviceProperty, StorageDeviceSeekPenaltyProperty,
-    StorageDeviceTemperatureProperty, VOLUME_DISK_EXTENTS,
+    DEVICE_SEEK_PENALTY_DESCRIPTOR, DISK_EXTENT, DISK_GEOMETRY_EX, DISK_PERFORMANCE,
+    DRIVE_LAYOUT_INFORMATION_EX, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
+    IOCTL_DISK_PERFORMANCE, IOCTL_STORAGE_QUERY_PROPERTY, PARTITION_INFORMATION_EX,
+    PARTITION_STYLE_GPT, PARTITION_STYLE_MBR, PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR,
+    STORAGE_PROPERTY_ID, STORAGE_PROPERTY_QUERY, STORAGE_TEMPERATURE_DATA_DESCRIPTOR,
+    StorageDeviceProperty, StorageDeviceSeekPenaltyProperty, StorageDeviceTemperatureProperty,
+    VOLUME_DISK_EXTENTS,
 };
 use windows::core::PCWSTR;
 
@@ -33,12 +40,17 @@ struct Disk {
     handle: OwnedHandle,
     stats: DiskStats,
     prev: Option<DISK_PERFORMANCE>,
+    /// The partition table as last read, before volumes are placed on it.
+    layout: Vec<Partition>,
 }
 
 pub struct DiskSampler {
     disks: Vec<Disk>,
     volumes_at: Option<Instant>,
     temperature_at: Option<Instant>,
+    /// Where every volume starts, when the partition tables were read:
+    /// when that changes, partitions were made, removed or plugged in.
+    places: Option<Vec<(u32, u64)>>,
 }
 
 fn ioctl<T>(handle: &OwnedHandle, code: u32, input: Option<&[u8]>, out: &mut T) -> bool {
@@ -203,73 +215,263 @@ fn temperature(handle: &OwnedHandle) -> Option<i16> {
     (d.InfoCount > 0 && t > -50 && t < 150).then_some(t)
 }
 
-/// Drive letters per physical disk number.
-fn volumes() -> Vec<(u32, Volume)> {
-    let mask = unsafe { GetLogicalDrives() };
+/// A local volume, with or without a drive letter.
+struct Mounted {
+    /// (disk number, byte offset) of each piece: one unless it spans disks.
+    extents: Vec<(u32, u64)>,
+    /// Where it is reachable: "C:\", "D:\Games\".
+    paths: Vec<String>,
+    label: String,
+    file_system: String,
+    total: u64,
+    free: u64,
+}
+
+/// Every local volume Windows knows.
+fn mounted() -> Vec<Mounted> {
+    // A card reader without a card has to fail quietly, not ask for one.
+    let mut old = THREAD_ERROR_MODE(0);
+    let quiet = unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, Some(&mut old)) }.is_ok();
     let mut out = Vec::new();
-    for i in 0..26u8 {
-        if mask & (1 << i) == 0 {
-            continue;
+    // "\\?\Volume{GUID}\" is 49 characters.
+    let mut name = [0u16; 64];
+    if let Ok(find) = unsafe { FindFirstVolumeW(&mut name) } {
+        loop {
+            out.extend(volume(&from_wide(&name)));
+            if unsafe { FindNextVolumeW(find, &mut name) }.is_err() {
+                break;
+            }
         }
-        let letter = format!("{}:", (b'A' + i) as char);
-        let root = wide(&format!("{letter}\\"));
-        // Only local disks: network drives can hang for a long time.
-        let kind = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
-        if kind != DRIVE_FIXED && kind != DRIVE_REMOVABLE {
-            continue;
-        }
-        let Some(handle) = open(&format!(r"\\.\{letter}")) else {
-            continue;
-        };
-        let mut extents = [0u64; 32];
-        if !ioctl(
-            &handle,
-            IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-            None,
-            &mut extents,
-        ) {
-            continue;
-        }
-        let header = unsafe {
-            extents
-                .as_ptr()
-                .cast::<VOLUME_DISK_EXTENTS>()
-                .read_unaligned()
-        };
-        if header.NumberOfDiskExtents == 0 {
-            continue;
-        }
-        let (mut total, mut free) = (0u64, 0u64);
-        let _ = unsafe {
-            GetDiskFreeSpaceExW(
-                PCWSTR(root.as_ptr()),
-                None,
-                Some(&mut total),
-                Some(&mut free),
-            )
-        };
-        let mut label = [0u16; 64];
-        let _ = unsafe {
-            GetVolumeInformationW(
-                PCWSTR(root.as_ptr()),
-                Some(&mut label),
-                None,
-                None,
-                None,
-                None,
-            )
-        };
-        out.push((
-            header.Extents[0].DiskNumber,
-            Volume {
-                letter,
-                label: from_wide(&label),
-                total,
-                free,
-            },
-        ));
+        let _ = unsafe { FindVolumeClose(find) };
+    }
+    if quiet {
+        let _ = unsafe { SetThreadErrorMode(old, None) };
     }
     out
+}
+
+/// One volume by its name, "\\?\Volume{GUID}\".
+fn volume(name: &str) -> Option<Mounted> {
+    let root = wide(name);
+    // Only disks: optical drives spin up to answer.
+    let kind = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+    if kind != DRIVE_FIXED && kind != DRIVE_REMOVABLE {
+        return None;
+    }
+    // The device is the name without its trailing backslash.
+    let handle = open(name.trim_end_matches('\\'))?;
+    let mut buf = [0u64; 32];
+    if !ioctl(
+        &handle,
+        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        None,
+        &mut buf,
+    ) {
+        return None;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), size_of_val(&buf)) };
+    let count = unsafe { buf.as_ptr().cast::<VOLUME_DISK_EXTENTS>().read_unaligned() }
+        .NumberOfDiskExtents as usize;
+    let first = offset_of!(VOLUME_DISK_EXTENTS, Extents);
+    let step = size_of::<DISK_EXTENT>();
+    let extents: Vec<(u32, u64)> = (0..count)
+        .map_while(|i| bytes.get(first + i * step..first + (i + 1) * step))
+        .map(|raw| {
+            let e = unsafe { raw.as_ptr().cast::<DISK_EXTENT>().read_unaligned() };
+            (e.DiskNumber, e.StartingOffset as u64)
+        })
+        .collect();
+    if extents.is_empty() {
+        return None;
+    }
+
+    let mut list = [0u16; 1024];
+    let mut length = 0u32;
+    let paths = if unsafe {
+        GetVolumePathNamesForVolumeNameW(PCWSTR(root.as_ptr()), Some(&mut list), &mut length)
+    }
+    .is_ok()
+    {
+        list.split(|&c| c == 0)
+            .take_while(|p| !p.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (mut total, mut free) = (0u64, 0u64);
+    let _ = unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(root.as_ptr()),
+            None,
+            Some(&mut total),
+            Some(&mut free),
+        )
+    };
+    let mut label = [0u16; 64];
+    let mut file_system = [0u16; 32];
+    let _ = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root.as_ptr()),
+            Some(&mut label),
+            None,
+            None,
+            None,
+            Some(&mut file_system),
+        )
+    };
+    Some(Mounted {
+        extents,
+        paths,
+        label: from_wide(&label),
+        file_system: from_wide(&file_system),
+        total,
+        free,
+    })
+}
+
+/// Drive letters per physical disk number.
+fn volumes(mounted: &[Mounted]) -> Vec<(u32, Volume)> {
+    let mut out: Vec<(u32, Volume)> = mounted
+        .iter()
+        .flat_map(|m| {
+            m.paths
+                .iter()
+                .filter(|p| p.len() == 3 && p.ends_with(":\\"))
+                .map(|p| {
+                    (
+                        m.extents[0].0,
+                        Volume {
+                            letter: p[..2].to_string(),
+                            label: m.label.clone(),
+                            total: m.total,
+                            free: m.free,
+                        },
+                    )
+                })
+        })
+        .collect();
+    out.sort_by(|a, b| a.1.letter.cmp(&b.1.letter));
+    out
+}
+
+/// The disk's partition table, in the order the partitions sit.
+fn layout(handle: &OwnedHandle) -> (PartitionStyle, Vec<Partition>) {
+    // Room for 128 entries, what GPT makes room for; an MBR disk with more
+    // logical partitions than that gets none shown.
+    let size = offset_of!(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry)
+        + 128 * size_of::<PARTITION_INFORMATION_EX>();
+    let mut buf = vec![0u64; size.div_ceil(8)];
+    let mut returned = 0u32;
+    let read = unsafe {
+        DeviceIoControl(
+            handle.raw(),
+            IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
+            None,
+            0,
+            Some(buf.as_mut_ptr().cast()),
+            (buf.len() * 8) as u32,
+            Some(&mut returned),
+            None,
+        )
+    }
+    .is_ok();
+    if !read {
+        return (PartitionStyle::None, Vec::new());
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), buf.len() * 8) };
+    parse_layout(&bytes[..(returned as usize).min(bytes.len())])
+}
+
+/// A DRIVE_LAYOUT_INFORMATION_EX as the driver returned it.
+fn parse_layout(bytes: &[u8]) -> (PartitionStyle, Vec<Partition>) {
+    let word = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .map_or(u32::MAX, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let style = match word(0) as i32 {
+        s if s == PARTITION_STYLE_GPT.0 => PartitionStyle::Gpt,
+        s if s == PARTITION_STYLE_MBR.0 => PartitionStyle::Mbr,
+        _ => return (PartitionStyle::None, Vec::new()),
+    };
+    let first = offset_of!(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry);
+    let step = size_of::<PARTITION_INFORMATION_EX>();
+    let mut out = Vec::new();
+    for i in 0..word(4) as usize {
+        let Some(raw) = bytes.get(first + i * step..first + (i + 1) * step) else {
+            break;
+        };
+        let e = unsafe {
+            raw.as_ptr()
+                .cast::<PARTITION_INFORMATION_EX>()
+                .read_unaligned()
+        };
+        if e.PartitionLength <= 0 {
+            continue;
+        }
+        let (kind, role, name) = if e.PartitionStyle == PARTITION_STYLE_GPT {
+            let gpt = unsafe { e.Anonymous.Gpt };
+            let guid = gpt.PartitionType.to_u128();
+            if guid == 0 {
+                continue;
+            }
+            let (kind, role) = gpt_kind(guid);
+            (kind, role, from_wide(&gpt.Name))
+        } else if e.PartitionStyle == PARTITION_STYLE_MBR {
+            let mbr = unsafe { e.Anonymous.Mbr };
+            if mbr.PartitionType == 0 {
+                continue;
+            }
+            let (kind, role) = mbr_kind(mbr.PartitionType);
+            (kind, role, String::new())
+        } else {
+            continue;
+        };
+        // The extended partition only holds the logical ones, listed too.
+        if role == PartitionRole::Extended {
+            continue;
+        }
+        out.push(Partition {
+            number: e.PartitionNumber,
+            offset: e.StartingOffset as u64,
+            size: e.PartitionLength as u64,
+            kind,
+            role,
+            name,
+            ..Default::default()
+        });
+    }
+    out.sort_by_key(|p| p.offset);
+    (style, out)
+}
+
+/// Fills in what Windows mounted from each of a disk's partitions.
+fn place(partitions: &mut [Partition], disk: u32, mounted: &[Mounted], system: &str) {
+    for m in mounted {
+        for &(_, offset) in m.extents.iter().filter(|e| e.0 == disk) {
+            let Some(p) = partitions
+                .iter_mut()
+                .find(|p| offset >= p.offset && offset < p.offset + p.size)
+            else {
+                continue;
+            };
+            // "C:\" reads as "C:", a folder without its last backslash.
+            p.mounts = m
+                .paths
+                .iter()
+                .map(|path| path.trim_end_matches('\\').to_string())
+                .collect();
+            p.system = p
+                .mounts
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(system));
+            p.label = m.label.clone();
+            p.file_system = m.file_system.clone();
+            p.total = m.total;
+            p.free = m.free;
+        }
+    }
 }
 
 impl DiskSampler {
@@ -282,6 +484,7 @@ impl DiskSampler {
                     handle,
                     stats,
                     prev: None,
+                    layout: Vec::new(),
                 })
             })
             .collect();
@@ -289,6 +492,7 @@ impl DiskSampler {
             disks,
             volumes_at: None,
             temperature_at: None,
+            places: None,
         }
     }
 
@@ -299,13 +503,32 @@ impl DiskSampler {
             .is_none_or(|t| now - t > Duration::from_secs(30))
         {
             self.volumes_at = Some(now);
-            let vols = volumes();
+            let mounted = mounted();
+            let vols = volumes(&mounted);
+            let mut places: Vec<(u32, u64)> = mounted
+                .iter()
+                .flat_map(|m| m.extents.iter().copied())
+                .collect();
+            places.sort_unstable();
+            let reread = self.places.as_ref() != Some(&places);
+            self.places = Some(places);
+            let system = std::env::var("SystemDrive").unwrap_or("C:".into());
             for disk in &mut self.disks {
                 disk.stats.volumes = vols
                     .iter()
                     .filter(|(n, _)| *n == disk.stats.number)
                     .map(|(_, v)| v.clone())
                     .collect();
+                if reread {
+                    (disk.stats.style, disk.layout) = layout(&disk.handle);
+                }
+                disk.stats.partitions = disk.layout.clone();
+                place(
+                    &mut disk.stats.partitions,
+                    disk.stats.number,
+                    &mounted,
+                    &system,
+                );
             }
         }
         let read_temperature = self
@@ -381,16 +604,121 @@ mod tests {
         assert!(disks2.iter().all(|d| (0.0..=100.0).contains(&d.active)));
         for d in &disks2 {
             println!(
-                "{} {} {} ssd={:?} {:.0} GB temp={:?} {:?}",
+                "{} {} {} ssd={:?} {:.0} GB temp={:?} {:?} {:?}",
                 d.number,
                 d.model,
                 d.bus,
                 d.ssd,
                 d.size as f64 / 1e9,
                 d.temperature,
-                d.volumes.iter().map(|v| &v.letter).collect::<Vec<_>>()
+                d.volumes.iter().map(|v| &v.letter).collect::<Vec<_>>(),
+                d.style
             );
+            for p in &d.partitions {
+                println!(
+                    "  {:>2} {:>14} {:>14}  {:<22} {:?} name={:?} label={:?} fs={:?} \
+                     mounts={:?} total={} free={} system={}",
+                    p.number,
+                    p.offset,
+                    p.size,
+                    p.kind,
+                    p.role,
+                    p.name,
+                    p.label,
+                    p.file_system,
+                    p.mounts,
+                    p.total,
+                    p.free,
+                    p.system
+                );
+            }
         }
+        let windows: Vec<&Partition> = disks2
+            .iter()
+            .flat_map(|d| &d.partitions)
+            .filter(|p| p.system)
+            .collect();
+        assert_eq!(windows.len(), 1, "{windows:?}");
+        assert!(windows[0].total > 0 && !windows[0].file_system.is_empty());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    fn entry(number: u32, offset: i64, length: i64, gpt_type: u128) -> PARTITION_INFORMATION_EX {
+        let mut e = PARTITION_INFORMATION_EX {
+            PartitionStyle: PARTITION_STYLE_GPT,
+            StartingOffset: offset,
+            PartitionLength: length,
+            PartitionNumber: number,
+            ..Default::default()
+        };
+        let mut gpt = unsafe { e.Anonymous.Gpt };
+        gpt.PartitionType = windows::core::GUID::from_u128(gpt_type);
+        for (to, from) in gpt
+            .Name
+            .iter_mut()
+            .zip("Basic data partition".encode_utf16())
+        {
+            *to = from;
+        }
+        e.Anonymous.Gpt = gpt;
+        e
+    }
+
+    #[test]
+    fn reads_a_drive_layout() {
+        let first = offset_of!(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry);
+        let step = size_of::<PARTITION_INFORMATION_EX>();
+        let entries = [
+            entry(
+                2,
+                300 << 20,
+                200 << 30,
+                0xebd0a0a2_b9e5_4433_87c0_68b6b72699c7,
+            ),
+            entry(
+                1,
+                1 << 20,
+                260 << 20,
+                0xc12a7328_f81f_11d2_ba4b_00a0c93ec93b,
+            ),
+            // Unused slots come back zeroed.
+            PARTITION_INFORMATION_EX {
+                PartitionStyle: PARTITION_STYLE_GPT,
+                ..Default::default()
+            },
+        ];
+        let mut bytes = vec![0u8; first + entries.len() * step];
+        bytes[..4].copy_from_slice(&(PARTITION_STYLE_GPT.0 as u32).to_le_bytes());
+        // One more than there is room for: it must be ignored, not read.
+        bytes[4..8].copy_from_slice(&(entries.len() as u32 + 1).to_le_bytes());
+        for (i, e) in entries.iter().enumerate() {
+            unsafe {
+                bytes
+                    .as_mut_ptr()
+                    .add(first + i * step)
+                    .cast::<PARTITION_INFORMATION_EX>()
+                    .write_unaligned(*e)
+            };
+        }
+        let (style, mut partitions) = parse_layout(&bytes);
+        assert_eq!(style, PartitionStyle::Gpt);
+        assert_eq!(partitions.len(), 2);
+        assert_eq!(partitions[0].kind, "EFI system");
+        assert_eq!(partitions[1].role, PartitionRole::Data);
+        assert_eq!(partitions[1].name, "Basic data partition");
+
+        let c = Mounted {
+            extents: vec![(0, (300 << 20) as u64)],
+            paths: vec!["C:\\".into(), "D:\\Mount\\".into()],
+            label: "Windows".into(),
+            file_system: "NTFS".into(),
+            total: 100,
+            free: 40,
+        };
+        place(&mut partitions, 0, &[c], "c:");
+        assert_eq!(partitions[1].mounts, ["C:", "D:\\Mount"]);
+        assert!(partitions[1].system && !partitions[0].system);
+        assert_eq!(partitions[1].file_system, "NTFS");
+        assert!(parse_layout(&bytes[..6]).1.is_empty());
     }
 }
