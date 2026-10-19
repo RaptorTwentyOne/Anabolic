@@ -331,11 +331,14 @@ pub fn show(
                 egui::Button::new(widgets::icon_text(ui, theme::icon::RECORD, "Live activity"));
             if ui
                 .add(live)
-                .on_hover_text(
+                .on_hover_text(if cfg!(windows) {
                     "What it does from now on, step by step, on the Activity page: files, \
                      registry, network, programs started. In the tree view, with the processes \
-                     under it.",
-                )
+                     under it."
+                } else {
+                    "What it does from now on, step by step, on the Activity page: files, \
+                     network, programs started. In the tree view, with the processes under it."
+                })
                 .clicked()
             {
                 out.push(UiCmd::LiveActivity(p.key));
@@ -469,6 +472,7 @@ fn general(
                             )
                         });
                         row(ui, "Started", started.unwrap_or_else(dash));
+                        #[cfg(windows)]
                         let security = match d {
                             Some(d) => format!(
                                 "{}{}  ·  {}",
@@ -482,7 +486,27 @@ fn general(
                             ),
                             None => dash(),
                         };
+                        #[cfg(windows)]
                         row(ui, "Integrity", security);
+                        // Linux has no integrity levels: root (or extra
+                        // capabilities) or an ordinary user's rights.
+                        #[cfg(target_os = "linux")]
+                        row(
+                            ui,
+                            "Rights",
+                            match d {
+                                Some(d) => format!(
+                                    "{}  ·  {}",
+                                    match d.elevated {
+                                        Some(true) => "root or capabilities",
+                                        Some(false) => "a user's",
+                                        None => "?",
+                                    },
+                                    d.arch.map_or("?", |a| a.label())
+                                ),
+                                None => dash(),
+                            },
+                        );
                         row(
                             ui,
                             "Priority",
@@ -729,7 +753,7 @@ fn module_loader(
             ui.spinner();
             ui.label(RichText::new("Reading modules…").color(theme::TEXT_WEAK));
         });
-    } else if p.pid == 4 {
+    } else if p.pid == anabolic_core::scan::KERNEL_PID {
         out.push(UiCmd::LoadModules(p.key));
     } else if ui
         .button(label)
@@ -1106,7 +1130,7 @@ fn modules_tab(
             RichText::new(format!(
                 "{count}{}{}  ·  click one for its signature and hash",
                 fmt::millis(report.took),
-                if p.pid == 4 {
+                if p.pid == anabolic_core::scan::KERNEL_PID {
                     "  ·  kernel image and drivers"
                 } else {
                     ""

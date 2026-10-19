@@ -35,8 +35,28 @@ pub fn how(name: &str, pid: u32, chain: &[Ancestor], services: Option<&ServiceLi
     let lower = |s: &str| s.to_lowercase();
     let parent_name = lower(&parent.name);
     let hosted = services_of(services, parent.key.pid);
-    let hosts = |service: &str| hosted.iter().any(|s| s.eq_ignore_ascii_case(service));
+    if let Some(how) = started_by(&parent_name, pid, &hosted, services) {
+        return how;
+    }
     match parent_name.as_str() {
+        p if p == lower(name) => format!(
+            "By another {} process: programs like this start helpers of their own.",
+            parent.name
+        ),
+        _ => format!("By {}.", parent.name),
+    }
+}
+
+/// What Windows' own parents say about how a process started.
+#[cfg(windows)]
+fn started_by(
+    parent: &str,
+    pid: u32,
+    hosted: &[&str],
+    services: Option<&ServiceList>,
+) -> Option<String> {
+    let hosts = |service: &str| hosted.iter().any(|s| s.eq_ignore_ascii_case(service));
+    Some(match parent {
         "explorer.exe" => "From Windows Explorer: the Start menu, the taskbar, a shortcut, a \
                            folder or the Run box."
             .into(),
@@ -71,14 +91,77 @@ pub fn how(name: &str, pid: u32, chain: &[Ancestor], services: Option<&ServiceLi
             "From the Start menu or search.".into()
         }
         "runtimebroker.exe" | "applicationframehost.exe" => "By Windows for an app.".into(),
-        p if p == lower(name) => format!(
-            "By another {} process: programs like this start helpers of their own.",
-            parent.name
-        ),
-        _ => format!("By {}.", parent.name),
-    }
+        _ => return None,
+    })
 }
 
+/// What Linux's usual parents say about how a process started.
+#[cfg(target_os = "linux")]
+fn started_by(
+    parent: &str,
+    pid: u32,
+    _hosted: &[&str],
+    services: Option<&ServiceList>,
+) -> Option<String> {
+    Some(match parent {
+        // systemd: PID 1 starts the system's services, each user's own
+        // instance their user services and autostart entries.
+        "systemd" => match services_of(services, pid).as_slice() {
+            [] => "By systemd: a service, a timer, a socket or the session's autostart.".into(),
+            mine => format!("By systemd as a service: {}.", mine.join(", ")),
+        },
+        "plasmashell" | "krunner" | "kickoff" => {
+            "From the Plasma desktop: the launcher, the taskbar, a shortcut or KRunner.".into()
+        }
+        "gnome-shell" => "From GNOME Shell: the overview, the dash or a shortcut.".into(),
+        "kwin_wayland" | "kwin_x11" | "mutter" => "By the compositor.".into(),
+        "dolphin" | "nautilus" | "thunar" | "nemo" | "pcmanfm" | "pcmanfm-qt" => {
+            "From the file manager.".into()
+        }
+        "bash"
+        | "zsh"
+        | "fish"
+        | "sh"
+        | "dash"
+        | "ksh"
+        | "tcsh"
+        | "nu"
+        | "sudo"
+        | "su"
+        | "doas"
+        | "pkexec"
+        | "konsole"
+        | "gnome-terminal-server"
+        | "kitty"
+        | "alacritty"
+        | "wezterm-gui"
+        | "foot"
+        | "xterm"
+        | "tmux: server"
+        | "screen"
+        | "sshd" => "From a command line or a script.".into(),
+        "startplasma-wayland"
+        | "startplasma-x11"
+        | "plasma_session"
+        | "gnome-session-binary"
+        | "gdm-wayland-session"
+        | "gdm-x-session"
+        | "sddm-helper"
+        | "login" => "When you signed in.".into(),
+        "kthreadd" | "kernel" => "By the kernel.".into(),
+        "cron" | "crond" | "anacron" => "By cron: a scheduled job ran it.".into(),
+        "xdg-desktop-portal" | "xdg-desktop-portal-kde" | "xdg-desktop-portal-gnome" => {
+            "Through a desktop portal, for a sandboxed app.".into()
+        }
+        "bwrap" => "Inside a Flatpak sandbox.".into(),
+        "pacman" | "apt" | "apt-get" | "dpkg" | "dnf" | "rpm" | "zypper" | "packagekitd" => {
+            "By the package manager (an installation or an update).".into()
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(windows)]
 fn exit_text(code: u32) -> String {
     match code {
         0 => "exit code 0".into(),
@@ -88,6 +171,26 @@ fn exit_text(code: u32) -> String {
         0xC000_00FD => "crashed (stack overflow)".into(),
         c if c > 0xFFFF => format!("exit code 0x{c:08X}"),
         c => format!("exit code {c}"),
+    }
+}
+
+/// A wait status, as the kernel reports a process' end: the signal that
+/// killed it, or its exit status.
+#[cfg(target_os = "linux")]
+fn exit_text(code: u32) -> String {
+    let signal = code & 0x7f;
+    let name = match signal {
+        2 => "SIGINT, Ctrl+C",
+        6 => "SIGABRT, it aborted",
+        9 => "SIGKILL",
+        11 => "SIGSEGV, it crashed",
+        15 => "SIGTERM",
+        _ => "",
+    };
+    match (signal, name) {
+        (0, _) => format!("exit code {}", (code >> 8) & 0xff),
+        (s, "") => format!("killed by signal {s}"),
+        (s, name) => format!("killed by signal {s} ({name})"),
     }
 }
 
@@ -113,7 +216,8 @@ pub fn show(
     ui.add_space(2.0);
     if chain.is_empty() {
         let text = match p.ppid {
-            0 => "Nothing: Windows itself.".to_string(),
+            0 if cfg!(windows) => "Nothing: Windows itself.".to_string(),
+            0 => "Nothing: the kernel itself.".to_string(),
             ppid => format!(
                 "Its parent (PID {ppid}) had already exited when Anabolic started, so who it \
                  was is not known. Anabolic remembers parents from the moment it runs."
@@ -156,7 +260,7 @@ pub fn show(
                 None => {}
             }
             if a.elevated == Some(true) {
-                facts.push("as administrator".into());
+                facts.push(crate::platform::STARTED_ELEVATED.into());
             }
             ui.label(
                 RichText::new(facts.join("  ·  "))
@@ -189,7 +293,7 @@ pub fn show(
     {
         let known_root = matches!(
             last.name.to_lowercase().as_str(),
-            "system" | "smss.exe" | "wininit.exe" | "services.exe"
+            "system" | "smss.exe" | "wininit.exe" | "services.exe" | "systemd" | "kernel"
         );
         if !known_root {
             ui.label(
@@ -223,11 +327,35 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn words_the_usual_parents() {
         assert!(how("app.exe", 7, &[ancestor(1, "explorer.exe")], None).contains("Explorer"));
         assert!(how("app.exe", 7, &[ancestor(1, "cmd.exe")], None).contains("command line"));
         assert!(how("chrome.exe", 7, &[ancestor(1, "chrome.exe")], None).contains("helpers"));
         assert!(how("x.exe", 7, &[ancestor(1, "launcher.exe")], None).contains("launcher.exe"));
         assert_eq!(how("x.exe", 7, &[], None), "");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn words_the_usual_parents() {
+        assert!(how("firefox", 7, &[ancestor(1, "plasmashell")], None).contains("Plasma"));
+        assert!(how("make", 7, &[ancestor(1, "zsh")], None).contains("command line"));
+        assert!(how("chrome", 7, &[ancestor(1, "chrome")], None).contains("helpers"));
+        assert!(how("x", 7, &[ancestor(1, "launcher")], None).contains("launcher"));
+        assert!(how("sshd", 7, &[ancestor(1, "systemd")], None).contains("systemd"));
+        assert_eq!(how("x", 7, &[], None), "");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn words_wait_statuses() {
+        assert_eq!(exit_text(0), "exit code 0");
+        assert_eq!(exit_text(1 << 8), "exit code 1");
+        assert_eq!(exit_text(9), "killed by signal 9 (SIGKILL)");
+        assert_eq!(
+            exit_text(11 | 0x80),
+            "killed by signal 11 (SIGSEGV, it crashed)"
+        );
     }
 }

@@ -288,7 +288,7 @@ pub fn parents(procs: &[ProcessInfo]) -> Vec<Option<u32>> {
         .enumerate()
         .map(|(i, p)| {
             // The idle process and System head their own trees.
-            if p.pid == 0 || p.pid == 4 {
+            if p.pid == 0 || p.pid == anabolic_core::scan::KERNEL_PID {
                 return None;
             }
             by_pid
@@ -529,14 +529,16 @@ mod tests {
 
     #[test]
     fn builds_sorted_tree() {
+        // The kernel's process (System, PID 4 on Windows; PID 2 on Linux).
+        let kernel = anabolic_core::scan::KERNEL_PID;
         let procs = vec![
             p(0, 0, 0, "Idle", 90.0),
-            p(4, 0, 0, "System", 1.0),
-            p(100, 4, 10, "smss", 0.0),
+            p(kernel, 0, 0, "System", 1.0),
+            p(100, kernel, 10, "smss", 0.0),
             p(200, 50, 20, "explorer", 2.0), // parent 50 never existed
             p(300, 200, 30, "chrome", 5.0),
             p(301, 200, 31, "notepad", 0.5),
-            p(INTERRUPTS_PID, 4, 0, "Interrupts", 0.1),
+            p(INTERRUPTS_PID, kernel, 0, "Interrupts", 0.1),
         ];
         let f = Fixture::new();
         let built = build(&f.input(&procs, View::Tree, ""));

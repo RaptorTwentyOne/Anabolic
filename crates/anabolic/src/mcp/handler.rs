@@ -40,7 +40,14 @@ impl AnabolicMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "Anabolic is a Windows task manager running on this PC. Its tools read what the machine is doing (processes, CPU per core, memory, disks with the files being read and written, network connections and DNS lookups, GPUs, services, startup programs, frame times and driver latency, a 7-day history), record what programs do step by step, and act on it (end, suspend or reprioritise processes, control services, block programs from the network, turn startup programs off, write memory dumps).
+#[cfg(windows)]
+const INSTRUCTIONS: &str = "Anabolic is a performance monitoring and diagnostics tool running on this Windows PC. Its tools read what the machine is doing (processes, CPU per core, memory, disks with the files being read and written, network connections and DNS lookups, GPUs, services, startup programs, frame times and driver latency, a 7-day history), record what programs do step by step, and act on it (end, suspend or reprioritise processes, control services, block programs from the network, turn startup programs off, write memory dumps).
+
+Start with get_system_overview, then list_processes or get_process. Times are local. Rates are per second (_bps = bytes per second).
+
+The user chose on Anabolic's MCP page what you may do; a tool of a kind that is off is refused and says which. Tools marked OPENS THE PROCESS, and actions on a game or an anti-cheat program, are refused the first time with the risks: tell the user in your own words and call again with force=true only if they agree. Say what you are about to change before calling an action, and prefer the least drastic one.";
+#[cfg(target_os = "linux")]
+const INSTRUCTIONS: &str = "Anabolic is a performance monitoring and diagnostics tool running on this Linux computer. Its tools read what the machine is doing (processes, CPU per core, memory, disks, network connections and their traffic, GPUs, systemd services, startup programs, interrupt and softirq latency, a 7-day history), record what programs do step by step, and act on it (end, suspend or reprioritise processes, control services, turn startup programs off, write core dumps). Linux reports no frame times system-wide and its firewalls do not block by program, so those tools say they are unavailable.
 
 Start with get_system_overview, then list_processes or get_process. Times are local. Rates are per second (_bps = bytes per second).
 
@@ -59,10 +66,13 @@ impl ServerHandler for AnabolicMcp {
         .with_server_info(
             Implementation::new("anabolic", env!("CARGO_PKG_VERSION"))
                 .with_title("Anabolic")
-                .with_description(
-                    "A Windows task manager: processes, performance, history, network, services \
-                     and actions on them.",
-                ),
+                .with_description(if cfg!(windows) {
+                    "Performance monitoring and diagnostics for Windows: processes, performance, \
+                     history, network, services and actions on them."
+                } else {
+                    "Performance monitoring and diagnostics for Linux: processes, performance, \
+                     history, network, services and actions on them."
+                }),
         )
         .with_instructions(INSTRUCTIONS)
     }

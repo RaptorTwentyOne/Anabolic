@@ -98,10 +98,12 @@ fn server_card(ui: &mut Ui, settings: &mut McpSettings, mcp: &mut McpState, elev
     if elevated && settings.enabled {
         ui.add_space(2.0);
         ui.label(
-            RichText::new(
+            RichText::new(if cfg!(windows) {
                 "Anabolic runs as administrator: what you allow, clients do with administrator \
-                 rights.",
-            )
+                 rights."
+            } else {
+                "Anabolic has full access: what you allow, clients do with its capabilities."
+            })
             .size(theme::META)
             .color(theme::ELEVATED_TEXT),
         );

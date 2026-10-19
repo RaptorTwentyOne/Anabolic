@@ -71,25 +71,39 @@ enum Pending {
     },
 }
 
-/// What to do about a failure, from what Windows said; None when there is
-/// nothing useful to add.
+/// What to do about a failure, from what the system said; None when there
+/// is nothing useful to add.
 fn next_step(message: &str, elevated: bool) -> Option<String> {
     let m = message.to_lowercase();
     let says = |what: &str| m.contains(what);
-    let step = if says("access is denied") || says("required privilege is not held") {
-        if elevated {
+    let denied = says("access is denied")
+        || says("required privilege is not held")
+        || says("not permitted")
+        || says("permission denied");
+    let step = if denied {
+        if elevated && cfg!(windows) {
             "Windows or a security program protects it; its details (General) say what Anabolic can tell."
+        } else if elevated {
+            "The system or a security policy protects it; its details (General) say what Anabolic can tell."
         } else {
-            "Restart Anabolic as administrator (top right) and try again."
+            crate::platform::ELEVATE_AND_RETRY
         }
-    } else if says("parameter is incorrect") || says("has exited") || says("no longer") {
+    } else if says("parameter is incorrect")
+        || says("has exited")
+        || says("no longer")
+        || says("no such process")
+    {
         "It has probably exited already; the list catches up on the next refresh."
     } else if says("being used by another process") || says("clipboard") {
         "Another program is holding it; try again in a moment."
     } else if says("cannot find the file") || says("cannot find the path") {
         "The file has been moved or deleted since it was loaded."
     } else if says("not supported") {
-        "This Windows version does not offer it."
+        if cfg!(windows) {
+            "This Windows version does not offer it."
+        } else {
+            "This kernel does not offer it."
+        }
     } else {
         return None;
     };
@@ -1044,15 +1058,30 @@ impl eframe::App for App {
                 Some(state) => {
                     let info = state.adapter.get_info();
                     Some(if info.device_type == eframe::wgpu::DeviceType::Cpu {
-                        "Windows' software renderer (no graphics driver with Direct3D 12)"
-                            .to_string()
-                    } else {
+                        if cfg!(windows) {
+                            "Windows' software renderer (no graphics driver with Direct3D 12)"
+                                .to_string()
+                        } else {
+                            format!("{} (a software renderer)", info.name)
+                        }
+                    } else if cfg!(windows) {
                         format!("{} (Direct3D 12)", info.name)
+                    } else {
+                        format!("{} (Vulkan)", info.name)
                     })
                 }
+                #[cfg(windows)]
                 None => frame
                     .gl()
                     .map(|_| "OpenGL (the graphics driver has no Direct3D 12)".to_string()),
+                // The driver's own name for the GPU: "Mesa Intel(R) Graphics",
+                // or llvmpipe when Mesa draws without one.
+                #[cfg(target_os = "linux")]
+                None => frame.gl().map(|gl| {
+                    use eframe::glow::HasContext;
+                    let name = unsafe { gl.get_parameter_string(eframe::glow::RENDERER) };
+                    format!("{name} (OpenGL)")
+                }),
             }
         {
             // ANABOLIC_RENDERER_LOG=<file>: say which, for tests.
@@ -1460,7 +1489,10 @@ mod tests {
     #[test]
     fn failures_say_what_to_do() {
         let denied = "Could not terminate x.exe (12): Access is denied.";
-        assert!(next_step(denied, false).unwrap().contains("administrator"));
+        assert_eq!(
+            next_step(denied, false).as_deref(),
+            Some(crate::platform::ELEVATE_AND_RETRY)
+        );
         assert!(next_step(denied, true).unwrap().contains("protects it"));
         assert!(
             next_step("Could not read: The parameter is incorrect.", true)

@@ -232,13 +232,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "One process in full: every counter (CPU, memory in detail, I/O, disk, \
-                       network, handles), its file, command line, publisher, version, user, \
-                       elevation and integrity; who started it and their parents (named even \
-                       after they exited) and how it was most likely started; the processes it \
-                       started; the services it hosts; its connections and listening ports; and \
-                       whether its handles, memory or threads keep growing. Nothing is injected; \
-                       the process is only queried for its file and command line.",
+        description = text::PROCESS,
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_process(
@@ -381,11 +375,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Why a process does not go away: whether Windows is still ending it, its \
-                       threads, whether Windows protects it, whether it can be ended at all, which \
-                       programs hold handles to it (keeping it as a zombie), and which drivers \
-                       guard it (anti-cheat and security software, named). Reads the system's \
-                       handle table; the process is only queried.",
+        description = text::WHY_ALIVE,
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn why_process_will_not_end(
@@ -446,4 +436,34 @@ impl AnabolicMcp {
             "in_words": fmt::leak(l),
         })).collect::<Vec<_>>() }))
     }
+}
+
+/// Tool descriptions that differ between Windows and Linux.
+mod text {
+    #[cfg(windows)]
+    pub const PROCESS: &str = "One process in full: every counter (CPU, memory in detail, I/O, disk, \
+                       network, handles), its file, command line, publisher, version, user, \
+                       elevation and integrity; who started it and their parents (named even \
+                       after they exited) and how it was most likely started; the processes it \
+                       started; the services it hosts; its connections and listening ports; and \
+                       whether its handles, memory or threads keep growing. Nothing is injected; \
+                       the process is only queried for its file and command line.";
+    #[cfg(target_os = "linux")]
+    pub const PROCESS: &str = "One process in full: every counter (CPU, memory in detail, I/O, disk, network, open \
+     files), its file, command line, package, version, user and rights; who started it and \
+     their parents (named even after they exited) and how it was most likely started; the \
+     processes it started; the services it runs; its connections and listening ports; and \
+     whether its open files, memory or threads keep growing. Nothing is injected; its files in \
+     /proc are only read.";
+    #[cfg(windows)]
+    pub const WHY_ALIVE: &str = "Why a process does not go away: whether Windows is still ending it, its \
+                       threads, whether Windows protects it, whether it can be ended at all, which \
+                       programs hold handles to it (keeping it as a zombie), and which drivers \
+                       guard it (anti-cheat and security software, named). Reads the system's \
+                       handle table; the process is only queried.";
+    #[cfg(target_os = "linux")]
+    pub const WHY_ALIVE: &str = "Why a process does not go away: whether it has ended and waits for its parent to collect \
+     it (a zombie, and which parent), whether it waits inside the kernel where no signal \
+     reaches it (and where), whether Anabolic may end it at all, and whether it is the \
+     system's own. The process is only read about, not opened.";
 }

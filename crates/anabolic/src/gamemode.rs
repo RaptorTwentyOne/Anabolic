@@ -54,29 +54,6 @@ const HOG_FOR: Duration = Duration::from_secs(2);
 const CALM_FOR: Duration = Duration::from_secs(10);
 const LOG: usize = 40;
 
-/// Never lowered: Windows' core, the shell, audio (lowering it makes sound
-/// crackle), and Anabolic.
-const NEVER: [&str; 18] = [
-    "system",
-    "registry",
-    "secure system",
-    "memory compression",
-    "smss.exe",
-    "csrss.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "services.exe",
-    "lsass.exe",
-    "lsaiso.exe",
-    "dwm.exe",
-    "audiodg.exe",
-    "fontdrvhost.exe",
-    "explorer.exe",
-    "sihost.exe",
-    "ctfmon.exe",
-    "anabolic.exe",
-];
-
 /// Parts of the names of anti-cheat programs: left alone entirely.
 const ANTI_CHEAT: [&str; 18] = [
     "anticheat",
@@ -101,7 +78,8 @@ const ANTI_CHEAT: [&str; 18] = [
 
 pub fn untouchable(name: &str) -> bool {
     let name = name.to_lowercase();
-    NEVER.contains(&name.as_str()) || ANTI_CHEAT.iter().any(|a| name.contains(a))
+    crate::platform::CORE_PROCESSES.contains(&name.as_str())
+        || ANTI_CHEAT.iter().any(|a| name.contains(a))
 }
 
 pub struct Game {
@@ -429,7 +407,7 @@ pub fn card(ui: &mut Ui, s: &mut GameModeSettings, mode: &GameMode) {
                     "While a game is in front (its window fills the screen, or a rule says it is \
                      a game), programs in the background that take a real share of the processor \
                      run at below normal priority until they calm down or the game ends. The game \
-                     itself, Windows' core processes, audio and anti-cheat software are never \
+                     itself, the system's core processes, audio and anti-cheat software are never \
                      touched.",
                 )
                 .size(theme::META)
@@ -536,7 +514,7 @@ mod tests {
                 vec![
                     process(100, "game.exe", 60.0, 8),
                     process(200, "indexer.exe", hog_cpu, hog_base),
-                    process(300, "audiodg.exe", 30.0, 8),
+                    process(300, AUDIO, 30.0, 8),
                     process(400, "quiet.exe", 1.0, 8),
                 ],
             )
@@ -613,10 +591,21 @@ mod tests {
         assert!(mode.game.is_some());
     }
 
+    /// The system's audio process, which game mode never lowers.
+    const AUDIO: &str = if cfg!(windows) {
+        "audiodg.exe"
+    } else {
+        "pipewire"
+    };
+
     #[test]
     fn leaves_the_core_and_anti_cheat_alone() {
-        assert!(untouchable("csrss.exe"));
-        assert!(untouchable("AudioDG.exe"));
+        assert!(untouchable(if cfg!(windows) {
+            "csrss.exe"
+        } else {
+            "systemd-logind"
+        }));
+        assert!(untouchable(&AUDIO.to_uppercase()));
         assert!(untouchable("EasyAntiCheat_EOS.exe"));
         assert!(untouchable("BEService.exe"));
         assert!(!untouchable("chrome.exe"));

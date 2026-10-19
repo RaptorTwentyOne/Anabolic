@@ -30,13 +30,13 @@ const RESOURCES: [(&str, &str, &str, &str); 6] = [
     (
         "anabolic://services",
         "Services",
-        "Every Windows service with its state, startup type and process.",
+        "Every service with its state, startup type and process.",
         "list_services",
     ),
     (
         "anabolic://startup",
         "Startup programs",
-        "What starts with Windows, whether it is on, and what it costs now.",
+        "What starts with the computer or the session, whether it is on, and what it costs now.",
         "list_startup_items",
     ),
     (
@@ -133,7 +133,7 @@ const PROMPTS: [PromptDef; 6] = [
     ),
     (
         "startup_cleanup",
-        "What could stop starting with Windows?",
+        "What could stop starting automatically?",
         "Reviews the startup programs and suggests which to turn off.",
         &[],
     ),
@@ -229,11 +229,13 @@ pub fn prompt(name: &str, arguments: &Map<String, Value>) -> Option<GetPromptRes
             from every network), and list_dns_lookups for the names programs looked up. Tell me \
             anything that looks unexpected; change nothing before I agree."
             .to_string(),
-        "startup_cleanup" => "Review what starts with Windows using list_startup_items: for \
-            each item that is on, say what it is, whether it is part of Windows, and whether it \
-            seems needed at startup. Suggest which could be turned off and why. Do not turn any \
-            off before I agree (set_startup_item does it)."
-            .to_string(),
+        "startup_cleanup" => format!(
+            "Review what starts with {system} using list_startup_items: for each item that is \
+             on, say what it is, whether it is part of {system}, and whether it seems needed at \
+             startup. Suggest which could be turned off and why. Do not turn any off before I \
+             agree (set_startup_item does it).",
+            system = crate::platform::SYSTEM
+        ),
         _ => return None,
     };
     Some(GetPromptResult::new(vec![PromptMessage::new_text(

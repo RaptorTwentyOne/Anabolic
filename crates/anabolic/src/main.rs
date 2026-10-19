@@ -29,6 +29,7 @@ mod network_page;
 mod origin;
 mod panes;
 mod perf;
+mod platform;
 mod proc_table;
 mod rules;
 mod services_page;
@@ -101,9 +102,9 @@ fn main() -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(if elevated {
-                "Anabolic (Administrator)"
+                format!("Anabolic ({})", platform::ELEVATED)
             } else {
-                "Anabolic"
+                "Anabolic".into()
             })
             .with_inner_size(window_size())
             // `--tray` (signing in, say): start in the notification area.

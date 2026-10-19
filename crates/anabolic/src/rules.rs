@@ -608,7 +608,7 @@ fn editor(ui: &mut Ui, d: &mut Draft, snap: &Snapshot) -> Option<bool> {
                             ui.checkbox(&mut on, "Handles pass")
                                 .on_hover_text(
                                     "A program that keeps opening handles and never closes them \
-                                     slows itself and Windows down over time.",
+                                     slows itself and the system down over time.",
                                 );
                             let mut n = d.rule.handles_alert.unwrap_or(50_000);
                             ui.add_enabled(

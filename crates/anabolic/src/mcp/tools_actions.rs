@@ -21,21 +21,6 @@ use super::handler::{AnabolicMcp, blocking, fail, ok};
 use super::{McpEvent, json};
 use crate::settings::McpKind;
 
-/// Ending or suspending these takes Windows down or signs the user out.
-const CRITICAL: [&str; 11] = [
-    "system",
-    "registry",
-    "secure system",
-    "memory compression",
-    "smss.exe",
-    "csrss.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "services.exe",
-    "lsass.exe",
-    "lsaiso.exe",
-];
-
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EndArgs {
     /// The process ID.
@@ -199,11 +184,14 @@ impl AnabolicMcp {
             return Err(fail(json::no_process(pid)));
         };
         let lower = p.name.to_lowercase();
-        if CRITICAL.contains(&lower.as_str()) || pid <= 4 {
+        if crate::platform::CRITICAL_PROCESSES.contains(&lower.as_str())
+            || crate::platform::system_pid(pid)
+        {
             return Err(fail(format!(
-                "{} is critical to Windows: doing this would crash Windows or sign the user \
+                "{} is critical to {system}: doing this would crash {system} or sign the user \
                  out. Anabolic refuses it.",
-                p.name
+                p.name,
+                system = crate::platform::SYSTEM
             )));
         }
         if pid == snap.own_pid {
@@ -214,11 +202,15 @@ impl AnabolicMcp {
         let in_front =
             anabolic_core::foreground::front().is_some_and(|f| f.pid == pid && f.fullscreen);
         let risky = if crate::gamemode::untouchable(&p.name) {
-            Some(
-                "It is one of Windows' own processes or a known anti-cheat program: the game it \
-                 protects may close, and an online game can take it as tampering (a kick or a \
-                 ban).",
-            )
+            Some(if cfg!(windows) {
+                "It is one of Windows' own processes or a known anti-cheat program: the game \
+                     it protects may close, and an online game can take it as tampering (a kick \
+                     or a ban)."
+            } else {
+                "It is one of the system's own processes or a known anti-cheat program: the \
+                     game it protects may close, and an online game can take it as tampering (a \
+                     kick or a ban)."
+            })
         } else if in_front {
             Some("It is the full-screen program in front, most likely a game being played.")
         } else {
@@ -243,10 +235,7 @@ impl AnabolicMcp {
 #[tool_router(router = action_tools, vis = "pub(super)")]
 impl AnabolicMcp {
     #[tool(
-        description = "Ends a process, or with tree=true it and every process under it (those \
-                       first). Unsaved work in it is lost. Windows' critical processes and \
-                       Anabolic are refused; a game or anti-cheat program needs force=true after \
-                       the user agreed.",
+        description = text::END_PROCESS,
         annotations(
             destructive_hint = true,
             idempotent_hint = false,
@@ -273,7 +262,8 @@ impl AnabolicMcp {
                 // Exited or ending already: nothing left to end.
                 let live = child.state != anabolic_core::model::ProcState::Exited && !child.ending;
                 if live
-                    && !CRITICAL.contains(&child.name.to_lowercase().as_str())
+                    && !crate::platform::CRITICAL_PROCESSES
+                        .contains(&child.name.to_lowercase().as_str())
                     && child.pid != snap.own_pid
                 {
                     targets.push(target(child));
@@ -424,8 +414,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Turns Windows' efficiency mode on or off for a process (low priority, \
-                       efficient cores and clocks: EcoQoS).",
+        description = text::EFFICIENCY_MODE,
         annotations(
             destructive_hint = false,
             idempotent_hint = true,
@@ -454,8 +443,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Starts, stops, restarts, pauses or continues a Windows service. Stopping \
-                       one that others depend on fails unless with_dependents=true.",
+        description = text::CONTROL_SERVICE,
         annotations(
             destructive_hint = true,
             idempotent_hint = false,
@@ -486,8 +474,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Sets how a Windows service starts: automatic, automatic_delayed, manual \
-                       or disabled.",
+        description = text::SERVICE_STARTUP,
         annotations(
             destructive_hint = true,
             idempotent_hint = true,
@@ -555,9 +542,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Blocks a program from the network with two Windows Firewall rules \
-                       (outbound and inbound), until unblock_program. Windows' own files cannot \
-                       be blocked. The Network page lists what is blocked.",
+        description = text::BLOCK_PROGRAM,
         annotations(
             destructive_hint = true,
             idempotent_hint = true,
@@ -588,8 +573,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Turns a startup program on or off the way Task Manager does (nothing is \
-                       deleted; tasks through Task Scheduler).",
+        description = text::STARTUP_ITEM,
         annotations(
             destructive_hint = false,
             idempotent_hint = true,
@@ -675,4 +659,51 @@ impl AnabolicMcp {
         }
         outcome(result)
     }
+}
+
+/// Tool descriptions that differ between Windows and Linux.
+mod text {
+    #[cfg(windows)]
+    pub const END_PROCESS: &str = "Ends a process, or with tree=true it and every process under it (those \
+                       first). Unsaved work in it is lost. Windows' critical processes and \
+                       Anabolic are refused; a game or anti-cheat program needs force=true after \
+                       the user agreed.";
+    #[cfg(target_os = "linux")]
+    pub const END_PROCESS: &str = "Ends a process (SIGTERM, then SIGKILL if it has not ended within two seconds), or \
+     with tree=true it and every process under it (those first). Unsaved work in it may be \
+     lost. The system's critical processes (init, the kernel, the session's compositor) and \
+     Anabolic are refused; a game or anti-cheat program needs force=true after the user agreed.";
+    #[cfg(windows)]
+    pub const EFFICIENCY_MODE: &str = "Turns Windows' efficiency mode on or off for a process (low priority, \
+                       efficient cores and clocks: EcoQoS).";
+    #[cfg(target_os = "linux")]
+    pub const EFFICIENCY_MODE: &str = "Turns efficiency mode on or off for a process: it runs only when no one else wants the \
+     processor (the idle scheduling class), and its disk I/O likewise.";
+    #[cfg(windows)]
+    pub const CONTROL_SERVICE: &str = "Starts, stops, restarts, pauses or continues a Windows service. Stopping \
+                       one that others depend on fails unless with_dependents=true.";
+    #[cfg(target_os = "linux")]
+    pub const CONTROL_SERVICE: &str = "Starts, stops or restarts a systemd service (systemd services cannot be paused). \
+     Stopping one that others depend on fails unless with_dependents=true.";
+    #[cfg(windows)]
+    pub const SERVICE_STARTUP: &str = "Sets how a Windows service starts: automatic, automatic_delayed, manual \
+                       or disabled.";
+    #[cfg(target_os = "linux")]
+    pub const SERVICE_STARTUP: &str = "Sets how a systemd service starts: automatic (enabled), manual (disabled: started on \
+     demand) or disabled (masked: cannot be started). automatic_delayed does not exist on \
+     Linux.";
+    #[cfg(windows)]
+    pub const BLOCK_PROGRAM: &str = "Blocks a program from the network with two Windows Firewall rules \
+                       (outbound and inbound), until unblock_program. Windows' own files cannot \
+                       be blocked. The Network page lists what is blocked.";
+    #[cfg(target_os = "linux")]
+    pub const BLOCK_PROGRAM: &str = "Blocking a program from the network is not possible on Linux, whose firewalls filter by \
+     address, port and user rather than by program: this always refuses there.";
+    #[cfg(windows)]
+    pub const STARTUP_ITEM: &str = "Turns a startup program on or off the way Task Manager does (nothing is \
+                       deleted; tasks through Task Scheduler).";
+    #[cfg(target_os = "linux")]
+    pub const STARTUP_ITEM: &str = "Turns a startup item on or off the way the desktop's own settings do: an autostart entry \
+     is hidden (a system-wide one by an override in the user's folder), a systemd user unit \
+     disabled. Nothing is deleted.";
 }

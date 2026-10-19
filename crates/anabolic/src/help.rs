@@ -135,21 +135,36 @@ fn legend(ui: &mut Ui) {
                 (Sample::Name(theme::TEXT, false), "An ordinary program"),
                 (
                     Sample::Name(theme::SERVICE_TEXT, false),
-                    "A service (runs in session 0)",
+                    if cfg!(windows) {
+                        "A service (runs in session 0)"
+                    } else {
+                        "A service (runs outside any login session)"
+                    },
                 ),
                 (
                     Sample::Name(theme::ELEVATED_TEXT, false),
-                    "Runs as administrator",
+                    if cfg!(windows) {
+                        "Runs as administrator"
+                    } else {
+                        "Runs as root, or with capabilities"
+                    },
                 ),
                 (Sample::Name(theme::SUSPENDED_TEXT, true), "Suspended"),
                 (
                     Sample::Icon(theme::icon::WARNING, theme::BAD),
                     "Not responding: a window took no message for 5 s",
                 ),
-                (
-                    Sample::Text("ending", theme::ELEVATED_TEXT),
-                    "Windows is ending it but cannot finish; the details say why",
-                ),
+                if cfg!(windows) {
+                    (
+                        Sample::Text("ending", theme::ELEVATED_TEXT),
+                        "Windows is ending it but cannot finish; the details say why",
+                    )
+                } else {
+                    (
+                        Sample::Text("zombie", theme::ELEVATED_TEXT),
+                        "It has ended, but its parent has not collected it; the details say which",
+                    )
+                },
             ],
         ),
         (
@@ -177,11 +192,15 @@ fn legend(ui: &mut Ui) {
                 ),
                 (
                     Sample::Text("—", theme::TEXT_DIM),
-                    "Windows did not let Anabolic read it; as administrator it reads most",
+                    if cfg!(windows) {
+                        "Windows did not let Anabolic read it; as administrator it reads most"
+                    } else {
+                        "Linux did not let Anabolic read it; with full access it reads most"
+                    },
                 ),
                 (
                     Sample::Icon(theme::icon::LOCK, theme::TEXT_DIM),
-                    "Needs Anabolic running as administrator",
+                    crate::platform::NEEDS_ELEVATION,
                 ),
             ],
         ),

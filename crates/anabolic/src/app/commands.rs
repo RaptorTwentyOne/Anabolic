@@ -373,12 +373,21 @@ impl App {
                     let dialog = ConfirmDialog {
                         title: "Analyze the wait chain?".into(),
                         lines: vec![
-                            format!(
-                                "Anabolic will ask Windows what thread {tid} of {} (PID {}) is waiting for, and \
-                                 follow the chain into other processes; the process' other threads come after \
-                                 it. Windows opens the threads for reading; nothing is injected or suspended.",
-                                p.name, p.pid
-                            ),
+                            if cfg!(windows) {
+                                format!(
+                                    "Anabolic will ask Windows what thread {tid} of {} (PID {}) is waiting for, and \
+                                     follow the chain into other processes; the process' other threads come after \
+                                     it. Windows opens the threads for reading; nothing is injected or suspended.",
+                                    p.name, p.pid
+                                )
+                            } else {
+                                format!(
+                                    "Anabolic will read what thread {tid} of {} (PID {}) is waiting for from the \
+                                     kernel, and follow the chain into other processes (a file lock, a pipe); the \
+                                     process' other threads come after it. Nothing is injected or stopped.",
+                                    p.name, p.pid
+                                )
+                            },
                             "Protected programs such as anti-cheat or security software may refuse this access \
                              or treat it as suspicious."
                                 .into(),
@@ -420,14 +429,25 @@ impl App {
                     let dialog = ConfirmDialog {
                         title: "Resolve handle names?".into(),
                         lines: vec![
-                            format!(
-                                "Anabolic will open {} (PID {}) and duplicate each of its {} handles to read \
-                                 their names: file paths, registry keys, object names, and the processes \n                                  and \
-                                 threads they point to.",
-                                p.name,
-                                p.pid,
-                                fmt::count(p.handles as u64)
-                            ),
+                            if cfg!(windows) {
+                                format!(
+                                    "Anabolic will open {} (PID {}) and duplicate each of its {} handles to read \
+                                     their names: file paths, registry keys, object names, and the processes \n                                      and \
+                                     threads they point to.",
+                                    p.name,
+                                    p.pid,
+                                    fmt::count(p.handles as u64)
+                                )
+                            } else {
+                                format!(
+                                    "Anabolic will read what each of the {} files {} (PID {}) has open is: its \
+                                     path, or the connection, pipe or kernel object behind it. The process is not \
+                                     opened; the kernel tells.",
+                                    fmt::count(p.handles as u64),
+                                    p.name,
+                                    p.pid
+                                )
+                            },
                             "With many handles this takes a few seconds.".into(),
                             "Protected programs such as anti-cheat or security software may refuse this access \
                              or treat it as suspicious."
@@ -490,13 +510,18 @@ impl App {
                             .into(),
                     ];
                     if anabolic_core::dump::holds_secrets(&p.name) {
-                        lines.push(
+                        lines.push(if cfg!(windows) {
                             "lsass holds the sign-in secrets of this PC: the file will hold \
                              password hashes and tickets of everyone signed in, and your \
                              antivirus will likely stop the dump and may quarantine Anabolic. \
                              Keep the file safe and delete it when done."
-                                .into(),
-                        );
+                                .into()
+                        } else {
+                            "This keyring holds the session's passwords and keys, unlocked: the \
+                             file will hold them in the clear. Keep it safe and delete it when \
+                             done."
+                                .into()
+                        });
                     }
                     let dialog = ConfirmDialog {
                         title: format!("Write a {} dump of {}?", kind.label(), p.name),
@@ -560,20 +585,37 @@ impl App {
                     let dialog = ConfirmDialog {
                         title: "Analyze the wait chain?".into(),
                         lines: vec![
-                            format!(
-                                "Anabolic will ask Windows what each thread of {} (PID {}) is waiting for, \
-                                 and follow the chain into other processes. Windows opens the threads for \
-                                 reading; nothing is injected or suspended.",
-                                p.name, p.pid
-                            ),
-                            format!(
-                                "Windows spends about 60 ms of CPU on each waiting thread. {} has {} threads, so \
-                                 this can take up to {} s, on four threads at low priority. Threads that are \
-                                 running or idle are left out.",
-                                p.name,
-                                p.threads,
-                                (p.threads as f32 * 0.06 / 4.0).ceil().max(1.0)
-                            ),
+                            if cfg!(windows) {
+                                format!(
+                                    "Anabolic will ask Windows what each thread of {} (PID {}) is waiting for, \
+                                     and follow the chain into other processes. Windows opens the threads for \
+                                     reading; nothing is injected or suspended.",
+                                    p.name, p.pid
+                                )
+                            } else {
+                                format!(
+                                    "Anabolic will read what each thread of {} (PID {}) is waiting for from the \
+                                     kernel, and follow the chain into other processes (a file lock, a pipe). \
+                                     Nothing is injected or stopped.",
+                                    p.name, p.pid
+                                )
+                            },
+                            if cfg!(windows) {
+                                format!(
+                                    "Windows spends about 60 ms of CPU on each waiting thread. {} has {} threads, so \
+                                     this can take up to {} s, on four threads at low priority. Threads that are \
+                                     running or idle are left out.",
+                                    p.name,
+                                    p.threads,
+                                    (p.threads as f32 * 0.06 / 4.0).ceil().max(1.0)
+                                )
+                            } else {
+                                format!(
+                                    "{} has {} threads; reading them takes a moment. Threads that are running \
+                                     are left out.",
+                                    p.name, p.threads
+                                )
+                            },
                             "Protected programs such as anti-cheat or security software may refuse this access \
                              or treat it as suspicious."
                                 .into(),

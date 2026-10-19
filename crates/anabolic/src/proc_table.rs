@@ -445,7 +445,7 @@ fn row_tint(p: &ProcessInfo, seq: u64) -> Option<Color32> {
 fn text_color(p: &ProcessInfo, d: Option<&Arc<ProcessDetails>>) -> Color32 {
     if p.state == ProcState::Suspended {
         theme::SUSPENDED_TEXT
-    } else if p.session_id == 0 && p.pid > 4 && !p.is_pseudo() {
+    } else if p.session_id == 0 && !crate::platform::system_pid(p.pid) && !p.is_pseudo() {
         theme::SERVICE_TEXT
     } else if d.is_some_and(|d| d.elevated == Some(true)) {
         theme::ELEVATED_TEXT
@@ -556,11 +556,17 @@ fn name_cell(
     ui.add(Label::new(text).truncate());
     // Gone in all but name: say so, the details say why.
     if p.ending || (p.threads == 0 && !p.is_pseudo()) {
-        let (label, tip) = if p.ending {
+        let (label, tip) = if p.ending && cfg!(windows) {
             (
                 "ending",
                 "Windows is ending it but cannot finish: something still holds it. \
                  The details say what.",
+            )
+        } else if p.ending {
+            (
+                "zombie",
+                "It has ended, but its parent has not collected it yet: it is only a name and \
+                 a PID now. The details say which parent.",
             )
         } else {
             (
@@ -622,10 +628,19 @@ fn value_cell(
     }
 
     // Blank means zero; data that needs elevation says so instead.
-    if c == Col::Disk && ctx.snap.info_level != InfoLevel::Full && !p.is_pseudo() {
+    // (Linux shows the user's own processes' counters either way.)
+    if c == Col::Disk
+        && ctx.snap.info_level != InfoLevel::Full
+        && p.disk.is_none()
+        && !p.is_pseudo()
+    {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(widgets::icon(theme::icon::LOCK, 10.0).color(theme::TEXT_DIM))
-                .on_hover_text("Disk counters need administrator rights");
+                .on_hover_text(if cfg!(windows) {
+                    "Disk counters need administrator rights"
+                } else {
+                    "Another user's disk counters need full access"
+                });
         });
         return;
     }
@@ -635,7 +650,8 @@ fn value_cell(
             ui.add_space(TEXT_INSET);
             ui.label(RichText::new("—").color(theme::TEXT_DIM))
                 .on_hover_text(format!(
-                    "Not readable: {why}. Running Anabolic as administrator reads most of these."
+                    "Not readable: {why}. {}",
+                    crate::platform::ELEVATED_READS_MORE
                 ));
         }
         return;
@@ -788,7 +804,7 @@ pub fn context_menu(
     ui: &mut Ui,
     p: &ProcessInfo,
     d: Option<&Arc<ProcessDetails>>,
-    blocked: &[String],
+    #[cfg_attr(not(windows), allow(unused_variables))] blocked: &[String],
     secrets: bool,
     out: &mut Vec<UiCmd>,
 ) {
@@ -894,6 +910,8 @@ pub fn context_menu(
     }
 
     let path = d.and_then(|d| d.path.clone());
+    // Linux firewalls do not filter by program.
+    #[cfg(windows)]
     if let Some(path) = &path {
         network_item(ui, p, path, blocked, out);
     }
@@ -948,6 +966,7 @@ pub fn system_file(path: &str) -> bool {
         .any(|dir| path.starts_with(dir))
 }
 
+#[cfg(windows)]
 fn network_item(
     ui: &mut Ui,
     p: &ProcessInfo,

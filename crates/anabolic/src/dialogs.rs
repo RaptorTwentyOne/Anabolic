@@ -38,7 +38,10 @@ impl KillDialog {
             if let Some(detail) = &self.detail {
                 ui.label(RichText::new(detail).color(theme::TEXT_WEAK));
             }
-            ui.label(RichText::new("Unsaved data in these processes will be lost.").color(theme::TEXT_WEAK));
+            ui.label(
+                RichText::new("Unsaved data in these processes will be lost.")
+                    .color(theme::TEXT_WEAK),
+            );
             if !self.critical.is_empty() {
                 ui.add_space(6.0);
                 egui::Frame::new()
@@ -49,8 +52,10 @@ impl KillDialog {
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(format!(
-                                "{} is a critical system process. Terminating it will crash Windows (bugcheck).",
-                                self.critical.join(", ")
+                                "{} is a critical system process. Terminating it will crash {}{}.",
+                                self.critical.join(", "),
+                                crate::platform::SYSTEM,
+                                if cfg!(windows) { " (bugcheck)" } else { "" }
                             ))
                             .color(theme::BAD),
                         );
@@ -62,9 +67,15 @@ impl KillDialog {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let kill = egui::Button::new(widgets::strong("Terminate", theme::BODY).color(theme::TEXT)).fill(theme::BAD_STRONG);
-                if ui.add(kill).clicked() || (self.critical.is_empty() && ui.input(|i| i.key_pressed(Key::Enter))) {
-                    choice = KillChoice::Confirm { dont_ask_again: self.dont_ask && self.critical.is_empty() };
+                let kill =
+                    egui::Button::new(widgets::strong("Terminate", theme::BODY).color(theme::TEXT))
+                        .fill(theme::BAD_STRONG);
+                if ui.add(kill).clicked()
+                    || (self.critical.is_empty() && ui.input(|i| i.key_pressed(Key::Enter)))
+                {
+                    choice = KillChoice::Confirm {
+                        dont_ask_again: self.dont_ask && self.critical.is_empty(),
+                    };
                 }
                 if ui.button("Cancel").clicked() {
                     choice = KillChoice::Cancel;

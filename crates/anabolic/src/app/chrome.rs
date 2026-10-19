@@ -282,42 +282,67 @@ impl App {
     /// Elevation, refresh rate, pause: right-aligned on every page.
     pub(super) fn global_controls(&mut self, ui: &mut egui::Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_space(6.0);
+            if self.elevated {
+                ui.label(
+                    RichText::new(crate::platform::ELEVATED)
+                        .size(theme::META)
+                        .color(theme::TEXT_WEAK),
+                )
+                .on_hover_text(crate::platform::ELEVATED_TIP);
+                ui.label(widgets::icon(theme::icon::SHIELD, 13.0).color(theme::GOOD));
                 ui.add_space(6.0);
-                if self.elevated {
-                    ui.label(RichText::new("Administrator").size(theme::META).color(theme::TEXT_WEAK))
-                        .on_hover_text("Running elevated: every process, disk counters and owners are visible.");
-                    ui.label(widgets::icon(theme::icon::SHIELD, 13.0).color(theme::GOOD));
-                    ui.add_space(6.0);
-                } else if ui
-                    .add_enabled(
-                        !self.relaunching,
-                        egui::Button::new(RichText::new("Restart as admin").color(theme::ELEVATED_TEXT)),
-                    )
-                    .on_hover_text("Without elevation protected processes, disk counters and some owners are hidden.")
-                    .on_disabled_hover_text("Waiting for the UAC prompt.")
-                    .clicked()
-                {
-                    self.relaunching = true;
-                    self.actions.run(Action::RelaunchElevated);
-                }
+            } else if ui
+                .add_enabled(
+                    !self.relaunching,
+                    egui::Button::new(
+                        RichText::new(crate::platform::ELEVATE).color(theme::ELEVATED_TEXT),
+                    ),
+                )
+                .on_hover_text(crate::platform::PLAIN_TIP)
+                .on_disabled_hover_text(crate::platform::ELEVATING)
+                .clicked()
+            {
+                self.relaunching = true;
+                self.actions.run(Action::RelaunchElevated);
+            }
 
-                let label = INTERVALS.iter().find(|(ms, _)| *ms == self.settings.interval_ms).map_or("custom", |(_, l)| *l);
-                egui::ComboBox::from_id_salt("interval").selected_text(label).width(70.0).show_ui(ui, |ui| {
+            let label = INTERVALS
+                .iter()
+                .find(|(ms, _)| *ms == self.settings.interval_ms)
+                .map_or("custom", |(_, l)| *l);
+            egui::ComboBox::from_id_salt("interval")
+                .selected_text(label)
+                .width(70.0)
+                .show_ui(ui, |ui| {
                     for (ms, label) in INTERVALS {
-                        if ui.selectable_value(&mut self.settings.interval_ms, ms, label).changed() {
-                            self.collector.send(Command::SetInterval(Duration::from_millis(ms)));
+                        if ui
+                            .selectable_value(&mut self.settings.interval_ms, ms, label)
+                            .changed()
+                        {
+                            self.collector
+                                .send(Command::SetInterval(Duration::from_millis(ms)));
                         }
                     }
                 });
-                let (glyph, label) = if self.paused { (theme::icon::PLAY, "Resume") } else { (theme::icon::PAUSE, "Pause") };
-                let button = egui::Button::new(widgets::icon_text(ui, glyph, label)).selected(self.paused);
-                if ui.add(button).on_hover_text("Freeze the view (Space)").clicked() {
-                    self.paused = !self.paused;
-                }
-                if self.paused {
-                    ui.label(widgets::strong("Paused", theme::META).color(theme::ACCENT));
-                }
-            });
+            let (glyph, label) = if self.paused {
+                (theme::icon::PLAY, "Resume")
+            } else {
+                (theme::icon::PAUSE, "Pause")
+            };
+            let button =
+                egui::Button::new(widgets::icon_text(ui, glyph, label)).selected(self.paused);
+            if ui
+                .add(button)
+                .on_hover_text("Freeze the view (Space)")
+                .clicked()
+            {
+                self.paused = !self.paused;
+            }
+            if self.paused {
+                ui.label(widgets::strong("Paused", theme::META).color(theme::ACCENT));
+            }
+        });
     }
 
     pub(super) fn alert_bar(&mut self, ui: &mut egui::Ui, out: &mut Vec<UiCmd>) {

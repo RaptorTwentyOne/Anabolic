@@ -229,7 +229,7 @@ impl App {
         if let Some(dir) = crate::data_dir() {
             let shown = dir.display().to_string();
             row(ui, "Where Anabolic keeps its files", &shown, |ui| {
-                if ui.button("Show in Explorer").clicked() {
+                if ui.button(crate::platform::SHOW_IN_FILE_MANAGER).clicked() {
                     self.actions.run(Action::OpenFileLocation(shown.clone()));
                 }
             });
@@ -251,8 +251,8 @@ impl App {
 
     fn dump_section(&mut self, ui: &mut Ui) {
         heading(ui, "Memory dumps");
-        row(
-            ui,
+        #[cfg(windows)]
+        let (what, why, now) = (
             "Allow dumps of lsass.exe",
             "Off by default. lsass holds the sign-in secrets of this PC: the password hashes and \
              Kerberos tickets of everyone signed in. Reading its memory is exactly what \
@@ -261,13 +261,22 @@ impl App {
              Anabolic. Turn it on only to debug lsass on a machine you look after, and keep the \
              file safe. MCP clients can never dump it; lsaiso.exe and the processes Windows \
              protects cannot be dumped at all.",
-            |ui| {
-                ui.checkbox(&mut self.settings.dump_sign_in_secrets, "");
-                if self.settings.dump_sign_in_secrets {
-                    caution(ui, "lsass now shows \"Create dump file\" in its menu.");
-                }
-            },
+            "lsass now shows \"Create dump file\" in its menu.",
         );
+        #[cfg(target_os = "linux")]
+        let (what, why, now) = (
+            "Allow dumps of the keyrings",
+            "Off by default. KWallet, GNOME Keyring, ssh-agent and gpg-agent hold the session's \
+             passwords and keys, unlocked: a dump of one holds them in the clear. Turn it on only \
+             to debug one of them, and keep the file safe. MCP clients can never dump them.",
+            "The keyrings now show \"Create dump file\" in their menu.",
+        );
+        row(ui, what, why, |ui| {
+            ui.checkbox(&mut self.settings.dump_sign_in_secrets, "");
+            if self.settings.dump_sign_in_secrets {
+                caution(ui, now);
+            }
+        });
     }
 
     fn assistant_section(&mut self, ui: &mut Ui) {
@@ -299,8 +308,8 @@ impl App {
         row(
             ui,
             &format!("Anabolic {}", env!("CARGO_PKG_VERSION")),
-            "A Windows task manager that stays responsive when the machine does not. MIT or \
-             Apache-2.0, at your option.",
+            "Performance monitoring and diagnostics for Windows and Linux that stays responsive \
+             when the machine does not. MIT or Apache-2.0, at your option.",
             |ui| {
                 if ui
                     .add(egui::Button::new("Shortcuts and colours").shortcut_text("F1"))
@@ -312,14 +321,21 @@ impl App {
         );
         let (rights, about) = if self.elevated {
             (
-                "Running as administrator",
+                crate::platform::RUNNING_ELEVATED,
                 "Every process, disk counters and owners are visible, and kernel traces can run.",
+            )
+        } else if cfg!(windows) {
+            (
+                crate::platform::RUNNING_PLAIN,
+                "Protected processes, disk counters, some owners and the kernel traces are \
+                 missing.",
             )
         } else {
             (
-                "Running without administrator rights",
-                "Protected processes, disk counters, some owners and the kernel traces are \
-                 missing.",
+                crate::platform::RUNNING_PLAIN,
+                "Other users' processes keep their open files, threads and disk traffic to \
+                 themselves, and the kernel traces cannot run. Granting full access gives this \
+                 executable the capabilities it needs (pkexec asks for your password once).",
             )
         };
         row(ui, rights, about, |ui| {
@@ -329,10 +345,10 @@ impl App {
                 .add_enabled(
                     !self.relaunching,
                     egui::Button::new(
-                        RichText::new("Restart as admin").color(theme::ELEVATED_TEXT),
+                        RichText::new(crate::platform::ELEVATE).color(theme::ELEVATED_TEXT),
                     ),
                 )
-                .on_disabled_hover_text("Waiting for the UAC prompt.")
+                .on_disabled_hover_text(crate::platform::ELEVATING)
                 .clicked()
             {
                 self.relaunching = true;

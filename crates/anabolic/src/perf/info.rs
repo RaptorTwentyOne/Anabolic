@@ -129,8 +129,10 @@ pub(super) fn cpu_info(ui: &mut Ui, snap: &Snapshot, hw: &HardwareInfo) {
             ),
             (
                 "Hypervisor",
-                if c.hypervisor_present {
+                if c.hypervisor_present && cfg!(windows) {
                     "Windows runs on a hypervisor (VBS / Hyper-V)".into()
+                } else if c.hypervisor_present {
+                    "Linux runs in a virtual machine".into()
                 } else {
                     "None".into()
                 },
@@ -231,7 +233,14 @@ pub(super) fn memory_info(ui: &mut Ui, snap: &Snapshot, hw: &HardwareInfo) {
         ui,
         &[
             ("Installed", fmt::bytes(m.installed)),
-            ("Usable by Windows", fmt::bytes(usable)),
+            (
+                if cfg!(windows) {
+                    "Usable by Windows"
+                } else {
+                    "Usable by Linux"
+                },
+                fmt::bytes(usable),
+            ),
             (
                 "Hardware reserved",
                 fmt::bytes(m.installed.saturating_sub(usable)),
