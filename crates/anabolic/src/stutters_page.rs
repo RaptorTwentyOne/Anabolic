@@ -717,7 +717,7 @@ fn interrupts_only(ui: &mut Ui, snap: &Snapshot, relaunching: bool, out: &mut Ve
                     .color(theme::ELEVATED_TEXT),
             );
             if ui
-                .add_enabled(!relaunching, egui::Button::new("Grant rights and restart"))
+                .add_enabled(!relaunching, egui::Button::new(crate::platform::ELEVATE))
                 .clicked()
             {
                 out.push(UiCmd::RelaunchElevated);

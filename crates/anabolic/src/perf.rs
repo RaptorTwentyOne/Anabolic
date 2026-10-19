@@ -603,24 +603,45 @@ const CORE_ROWS: usize = 12;
 
 fn zombies_section(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCmd>) {
     let s = &snap.system;
-    // The idle process has a process object too.
-    let estimate = s.process_objects.saturating_sub(s.processes + 1);
+    // Windows: the idle process has a process object too. Linux lists its
+    // zombies as processes, ended and waiting for their parent.
+    let estimate = if cfg!(windows) {
+        s.process_objects.saturating_sub(s.processes + 1)
+    } else {
+        snap.processes
+            .iter()
+            .filter(|p| p.ending && p.state != ProcState::Exited)
+            .count() as u32
+    };
+    let (what, scanning, find) = if cfg!(windows) {
+        (
+            "exited processes the kernel cannot free because someone still holds a handle to them",
+            "Scanning every handle in the system…",
+            "Find who holds them",
+        )
+    } else {
+        (
+            "ended processes whose parent has not collected them; each keeps only its PID",
+            "Reading every process…",
+            "Find their parents",
+        )
+    };
     ui.add_space(14.0);
     widgets::section(ui, "Zombie processes");
     ui.horizontal(|ui| {
-        let color = if estimate > 1000 { theme::ELEVATED_TEXT } else { theme::TEXT };
+        let color = if estimate > 1000 {
+            theme::ELEVATED_TEXT
+        } else {
+            theme::TEXT
+        };
         ui.label(widgets::strong(fmt::count(estimate as u64), theme::TITLE).color(color));
-        ui.label(
-            RichText::new("exited processes the kernel cannot free because someone still holds a handle to them")
-                .small()
-                .color(theme::TEXT_WEAK),
-        );
+        ui.label(RichText::new(what).small().color(theme::TEXT_WEAK));
     });
     ui.horizontal(|ui| {
         if zombies.pending {
             ui.spinner();
-            ui.label(RichText::new("Scanning every handle in the system…").color(theme::TEXT_WEAK));
-        } else if ui.button("Find who holds them").clicked() {
+            ui.label(RichText::new(scanning).color(theme::TEXT_WEAK));
+        } else if ui.button(find).clicked() {
             out.push(UiCmd::FindZombies);
         }
         if let Some(r) = &zombies.report {
@@ -639,10 +660,19 @@ fn zombies_section(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut
         return;
     };
     let columns = [
-        ("Holder", 260.0, Align::Min),
+        (
+            if cfg!(windows) { "Holder" } else { "Parent" },
+            260.0,
+            Align::Min,
+        ),
         ("PID", 70.0, Align::Max),
         ("Zombies", 90.0, Align::Max),
-        ("Handles", 100.0, Align::Max),
+        // A parent holds its zombies by not collecting them, not by handles.
+        (
+            if cfg!(windows) { "Handles" } else { "" },
+            100.0,
+            Align::Max,
+        ),
     ];
     widgets::header(ui, &columns);
     for (i, h) in report.holders.iter().take(12).enumerate() {
@@ -673,12 +703,14 @@ fn zombies_section(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut
                 RichText::new(h.pid.to_string()).color(theme::TEXT_DIM),
             );
             widgets::text(ui, columns[2].1, Align::Max, fmt::count(h.zombies as u64));
-            widgets::text(
-                ui,
-                columns[3].1,
-                Align::Max,
-                RichText::new(fmt::count(h.handles as u64)).color(theme::TEXT_WEAK),
-            );
+            if cfg!(windows) {
+                widgets::text(
+                    ui,
+                    columns[3].1,
+                    Align::Max,
+                    RichText::new(fmt::count(h.handles as u64)).color(theme::TEXT_WEAK),
+                );
+            }
         });
     }
 }

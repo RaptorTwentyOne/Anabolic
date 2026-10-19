@@ -26,7 +26,7 @@ use crate::tree::{Details, Group};
 use crate::widgets;
 
 mod end;
-mod handles;
+pub(crate) mod handles;
 mod network;
 mod waits;
 use end::*;

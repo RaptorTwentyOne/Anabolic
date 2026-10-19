@@ -6,7 +6,7 @@ use super::*;
 
 /// A handle's number as the system writes it: hex on Windows, a plain file
 /// descriptor number on Linux.
-pub(super) fn value_text(value: u64) -> String {
+pub(crate) fn value_text(value: u64) -> String {
     if cfg!(windows) {
         format!("0x{value:X}")
     } else {
@@ -16,7 +16,7 @@ pub(super) fn value_text(value: u64) -> String {
 
 /// What a handle may do: Windows' access mask, or on Linux whether the
 /// file is open for reading, writing or both.
-fn access_text(access: u32) -> String {
+pub(crate) fn access_text(access: u32) -> String {
     if cfg!(windows) {
         return format!("0x{access:08X}");
     }

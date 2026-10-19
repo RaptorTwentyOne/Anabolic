@@ -48,7 +48,14 @@ pub(super) fn cpu(
                     ("Interrupts", format!("{:.2} %", s.cpu.interrupt)),
                     ("Processes", fmt::count(s.processes as u64)),
                     ("Threads", fmt::count(s.threads as u64)),
-                    ("Handles", fmt::count(s.handles as u64)),
+                    (
+                        if cfg!(windows) {
+                            "Handles"
+                        } else {
+                            "Open files"
+                        },
+                        fmt::count(s.handles as u64),
+                    ),
                     ("Up time", fmt::duration(s.uptime)),
                     (
                         "Context switches/s",

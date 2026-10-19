@@ -200,7 +200,9 @@ pub fn zombie_report() -> Result<ZombieReport, String> {
     })
 }
 
-/// Every process, zombies included.
+/// Every PID: processes, zombies, and the kernel's threads (which the
+/// process list folds into one). Zombies are listed as processes on Linux
+/// (`ProcessInfo::ending`), so nothing hides in the difference.
 pub fn process_objects() -> u32 {
     procfs::pids().len() as u32
 }
@@ -330,12 +332,15 @@ impl Bench {
             key,
             modules: modules
                 .into_iter()
-                // What the file is (its package, version) is not read yet.
-                .map(|info| ModuleRow {
-                    info,
-                    description: None,
-                    company: None,
-                    version: None,
+                // What the file is: the package it came with, and its version.
+                .map(|info| {
+                    let (description, company, version) = crate::packages::describe(&info.path);
+                    ModuleRow {
+                        info,
+                        description,
+                        company,
+                        version,
+                    }
                 })
                 .collect(),
             error,

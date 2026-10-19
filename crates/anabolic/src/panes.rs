@@ -711,24 +711,31 @@ pub fn handle_menu(
     item(
         ui,
         out,
-        "Copy handle value",
+        if cfg!(windows) {
+            "Copy handle value"
+        } else {
+            "Copy file descriptor"
+        },
         "",
-        UiCmd::Copy(format!("0x{:X}", e.value)),
+        UiCmd::Copy(crate::details::handles::value_text(e.value)),
     );
-    ui.separator();
-    item(
-        ui,
-        out,
-        "Close handle\u{2026}",
-        "",
-        UiCmd::ConfirmCloseHandle(FoundHandle {
-            pid: p.pid,
-            process: p.name.clone(),
-            handle: e.value,
-            type_name: Arc::from(type_name),
-            name: name.unwrap_or("this handle").to_string(),
-        }),
-    );
+    // Linux does not let one program close another's files.
+    if cfg!(windows) {
+        ui.separator();
+        item(
+            ui,
+            out,
+            "Close handle\u{2026}",
+            "",
+            UiCmd::ConfirmCloseHandle(FoundHandle {
+                pid: p.pid,
+                process: p.name.clone(),
+                handle: e.value,
+                type_name: Arc::from(type_name),
+                name: name.unwrap_or("this handle").to_string(),
+            }),
+        );
+    }
 }
 
 /// For a row of handles grouped by name.
@@ -764,7 +771,16 @@ pub fn handle_pane(
     let e = &report.entries[index];
     let type_name = report.type_name(e.type_index);
     let name = report.names.get(index).cloned().flatten();
-    title(ui, format!("Handle 0x{:X}", e.value), Some(&type_name));
+    let number = crate::details::handles::value_text(e.value);
+    title(
+        ui,
+        if cfg!(windows) {
+            format!("Handle {number}")
+        } else {
+            format!("File descriptor {number}")
+        },
+        Some(&type_name),
+    );
     facts(ui, ("handle-facts", e.value), |ui| {
         match &name {
             Some(n) => fact(ui, "Name", (**n).to_string()),
@@ -774,29 +790,37 @@ pub fn handle_pane(
                 RichText::new("not read: Resolve names reads it").color(theme::TEXT_DIM),
             ),
         }
-        fact(
-            ui,
-            "Access",
-            format!(
-                "0x{:08X}  ·  {}",
-                e.access,
-                access::rights(&type_name, e.access).join(", ")
-            ),
-        );
-        let attributes = access::attributes(e.attributes);
-        fact(
-            ui,
-            "Attributes",
-            if attributes.is_empty() {
-                "none".to_string()
-            } else {
-                attributes.join(", ")
-            },
-        );
+        if cfg!(windows) {
+            fact(
+                ui,
+                "Access",
+                format!(
+                    "0x{:08X}  ·  {}",
+                    e.access,
+                    access::rights(&type_name, e.access).join(", ")
+                ),
+            );
+            let attributes = access::attributes(e.attributes);
+            fact(
+                ui,
+                "Attributes",
+                if attributes.is_empty() {
+                    "none".to_string()
+                } else {
+                    attributes.join(", ")
+                },
+            );
+        } else {
+            fact(
+                ui,
+                "Open for",
+                crate::details::handles::access_text(e.access),
+            );
+        }
         if e.object != 0 {
             fact(
                 ui,
-                "Object",
+                if cfg!(windows) { "Object" } else { "File id" },
                 RichText::new(format!("0x{:X}", e.object)).monospace(),
             );
         }
@@ -833,16 +857,29 @@ pub fn handle_pane(
                     ui.horizontal_wrapped(|ui| {
                         link_to(ui, h.pid, &h.name, snap, out);
                         ui.label(
-                            RichText::new(format!(
-                                "{} {}  ·  {}",
-                                h.handles.len(),
-                                if h.handles.len() == 1 {
-                                    "handle"
-                                } else {
-                                    "handles"
-                                },
-                                access::rights(&type_name, h.access).join(", ")
-                            ))
+                            RichText::new(if cfg!(windows) {
+                                format!(
+                                    "{} {}  ·  {}",
+                                    h.handles.len(),
+                                    if h.handles.len() == 1 {
+                                        "handle"
+                                    } else {
+                                        "handles"
+                                    },
+                                    access::rights(&type_name, h.access).join(", ")
+                                )
+                            } else {
+                                format!(
+                                    "open {} {}  ·  {}",
+                                    h.handles.len(),
+                                    if h.handles.len() == 1 {
+                                        "time"
+                                    } else {
+                                        "times"
+                                    },
+                                    crate::details::handles::access_text(h.access)
+                                )
+                            })
                             .color(theme::TEXT_WEAK),
                         );
                     });
@@ -853,19 +890,22 @@ pub fn handle_pane(
 
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
-        button(
-            ui,
-            "Close handle\u{2026}",
-            "Closes it inside the process, without it knowing",
-            out,
-            UiCmd::ConfirmCloseHandle(FoundHandle {
-                pid: p.pid,
-                process: p.name.clone(),
-                handle: e.value,
-                type_name: type_name.clone(),
-                name: name.as_deref().unwrap_or("this handle").to_string(),
-            }),
-        );
+        // Linux does not let one program close another's files.
+        if cfg!(windows) {
+            button(
+                ui,
+                "Close handle\u{2026}",
+                "Closes it inside the process, without it knowing",
+                out,
+                UiCmd::ConfirmCloseHandle(FoundHandle {
+                    pid: p.pid,
+                    process: p.name.clone(),
+                    handle: e.value,
+                    type_name: type_name.clone(),
+                    name: name.as_deref().unwrap_or("this handle").to_string(),
+                }),
+            );
+        }
         if let Some(n) = &name {
             button(
                 ui,
