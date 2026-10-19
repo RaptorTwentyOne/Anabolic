@@ -123,10 +123,14 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     // The compositor finds the window's icon through the .desktop file of
-    // this name (see `--install`); eframe keeps its state under it too.
+    // this name (see `--install`). The window's state is kept with the
+    // rest of Anabolic's files, not in a folder of that name.
     #[cfg(target_os = "linux")]
     {
         options.viewport = std::mem::take(&mut options.viewport).with_app_id(desktop::APP_ID);
+        if options.persistence_path.is_none() {
+            options.persistence_path = data_dir().map(|dir| dir.join("app.ron"));
+        }
     }
     let result = eframe::run_native(
         "Anabolic",

@@ -22,9 +22,6 @@ const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const SHORTCUTS: &str = "org.freedesktop.portal.GlobalShortcuts";
 
-/// The id portals know Anabolic by (its .desktop file's name).
-pub const APP_ID: &str = "io.github.RaptorTwentyOne.Anabolic";
-
 /// The one shortcut Anabolic asks for.
 const SHORTCUT: &str = "bring-to-front";
 
@@ -116,7 +113,7 @@ fn bind(conn: &Connection, trigger: &str) -> Result<OwnedObjectPath, String> {
         PORTAL_PATH,
         Some("org.freedesktop.host.portal.Registry"),
         "Register",
-        &(APP_ID, HashMap::<&str, Value<'_>>::new()),
+        &(crate::APP_ID, HashMap::<&str, Value<'_>>::new()),
     );
     // Tokens name the requests; each must be new.
     static NEXT: AtomicU32 = AtomicU32::new(0);

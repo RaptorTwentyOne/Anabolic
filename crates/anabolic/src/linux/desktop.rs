@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The app id the window carries, and the .desktop file's name.
-pub const APP_ID: &str = "anabolic";
+/// The app id the window carries, and the .desktop file's and icon's name.
+pub use anabolic_core::APP_ID;
 
 /// $XDG_DATA_HOME, usually ~/.local/share.
 fn data_home() -> Option<PathBuf> {
@@ -82,13 +82,17 @@ mod tests {
     fn describes_the_program_where_the_menu_looks() {
         let files = files(Path::new("/opt/anabolic/anabolic")).unwrap();
         let desktop = String::from_utf8(files[0].1.clone()).unwrap();
-        assert!(files[0].0.ends_with("applications/anabolic.desktop"));
+        assert!(
+            files[0]
+                .0
+                .ends_with(format!("applications/{APP_ID}.desktop"))
+        );
         assert!(desktop.contains("Exec=\"/opt/anabolic/anabolic\" %U"));
-        assert!(desktop.contains("StartupWMClass=anabolic"));
+        assert!(desktop.contains(&format!("StartupWMClass={APP_ID}")));
         assert!(
             files[1]
                 .0
-                .ends_with("icons/hicolor/scalable/apps/anabolic.svg")
+                .ends_with(format!("icons/hicolor/scalable/apps/{APP_ID}.svg"))
         );
         assert!(files[1].1.starts_with(b"<svg"));
         assert!(files[2].1.starts_with(b"\x89PNG"));

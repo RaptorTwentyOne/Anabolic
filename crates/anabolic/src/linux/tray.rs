@@ -418,7 +418,7 @@ impl Tray {
             .collect();
         let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
         hints.insert("urgency", Value::U8(if warning { 2 } else { 1 }));
-        hints.insert("desktop-entry", Value::from(anabolic_core::hotkey::APP_ID));
+        hints.insert("desktop-entry", Value::from(anabolic_core::APP_ID));
         hints.insert(
             "image-data",
             Value::from((width, height, width * 4, true, 8i32, 4i32, rgba)),

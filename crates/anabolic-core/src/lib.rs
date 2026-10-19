@@ -99,6 +99,10 @@ mod util;
 
 pub use util::random_hex;
 
+/// The name desktops know Anabolic by on Linux: its .desktop file, the
+/// window's app id, its portal registration and its notifications.
+pub const APP_ID: &str = "io.github.RaptorTwentyOne.Anabolic";
+
 pub use collector::{Collector, CollectorConfig, Command};
 pub use enrich::{Arch, Enriched, Icon, Integrity, ProcessDetails};
 pub use model::*;
