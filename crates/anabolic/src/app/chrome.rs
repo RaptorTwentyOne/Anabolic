@@ -19,7 +19,20 @@ impl App {
             .map(|g| self.table.groups[g as usize].id.clone());
         let mut jump: Option<isize> = None;
         let mut cycle_view = false;
+        let mut step: Option<bool> = None;
         ctx.input_mut(|i| {
+            // Back and forward, as in a browser. In a text field Alt and the
+            // arrows move by words.
+            if i.pointer.button_pressed(egui::PointerButton::Extra1)
+                || (!typing && i.consume_key(Modifiers::ALT, Key::ArrowLeft))
+            {
+                step = Some(false);
+            }
+            if i.pointer.button_pressed(egui::PointerButton::Extra2)
+                || (!typing && i.consume_key(Modifiers::ALT, Key::ArrowRight))
+            {
+                step = Some(true);
+            }
             if i.consume_key(Modifiers::COMMAND, Key::F) {
                 self.focus_search = true;
                 self.settings.tab = Tab::Processes;
@@ -137,6 +150,9 @@ impl App {
         });
         if cycle_view {
             self.set_view(self.settings.view.next());
+        }
+        if let Some(forward) = step {
+            self.step(forward);
         }
         if let Some(delta) = jump
             && rows > 0

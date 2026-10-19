@@ -28,6 +28,7 @@ impl App {
     /// Switches to the process list, selects `key` and makes sure its row is
     /// visible (expanding parents/groups, dropping a filter that hides it).
     pub(super) fn go_to(&mut self, key: ProcKey) {
+        self.jumped();
         self.settings.tab = Tab::Processes;
         self.select(Some(key));
         match self.settings.view {
@@ -256,10 +257,12 @@ impl App {
                     self.startup_watch.set_enabled(*item, on);
                 }
                 UiCmd::SelectService(name) => {
+                    self.jumped();
                     self.settings.tab = Tab::Services;
                     self.services.selected = Some(name);
                 }
                 UiCmd::ShowServices(pid) => {
+                    self.jumped();
                     self.settings.tab = Tab::Services;
                     self.services.show_pid(pid);
                 }

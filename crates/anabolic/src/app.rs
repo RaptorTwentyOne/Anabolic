@@ -33,6 +33,7 @@ mod chrome;
 mod commands;
 mod inspect;
 pub(crate) mod mcp;
+mod places;
 mod settings_page;
 mod update;
 mod window;
@@ -265,6 +266,8 @@ pub struct App {
     session_only: bool,
     /// New releases: checked for, installed, announced.
     update: update::UpdateState,
+    /// Back and forward.
+    places: places::Places,
     /// The window is a Wayland one: closing into the notification area
     /// closes it (see `windowless`).
     #[cfg(target_os = "linux")]
@@ -641,6 +644,7 @@ impl App {
             relaunching: false,
             session_only,
             update: update::UpdateState::new(&cc.egui_ctx),
+            places: Default::default(),
             #[cfg(target_os = "linux")]
             wayland: crate::windowless::on_wayland(cc),
             #[cfg(target_os = "linux")]
@@ -1421,6 +1425,7 @@ impl eframe::App for App {
         let mut later = Vec::new();
         self.toasts.show(&ctx, &mut later);
         self.handle(later);
+        self.note_place();
         self.maybe_pin();
         #[cfg(debug_assertions)]
         crate::shot::frame(&ctx);

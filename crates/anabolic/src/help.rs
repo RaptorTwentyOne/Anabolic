@@ -16,6 +16,11 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
                 "Processes, Performance, History, Rules, Services, Startup, Stutters, Network, \
                  Activity, MCP",
             ),
+            (
+                "Alt+← →",
+                "Back and forward through the pages and processes visited; the mouse's back and \
+                 forward buttons too",
+            ),
             ("Ctrl+H", "Find which process holds a file or handle"),
             ("Space", "Pause or resume the view"),
             ("F5", "Refresh now"),
@@ -72,7 +77,7 @@ fn shortcuts(ui: &mut Ui) {
             .show(ui, |ui| {
                 for (k, what) in rows {
                     key(ui, k);
-                    ui.label(RichText::new(*what).color(theme::TEXT_WEAK));
+                    ui.add(Label::new(RichText::new(*what).color(theme::TEXT_WEAK)).wrap());
                     ui.end_row();
                 }
             });

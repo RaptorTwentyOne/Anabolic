@@ -188,6 +188,7 @@ one in KDE's shortcut settings.
 |---|---|
 | Ctrl+1 … Ctrl+9, Ctrl+0 | Pages, in the order of the rail; Ctrl+0 is MCP |
 | Ctrl+, | Settings |
+| Alt+←, Alt+→ | Back and forward through the pages and processes visited; the mouse's back and forward buttons too |
 | Ctrl+F | Filter processes |
 | Ctrl+T | Tree, list or apps |
 | Ctrl+H | Find handle: who has this file or object open |
