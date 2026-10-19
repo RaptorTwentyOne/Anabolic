@@ -53,15 +53,28 @@ pub(super) fn board_fallback() -> Option<BoardInfo> {
 }
 
 /// Nominal MHz per processor (what 100 % performance means): the base
-/// frequency where the driver gives one (intel_pstate), else the highest.
+/// frequency where the driver gives one (intel_pstate), else the highest;
+/// a virtual machine without frequency scaling says only what /proc/cpuinfo
+/// reports.
 pub fn nominal_mhz(cpus: usize) -> Vec<u32> {
+    let reported: Vec<u32> = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (key, value) = l.split_once(':')?;
+            (key.trim() == "cpu MHz").then(|| value.trim().parse::<f32>().ok())?
+        })
+        .map(|mhz| mhz as u32)
+        .collect();
     (0..cpus)
         .map(|cpu| {
             let base = format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq");
             read(&format!("{base}/base_frequency"))
                 .or_else(|| read(&format!("{base}/cpuinfo_max_freq")))
                 .and_then(|khz| khz.parse::<u32>().ok())
-                .map_or(0, |khz| khz / 1000)
+                .map(|khz| khz / 1000)
+                .or_else(|| reported.get(cpu).copied())
+                .unwrap_or(0)
         })
         .collect()
 }

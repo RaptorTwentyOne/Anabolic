@@ -219,22 +219,19 @@ fn volumes() -> Vec<(String, Volume)> {
         let Some(dash) = fields.iter().position(|f| *f == "-") else {
             continue;
         };
-        let (Some(root), Some(mount), Some(source)) =
-            (fields.get(3), fields.get(4), fields.get(dash + 2))
+        let (Some(number), Some(mount)) = (fields.get(2), fields.get(4)) else {
+            continue;
+        };
+        // The block device by its numbers: the source's name can be a link
+        // (/dev/root, /dev/disk/by-uuid/…) that is not there to follow.
+        let Some(device) = std::fs::canonicalize(format!("/sys/dev/block/{number}"))
+            .ok()
+            .and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned()))
         else {
             continue;
         };
-        // Bind mounts and subvolumes show a file system again: once is enough.
-        let Some(device) = source.strip_prefix("/dev/") else {
-            continue;
-        };
-        let device = std::fs::canonicalize(format!("/dev/{device}"))
-            .ok()
-            .and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| device.to_string());
-        if *root != "/" && seen.contains(&device) {
-            continue;
-        }
+        // Bind mounts and subvolumes show a file system again: the first
+        // mount of it (usually the whole of it) is enough.
         if !seen.insert(device.clone()) {
             continue;
         }

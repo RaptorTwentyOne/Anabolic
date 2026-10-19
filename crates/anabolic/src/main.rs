@@ -10,6 +10,9 @@ mod access;
 mod activity_page;
 mod app;
 mod bench;
+#[cfg(target_os = "linux")]
+#[path = "linux/desktop.rs"]
+mod desktop;
 mod details;
 mod dialogs;
 mod displays_view;
@@ -49,9 +52,24 @@ use eframe::egui;
 fn main() -> eframe::Result {
     #[cfg(windows)]
     attach_parent_console();
+    let args: Vec<String> = std::env::args().collect();
+    #[cfg(target_os = "linux")]
+    if let Some(install) = args.iter().find_map(|a| match a.as_str() {
+        "--install" => Some(true),
+        "--uninstall" => Some(false),
+        _ => None,
+    }) {
+        match desktop::run(install) {
+            Ok(done) => println!("{done}"),
+            Err(e) => {
+                eprintln!("anabolic: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     // "Restart as admin" and updates start us while the instance we replace
     // closes.
-    let args: Vec<String> = std::env::args().collect();
     if let Some(pid) = args
         .iter()
         .position(|a| a == "--after")
@@ -79,7 +97,8 @@ fn main() -> eframe::Result {
     let elevated = anabolic_core::hardening::is_elevated();
 
     let draw = renderer();
-    let options = eframe::NativeOptions {
+    #[cfg_attr(windows, allow(unused_mut))]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(if elevated {
                 "Anabolic (Administrator)"
@@ -102,6 +121,12 @@ fn main() -> eframe::Result {
             .map(|dir| std::path::Path::new(&dir).join("app.ron")),
         ..Default::default()
     };
+    // The compositor finds the window's icon through the .desktop file of
+    // this name (see `--install`); eframe keeps its state under it too.
+    #[cfg(target_os = "linux")]
+    {
+        options.viewport = std::mem::take(&mut options.viewport).with_app_id(desktop::APP_ID);
+    }
     let result = eframe::run_native(
         "Anabolic",
         options,

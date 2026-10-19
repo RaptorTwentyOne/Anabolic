@@ -9,8 +9,12 @@ env:
 
 jobs:
   check:
-    name: Format, lint, test
-    runs-on: windows-latest
+    name: Format, lint, test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -22,8 +26,12 @@ jobs:
       - run: cargo test --workspace
 
   msrv:
-    name: Builds with the oldest Rust it claims (1.95)
-    runs-on: windows-latest
+    name: Builds with the oldest Rust it claims (1.95, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.95

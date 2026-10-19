@@ -1,8 +1,8 @@
 name: Release
 
-# Pushing a tag such as v0.1.0 builds anabolic.exe and puts it, with the
-# licenses and the third-party notices, on a draft release to look over
-# before publishing.
+# Pushing a tag such as v0.1.0 builds anabolic.exe and the Linux executable
+# and puts each, with the licenses and the third-party notices, on a draft
+# release to look over before publishing.
 on:
   push:
     tags: ["v*"]
@@ -14,7 +14,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -33,6 +33,31 @@ jobs:
           Copy-Item target/release/anabolic.exe, README.md, LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-NOTICES.html $name
           Copy-Item crates/anabolic/assets/fonts/OFL.txt "$name/OFL-Aldrich.txt"
           Compress-Archive $name "$name.zip"
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: anabolic-*.zip
+
+  linux:
+    # The oldest runner: the executable then needs no newer C library than
+    # Ubuntu 22.04's (glibc 2.35), which every current distribution has.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - run: cargo install cargo-about --locked --features cli --version 0.9.2
+      - run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.html
+      # A zip like Windows', which the built-in updater unpacks; the
+      # .desktop file and icon go in place with ./anabolic --install.
+      - name: Package
+        run: |
+          name="anabolic-$GITHUB_REF_NAME-linux-x64"
+          mkdir "$name"
+          cp target/release/anabolic README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.html "$name"
+          cp crates/anabolic/assets/fonts/OFL.txt "$name/OFL-Aldrich.txt"
+          zip -r "$name.zip" "$name"
       - uses: softprops/action-gh-release@v2
         with:
           draft: true

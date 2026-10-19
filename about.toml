@@ -1,6 +1,6 @@
-# Licenses of the crates compiled into anabolic.exe, for
-# THIRD-PARTY-NOTICES.html (cargo about generate about.hbs). Where a crate
-# offers a choice, the first accepted one here is used.
+# Licenses of the crates compiled into Anabolic, on Windows and on Linux,
+# for THIRD-PARTY-NOTICES.html (cargo about generate about.hbs). Where a
+# crate offers a choice, the first accepted one here is used.
 accepted = [
     "MIT",
     "Apache-2.0",
@@ -14,6 +14,6 @@ accepted = [
     "OFL-1.1",
     "Ubuntu-font-1.0",
 ]
-targets = ["x86_64-pc-windows-msvc"]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
