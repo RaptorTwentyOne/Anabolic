@@ -83,7 +83,14 @@ impl Col {
             Col::Arch => "Arch",
             Col::Session => "Session",
             Col::Description => "Description",
-            Col::Company => "Company",
+            // On Linux the package a program came with.
+            Col::Company => {
+                if cfg!(windows) {
+                    "Company"
+                } else {
+                    "Package"
+                }
+            }
             Col::Version => "Version",
             Col::Path => "Path",
             Col::CommandLine => "Command line",

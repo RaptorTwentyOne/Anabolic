@@ -1167,7 +1167,7 @@ fn modules_tab(
                     ("Base", false),
                     ("Size", true),
                     ("Description", false),
-                    ("Company", false),
+                    (if cfg!(windows) { "Company" } else { "Package" }, false),
                     ("Version", false),
                     ("Path", false),
                 ]
