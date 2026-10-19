@@ -21,6 +21,16 @@ pub enum Signature {
     /// Signed, but the signature does not hold (tampered, untrusted root,
     /// expired without a timestamp…): Windows' reason.
     Invalid(String),
+    /// Linux: put in place by the system's package manager, which vouches
+    /// for it the way a signature does. `verified` when the manager's
+    /// record of the file's hash was compared with the file (pacman keeps
+    /// one): still as installed, or changed since.
+    Package {
+        manager: &'static str,
+        name: String,
+        version: String,
+        verified: Option<bool>,
+    },
 }
 
 /// What the PE header says about how the file was built.
@@ -46,6 +56,35 @@ pub struct PeFacts {
     pub dotnet: bool,
 }
 
+/// What the ELF headers say about how a Linux program or library was
+/// built, and the exploit mitigations it was built with.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ElfFacts {
+    pub machine: &'static str,
+    /// A shared library rather than a program.
+    pub library: bool,
+    /// Needs no shared libraries: everything is linked in.
+    pub static_linked: bool,
+    /// A program loaded at a random address (position independent).
+    pub pie: bool,
+    /// Its relocations turn read-only once loaded (RELRO), all of them
+    /// before it starts (`bind_now`: full RELRO).
+    pub relro: bool,
+    pub bind_now: bool,
+    /// Its stack is not executable.
+    pub nx_stack: bool,
+    /// Stack canaries and _FORTIFY_SOURCE, as its symbols show them.
+    pub stack_protector: bool,
+    pub fortify: bool,
+    /// Intel CET: indirect branch tracking and shadow stacks.
+    pub cet: bool,
+    pub build_id: Option<String>,
+    /// Without its own symbol table (debug symbols elsewhere, or none).
+    pub stripped: bool,
+    /// The dynamic loader it asks for.
+    pub interpreter: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FileFacts {
     pub path: Arc<str>,
@@ -54,7 +93,10 @@ pub struct FileFacts {
     pub modified: Option<i64>,
     pub sha256: Option<String>,
     pub signature: Signature,
+    /// A Windows program file.
     pub pe: Option<PeFacts>,
+    /// A Linux one.
+    pub elf: Option<ElfFacts>,
     pub took: Duration,
 }
 

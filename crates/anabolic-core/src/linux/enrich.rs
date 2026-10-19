@@ -1,5 +1,6 @@
 //! Per-process facts on Linux: the executable, command line, owner, the
-//! machine it is built for, and what rights it runs with.
+//! machine it is built for, what rights it runs with, and what it is: its
+//! desktop entry (name, icon) and the package it came with.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -89,6 +90,9 @@ fn enrich(request: &EnrichRequest, caches: &mut Caches) -> ProcessDetails {
     let mut d = ProcessDetails::default();
     if pid == crate::scan::KERNEL_PID {
         d.description = Some("The Linux kernel's own threads".into());
+        d.version = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .ok()
+            .map(|v| v.trim().to_string());
         d.user = Some("root".into());
         d.critical = true;
         return d;
@@ -133,7 +137,49 @@ fn enrich(request: &EnrichRequest, caches: &mut Caches) -> ProcessDetails {
     d.elevated = Some(effective_root || caps != 0);
     // Ending init ends the system.
     d.critical = pid == 1;
+    identify(pid, &mut d);
     d
+}
+
+/// What the process is: its desktop entry's name and icon, and the
+/// package it came with (the package's description when the desktop has
+/// no entry for it). A Flatpak app is its app.
+fn identify(pid: u32, d: &mut ProcessDetails) {
+    let argv = procfs::argv(pid);
+    let argv0 = argv.first().map(String::as_str);
+    // Without the right to look into it, the name it was started as is the
+    // best guide to what it is: used to look it up, not shown as its path.
+    let program = d.path.clone().or_else(|| {
+        argv0
+            .filter(|a| a.starts_with('/') && std::path::Path::new(a).is_file())
+            .map(str::to_string)
+    });
+    let comm = procfs::stat(pid).map(|s| s.comm).unwrap_or_default();
+    let flatpak = crate::packages::flatpak(pid);
+    let app = crate::apps::find(
+        program.as_deref(),
+        argv0,
+        &comm,
+        flatpak.as_ref().map(|f| f.name.as_str()),
+    );
+    let package = flatpak
+        .map(Arc::new)
+        .or_else(|| program.as_deref().and_then(crate::packages::owner));
+    d.description = app
+        .as_ref()
+        .map(|a| a.name.clone())
+        .or_else(|| package.as_ref().and_then(|p| p.description.clone()));
+    if let Some(p) = &package {
+        d.company = Some(p.label());
+        d.version = Some(p.version.clone()).filter(|v| !v.is_empty());
+    }
+    // The entry's icon, else one named after the program, as many are.
+    let file = program.as_deref().and_then(|p| p.rsplit('/').next());
+    d.icon = app
+        .as_ref()
+        .and_then(|a| a.icon.as_deref())
+        .and_then(crate::apps::icon)
+        .or_else(|| file.and_then(crate::apps::icon));
 }
 
 #[cfg(test)]
@@ -154,5 +200,48 @@ mod tests {
         assert!(d.user.is_some());
         let uid = unsafe { libc::getuid() };
         assert_eq!(user_name(&uid.to_le_bytes()), d.user);
+    }
+
+    /// Every process this user runs, enriched, and what it costs.
+    #[test]
+    fn describes_the_desktop() {
+        let uid = unsafe { libc::getuid() };
+        let mine: Vec<ProcKey> = procfs::pids()
+            .into_iter()
+            .filter(|&pid| procfs::uid(pid) == Some(uid))
+            .filter_map(|pid| {
+                Some(ProcKey {
+                    pid,
+                    create_time: procfs::stat(pid)?.create_time(),
+                })
+            })
+            .collect();
+        let mut caches = Caches::default();
+        let request = |key| EnrichRequest {
+            key,
+            sid: None,
+            nt_path: None,
+        };
+        let started = std::time::Instant::now();
+        let details: Vec<ProcessDetails> = mine
+            .iter()
+            .map(|&k| enrich(&request(k), &mut caches))
+            .collect();
+        let first = started.elapsed();
+        let started = std::time::Instant::now();
+        for &k in &mine {
+            enrich(&request(k), &mut caches);
+        }
+        let again = started.elapsed();
+        let named = details.iter().filter(|d| d.description.is_some()).count();
+        let packaged = details.iter().filter(|d| d.company.is_some()).count();
+        let icons = details.iter().filter(|d| d.icon.is_some()).count();
+        eprintln!(
+            "{} processes: {named} described, {packaged} packaged, {icons} with icons; \
+             first pass {first:?}, then {:?} each",
+            mine.len(),
+            again / mine.len().max(1) as u32
+        );
+        assert!(named > 0);
     }
 }

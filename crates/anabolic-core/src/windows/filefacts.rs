@@ -53,6 +53,7 @@ pub fn file_facts(path: &str) -> Result<FileFacts, String> {
         sha256: sha256(path),
         signature: signature(path),
         pe,
+        elf: None,
         took: started.elapsed(),
     })
 }

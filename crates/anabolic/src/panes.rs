@@ -443,10 +443,34 @@ fn signature_text(s: &Signature) -> (String, egui::Color32) {
             ),
             theme::GOOD,
         ),
-        Signature::Unsigned => ("Not signed".into(), theme::ELEVATED_TEXT),
+        Signature::Unsigned if cfg!(windows) => ("Not signed".into(), theme::ELEVATED_TEXT),
+        // Linux files carry no signature: no package vouches for this one.
+        Signature::Unsigned => (
+            "Not from a package: built or copied here by hand".into(),
+            theme::ELEVATED_TEXT,
+        ),
         Signature::Invalid(why) => (format!("Signature does not hold: {why}"), theme::BAD),
+        Signature::Package {
+            manager,
+            name,
+            version,
+            verified,
+        } => {
+            let from = format!("From the package {name} {version} ({manager})");
+            match verified {
+                Some(true) => (format!("{from}, unchanged since installed"), theme::GOOD),
+                Some(false) => (
+                    format!("{from}, but changed since it was installed"),
+                    theme::BAD,
+                ),
+                None => (from, theme::GOOD),
+            }
+        }
     }
 }
+
+/// What Windows calls a file's company: on Linux, the package it came with.
+const COMPANY: &str = if cfg!(windows) { "Company" } else { "Package" };
 
 pub fn module_pane(ui: &mut Ui, m: &ModuleRow, panes: &Panes, out: &mut Vec<UiCmd>) {
     let path = m.info.path.clone();
@@ -469,7 +493,7 @@ pub fn module_pane(ui: &mut Ui, m: &ModuleRow, panes: &Panes, out: &mut Vec<UiCm
         );
         fact(ui, "Size", fmt::bytes(m.info.size));
         if let Some(c) = &m.company {
-            fact(ui, "Company", c.clone());
+            fact(ui, COMPANY, c.clone());
         }
         if let Some(v) = &m.version {
             fact(ui, "Version", v.clone());
@@ -521,6 +545,26 @@ pub fn module_pane(ui: &mut Ui, m: &ModuleRow, panes: &Panes, out: &mut Vec<UiCm
                         format!("moved from its preferred 0x{:X}", pe.image_base)
                     };
                     fact(ui, "Loaded", base);
+                }
+                if let Some(elf) = &f.elf {
+                    let kind = match (elf.library, elf.static_linked) {
+                        (true, _) => "shared library",
+                        (false, true) => "program, statically linked",
+                        (false, false) => "program",
+                    };
+                    let symbols = if elf.stripped { ", stripped" } else { "" };
+                    fact(ui, "Built", format!("{} {kind}{symbols}", elf.machine));
+                    fact(ui, "Hardening", elf_hardening(elf));
+                    if let Some(id) = &elf.build_id {
+                        fact(
+                            ui,
+                            "Build ID",
+                            RichText::new(id)
+                                .monospace()
+                                .size(11.0)
+                                .color(theme::TEXT_WEAK),
+                        );
+                    }
                 }
                 if let Some(hash) = &f.sha256 {
                     fact(
@@ -578,14 +622,36 @@ fn linked_text(stamp: u32) -> String {
 
 /// The exploit mitigations the file opts into, those it lacks dimmed.
 fn hardening(pe: &anabolic_core::filefacts::PeFacts) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    let items = [
+    mitigations(&[
         ("ASLR", pe.aslr),
         ("high-entropy ASLR", pe.high_entropy),
         ("DEP", pe.dep),
         ("CFG", pe.cfg),
         ("integrity check", pe.force_integrity),
-    ];
+    ])
+}
+
+/// The same for a Linux file: a random load address (PIE; libraries always
+/// have one), read-only relocations, a stack that cannot run code, stack
+/// canaries, checked libc calls and Intel CET.
+fn elf_hardening(elf: &anabolic_core::filefacts::ElfFacts) -> egui::text::LayoutJob {
+    let relro = if elf.bind_now { "full RELRO" } else { "RELRO" };
+    let mut items = Vec::new();
+    if !elf.library {
+        items.push(("PIE", elf.pie));
+    }
+    items.extend([
+        (relro, elf.relro),
+        ("NX stack", elf.nx_stack),
+        ("stack protector", elf.stack_protector),
+        ("FORTIFY", elf.fortify),
+        ("CET", elf.cet),
+    ]);
+    mitigations(&items)
+}
+
+fn mitigations(items: &[(&str, bool)]) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
     for (i, (name, on)) in items.iter().enumerate() {
         if i > 0 {
             job.append(
