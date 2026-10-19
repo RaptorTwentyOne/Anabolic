@@ -85,22 +85,47 @@ pub fn kernel_modules(_devices: &DeviceMap) -> Vec<ModuleInfo> {
     out
 }
 
-/// Names addresses as `module+0x1234`.
+/// Names code addresses from the symbol tables of the files they lie in:
+/// `libc.so.6!__futex_abstimed_wait_common+0x12`, else `libc.so.6+0x8e4f2`.
+/// Distributions strip their libraries of everything but the exported
+/// functions, so a private function is named after the export before it
+/// only when that is close; otherwise by offset.
 #[derive(Default)]
 pub struct Symbolizer {
-    _private: (),
+    images: HashMap<Arc<str>, Option<Arc<crate::elf::Image>>>,
 }
 
 impl Symbolizer {
     pub fn name(&mut self, modules: &[ModuleInfo], address: u64) -> Option<String> {
         let m = module_at(modules, address)?;
-        Some(format!("{}+0x{:X}", m.name, address - m.base))
+        let image = self
+            .images
+            .entry(m.path.clone())
+            .or_insert_with(|| crate::elf::read(&m.path).map(Arc::new))
+            .clone();
+        let offset = address - m.base;
+        let named = image.and_then(|image| {
+            let (symbol, into) = image.function_at(offset.wrapping_add(image.first_vaddr))?;
+            Some(match into {
+                0 => format!("{}!{}", m.name, symbol.name),
+                into => format!("{}!{}+0x{into:X}", m.name, symbol.name),
+            })
+        });
+        Some(named.unwrap_or_else(|| format!("{}+0x{offset:X}", m.name)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_its_own_functions() {
+        let modules = process_modules(std::process::id()).unwrap();
+        let me = names_its_own_functions as *const () as u64;
+        let name = Symbolizer::default().name(&modules, me + 3).unwrap();
+        assert!(name.contains("names_its_own_functions+0x3"), "{name}");
+    }
 
     #[test]
     fn lists_own_program_and_libc() {

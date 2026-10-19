@@ -63,9 +63,18 @@ pub fn protection_label(_protection: u8) -> String {
     String::new()
 }
 
-/// Processes holding a file open (by inode): not tracked here.
-pub fn object_holders(_object: u64, _except: &[u32]) -> Result<Vec<Holder>, String> {
-    Err("Linux processes hold no kernel objects of other processes".into())
+/// The processes holding open the file an open file points at (`object`,
+/// as `handles` reports it), those in `except` left out.
+pub fn object_holders(object: u64, except: &[u32]) -> Result<Vec<Holder>, String> {
+    Ok(crate::handles::holders_of(object, except)?
+        .into_iter()
+        .map(|(pid, name, handles, access)| Holder {
+            pid,
+            name,
+            handles,
+            access,
+        })
+        .collect())
 }
 
 /// Whether `status` from `Flags` means it has not ended.

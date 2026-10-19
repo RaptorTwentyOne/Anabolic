@@ -161,7 +161,7 @@ impl HandleView {
                 type_ok(e.type_index)
                     && (!self.table.filtering()
                         || self.table.matches(&[
-                            &format!("{:X}", e.value),
+                            &value_text(e.value),
                             &report.type_name(e.type_index),
                             name(i as usize),
                         ]))

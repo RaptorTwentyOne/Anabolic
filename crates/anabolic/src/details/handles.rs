@@ -1,7 +1,53 @@
 //! The Handles tab: what a process has open, by type and name, with the
-//! side pane for one handle.
+//! side pane for one handle. On Linux these are its open files (file
+//! descriptors), numbered from 0 and named as /proc gives them.
 
 use super::*;
+
+/// A handle's number as the system writes it: hex on Windows, a plain file
+/// descriptor number on Linux.
+pub(super) fn value_text(value: u64) -> String {
+    if cfg!(windows) {
+        format!("0x{value:X}")
+    } else {
+        value.to_string()
+    }
+}
+
+/// What a handle may do: Windows' access mask, or on Linux whether the
+/// file is open for reading, writing or both.
+fn access_text(access: u32) -> String {
+    if cfg!(windows) {
+        return format!("0x{access:08X}");
+    }
+    match access {
+        1 => "read".into(),
+        2 => "write".into(),
+        3 => "read, write".into(),
+        _ => String::new(),
+    }
+}
+
+/// Windows' words, or Linux's.
+#[cfg(windows)]
+mod words {
+    pub const READING: &str = "Reading the handle table…";
+    pub const COUNTED: &str = "handles";
+    pub const SOURCE: &str = "read from the kernel handle table, the process was not opened";
+    pub const FILTER: &str = "Filter: handle, type, name";
+    pub const NUMBER: &str = "Handle";
+    pub const EVERY: &str = "Every handle";
+}
+
+#[cfg(target_os = "linux")]
+mod words {
+    pub const READING: &str = "Reading its open files…";
+    pub const COUNTED: &str = "open files";
+    pub const SOURCE: &str = "read from /proc, the process was not stopped";
+    pub const FILTER: &str = "Filter: number, type, name";
+    pub const NUMBER: &str = "File";
+    pub const EVERY: &str = "Every open file";
+}
 
 pub(super) fn handles_tab(
     ui: &mut Ui,
@@ -24,26 +70,30 @@ pub(super) fn handles_tab(
         if ui.add_enabled(!busy, egui::Button::new("Refresh")).clicked() {
             out.push(UiCmd::InspectHandles { key: p.key, names: false });
         }
-        if ui
-            .add_enabled(!busy, egui::Button::new("Resolve names"))
-            .on_hover_text(
-                "Duplicates every handle into Anabolic to ask for its name (file paths, registry keys, \
-                 event names, target processes). Anti-cheat protected games may treat this as tampering.",
-            )
-            .clicked()
+        // Linux names every open file as it lists it: nothing to resolve.
+        if cfg!(windows)
+            && ui
+                .add_enabled(!busy, egui::Button::new("Resolve names"))
+                .on_hover_text(
+                    "Duplicates every handle into Anabolic to ask for its name (file paths, registry keys, \
+                     event names, target processes). Anti-cheat protected games may treat this as tampering.",
+                )
+                .clicked()
         {
             out.push(UiCmd::ConfirmResolveNames(p.key));
         }
         if busy {
             ui.spinner();
-            ui.label(RichText::new("Reading the handle table…").color(theme::TEXT_WEAK));
+            ui.label(RichText::new(words::READING).color(theme::TEXT_WEAK));
         } else if let Some(r) = &current {
             ui.label(
                 RichText::new(format!(
-                    "{} handles  ·  {} system-wide  ·  {}  ·  read from the kernel handle table, the process was not opened",
+                    "{} {}  ·  {} system-wide  ·  {}  ·  {}",
                     fmt::count(r.entries.len() as u64),
+                    words::COUNTED,
                     fmt::count(r.system_total as u64),
-                    fmt::millis(r.took)
+                    fmt::millis(r.took),
+                    words::SOURCE,
                 ))
                 .small()
                 .color(theme::TEXT_WEAK),
@@ -185,13 +235,11 @@ pub(super) fn handles_tab(
             report.entries.len()
         };
         ui.horizontal(|ui| {
-            changed |= view
-                .table
-                .filter_box(ui, "Filter: handle, type, name", shown, total);
+            changed |= view.table.filter_box(ui, words::FILTER, shown, total);
             if report.resolved > 0 {
                 ui.add_space(8.0);
                 ui.selectable_value(&mut view.by_name, true, "Grouped by name");
-                ui.selectable_value(&mut view.by_name, false, "Every handle");
+                ui.selectable_value(&mut view.by_name, false, words::EVERY);
                 if report.resolved < report.entries.len() {
                     ui.label(
                         RichText::new(format!(
@@ -256,7 +304,7 @@ pub(super) fn handles_tab(
                 .column(Column::initial(100.0))
                 .column(Column::remainder().clip(true))
                 .header(20.0, |mut h| {
-                    for (i, t) in ["Handle", "Type", "Access", "Name / target"]
+                    for (i, t) in [words::NUMBER, "Type", "Access", "Name / target"]
                         .into_iter()
                         .enumerate()
                     {
@@ -271,14 +319,14 @@ pub(super) fn handles_tab(
                         let e = &report.entries[i];
                         row.set_selected(selected == Some(e.value));
                         row.col(|ui| {
-                            ui.label(RichText::new(format!("0x{:X}", e.value)).monospace());
+                            ui.label(RichText::new(value_text(e.value)).monospace());
                         });
                         row.col(|ui| {
                             ui.label(&*report.type_name(e.type_index));
                         });
                         row.col(|ui| {
                             ui.label(
-                                RichText::new(format!("0x{:08X}", e.access))
+                                RichText::new(access_text(e.access))
                                     .monospace()
                                     .color(theme::TEXT_WEAK),
                             );

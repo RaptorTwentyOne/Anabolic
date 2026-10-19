@@ -1,5 +1,6 @@
-//! The card for a process that is ending but cannot finish: who holds it,
-//! whether a driver or Windows protects it.
+//! The card for a process that is ending but cannot finish, or would not
+//! end: who holds it, whether a driver or the system protects it (Windows),
+//! whether its parent has collected it or it waits in the kernel (Linux).
 
 use super::*;
 
@@ -8,7 +9,24 @@ pub(super) fn needs_end_card(p: &ProcessInfo, view: &EndView) -> bool {
     p.ending || (p.threads == 0 && !p.is_pseudo()) || view.refused.contains(&p.key)
 }
 
+/// Asks for a fresh report when the one shown is old; the report, if any.
+fn current_report(p: &ProcessInfo, view: &EndView, out: &mut Vec<UiCmd>) -> Option<Arc<EndReport>> {
+    let report = view
+        .report
+        .as_ref()
+        .filter(|(r, _)| r.key == p.key)
+        .map(|(r, at)| (r.clone(), *at));
+    let fresh = report
+        .as_ref()
+        .is_some_and(|(_, at)| at.elapsed() < END_REFRESH);
+    if !fresh && view.pending != Some(p.key) {
+        out.push(UiCmd::WhyAlive(p.key));
+    }
+    report.map(|(r, _)| r)
+}
+
 /// Rights of Process handles, the ones worth naming.
+#[cfg(windows)]
 pub(super) fn process_access(access: u32) -> String {
     if access & 0x1F_FFFF == 0x1F_FFFF {
         return "full access".into();
@@ -35,6 +53,7 @@ pub(super) fn process_access(access: u32) -> String {
 }
 
 /// "It does not go away, and this is why", with what can be done.
+#[cfg(windows)]
 pub(super) fn end_card(
     ui: &mut Ui,
     p: &ProcessInfo,
@@ -42,19 +61,8 @@ pub(super) fn end_card(
     view: &EndView,
     out: &mut Vec<UiCmd>,
 ) {
-    let report = view
-        .report
-        .as_ref()
-        .filter(|(r, _)| r.key == p.key)
-        .map(|(r, at)| (r.clone(), *at));
-    let fresh = report
-        .as_ref()
-        .is_some_and(|(_, at)| at.elapsed() < END_REFRESH);
-    if !fresh && view.pending != Some(p.key) {
-        out.push(UiCmd::WhyAlive(p.key));
-    }
+    let report = current_report(p, view, out);
     ui.ctx().request_repaint_after(END_REFRESH);
-    let report = report.map(|(r, _)| r);
 
     let (title, color) = match &report {
         Some(r) if r.flags.deleting => ("Windows is ending it but cannot finish", theme::BAD),
@@ -243,6 +251,166 @@ pub(super) fn end_card(
                      handles, at the latest when they exit."
                         .into(),
                 );
+            }
+        });
+    ui.add_space(8.0);
+}
+
+/// "It does not go away, and this is why", with what can be done: on Linux
+/// a process that ended and was not collected, waits in the kernel, or is
+/// not Anabolic's to end.
+#[cfg(target_os = "linux")]
+pub(super) fn end_card(
+    ui: &mut Ui,
+    p: &ProcessInfo,
+    snap: &Snapshot,
+    view: &EndView,
+    out: &mut Vec<UiCmd>,
+) {
+    let report = current_report(p, view, out);
+    ui.ctx().request_repaint_after(END_REFRESH);
+    let waiting = |r: &EndReport| r.flags.exit_status == u32::from(b'D');
+    let (title, color) = match &report {
+        Some(r) if r.flags.deleting => (
+            "It has ended; its parent has not collected it",
+            theme::ELEVATED_TEXT,
+        ),
+        Some(r) if r.flags.protected => ("It is the system's own", theme::ELEVATED_TEXT),
+        Some(r) if waiting(r) => ("It waits inside the kernel", theme::BAD),
+        Some(r) if r.can_end == Some(false) => ("Anabolic may not end it", theme::ELEVATED_TEXT),
+        _ if p.ending => (
+            "It has ended; its parent has not collected it",
+            theme::ELEVATED_TEXT,
+        ),
+        _ => ("It could not be ended", theme::ELEVATED_TEXT),
+    };
+    Frame::new()
+        .fill(theme::RAISED)
+        .stroke(Stroke::new(1.0, color))
+        .inner_margin(Margin::symmetric(12, 8))
+        .corner_radius(4)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(widgets::icon(theme::icon::WARNING, 14.0).color(color));
+                ui.label(widgets::strong(title, theme::BODY).color(color));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if view.pending == Some(p.key) {
+                        ui.spinner();
+                    } else if ui
+                        .small_button("Check again")
+                        .on_hover_text("Reads its state again.")
+                        .clicked()
+                    {
+                        out.push(UiCmd::WhyAlive(p.key));
+                    }
+                });
+            });
+            if let Some((key, e)) = &view.error
+                && *key == p.key
+            {
+                ui.label(
+                    RichText::new(format!("Its state could not be read: {e}"))
+                        .color(theme::ELEVATED_TEXT),
+                );
+            }
+            let Some(r) = report else {
+                ui.label(RichText::new("Reading its state\u{2026}").color(theme::TEXT_WEAK));
+                return;
+            };
+            let weak = |ui: &mut Ui, text: String| {
+                ui.add(Label::new(RichText::new(text).color(theme::TEXT_WEAK)).wrap());
+            };
+            if r.flags.deleting {
+                weak(
+                    ui,
+                    "It has ended and does nothing: all that is left is its PID and exit status, \
+                     kept until its parent collects them. That parent has not, so it stays \
+                     listed; it goes away when the parent collects it, or when the parent \
+                     exits (then init does). It costs nothing meanwhile."
+                        .into(),
+                );
+                for h in &r.holders {
+                    let parent = snap
+                        .processes
+                        .iter()
+                        .find(|q| q.pid == h.pid && q.state != ProcState::Exited);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Its parent").color(theme::TEXT_WEAK));
+                        process_link(ui, h.pid, p.pid, snap, out);
+                        if let Some(parent) = parent
+                            && h.pid > 1
+                            && ui
+                                .small_button("End the parent\u{2026}")
+                                .on_hover_text(
+                                    "Ending the parent hands this one to init, which collects it \
+                                     at once.",
+                                )
+                                .clicked()
+                        {
+                            out.push(UiCmd::Kill {
+                                key: parent.key,
+                                tree: false,
+                            });
+                        }
+                    });
+                }
+                return;
+            }
+            if r.flags.protected {
+                weak(
+                    ui,
+                    if p.pid == 1 {
+                        "It is init, the first process: everything else runs under it, and the \
+                         system ends with it."
+                            .into()
+                    } else {
+                        "It is one of the kernel's own threads: only the kernel starts and ends \
+                         them."
+                            .into()
+                    },
+                );
+                return;
+            }
+            if waiting(&r) {
+                let at = r
+                    .guards
+                    .first()
+                    .map_or(String::new(), |(wchan, _)| format!(" (in {wchan})"));
+                weak(
+                    ui,
+                    format!(
+                        "It waits inside the kernel{at} and cannot be interrupted, not even by \
+                         SIGKILL: the signal takes effect the moment that wait ends. A network file \
+                         system that stopped answering, a device that went away or a driver that \
+                         hangs is the usual cause. The Threads tab shows where each thread waits."
+                    ),
+                );
+            }
+            if r.can_end == Some(false) {
+                weak(
+                    ui,
+                    "It belongs to another user: ending it needs the right to signal any process \
+                     (cap_kill), which Anabolic has once it is given its rights."
+                        .into(),
+                );
+            }
+            if let Some(e) = &r.open_error {
+                weak(ui, format!("Asking whether it may be ended failed: {e}."));
+            }
+            if r.can_end == Some(true) && !waiting(&r) {
+                weak(
+                    ui,
+                    "Linux lets Anabolic signal it and it is not stuck in the kernel; the \
+                     refusal may have been momentary."
+                        .into(),
+                );
+                if ui.button("End it").clicked() {
+                    out.push(UiCmd::Kill {
+                        key: p.key,
+                        tree: false,
+                    });
+                }
             }
         });
     ui.add_space(8.0);

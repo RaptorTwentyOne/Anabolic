@@ -138,7 +138,9 @@ pub enum UiCmd {
     FindText(String),
     /// Keep running in the notification area when the window closes.
     CloseToTray(bool),
-    /// Ask before closing handles inside another process.
+    /// Ask before closing handles inside another process (Windows: Linux
+    /// lets no program close another's files).
+    #[cfg_attr(not(windows), allow(dead_code))]
     ConfirmCloseHandles {
         pid: u32,
         process: Arc<str>,

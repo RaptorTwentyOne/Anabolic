@@ -167,6 +167,52 @@ pub fn sockets() -> (Vec<Socket>, Option<String>) {
     (all, error)
 }
 
+/// Every socket in words, by inode: "TCP 192.168.1.5:50312 → 1.2.3.4:443
+/// (Open)", "UDP 0.0.0.0:5353", "Unix /run/user/1000/bus". For naming
+/// open files (`handles`).
+pub(crate) fn names_by_inode() -> HashMap<u64, String> {
+    let mut out = HashMap::new();
+    let end = |(ip, port): (IpAddr, u16)| match ip {
+        IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+        v4 => format!("{v4}:{port}"),
+    };
+    for (file, what) in [
+        ("tcp", "TCP"),
+        ("tcp6", "TCP"),
+        ("udp", "UDP"),
+        ("udp6", "UDP"),
+    ] {
+        for (local, remote, state, inode) in table(file).unwrap_or_default() {
+            let tcp = what == "TCP";
+            let mut name = format!("{what} {}", end(local));
+            if !(remote.0.is_unspecified() && remote.1 == 0) {
+                name.push_str(&format!(" \u{2192} {}", end(remote)));
+            }
+            if let Some(state) = tcp_state(state).filter(|_| tcp) {
+                name.push_str(&format!(" ({})", state.label()));
+            }
+            out.insert(inode, name);
+        }
+    }
+    // Num RefCount Protocol Flags Type St Inode [Path]
+    for line in std::fs::read_to_string("/proc/net/unix")
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+    {
+        let f: Vec<&str> = line.split_ascii_whitespace().collect();
+        let Some(inode) = f.get(6).and_then(|i| i.parse::<u64>().ok()) else {
+            continue;
+        };
+        let name = match f.get(7) {
+            Some(path) => format!("Unix {path}"),
+            None => "Unix (unnamed)".to_string(),
+        };
+        out.insert(inode, name);
+    }
+    out
+}
+
 /// Drops one TCP connection of `pid` (IPv4) at once, as the kernel's socket
 /// diagnostics interface allows: the program sees it reset. Needs
 /// cap_net_admin.
