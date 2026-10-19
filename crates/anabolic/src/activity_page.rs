@@ -218,6 +218,9 @@ pub struct ActivityPage {
     everything: bool,
     /// What is being recorded, in words.
     what: String,
+    /// The start cards over a finished recording: "New recording" shows
+    /// them, and the recording stays until another starts.
+    choosing: bool,
     started: Option<SystemTime>,
     state: Option<RecorderState>,
     summary: ActivitySummary,
@@ -277,6 +280,7 @@ impl Default for ActivityPage {
             events: VecDeque::new(),
             first: 0,
             keep: KEEP,
+            choosing: false,
             everything: false,
             what: String::new(),
             started: None,
@@ -374,6 +378,19 @@ impl ActivityPage {
         self.recorder.is_some()
     }
 
+    /// The start cards are shown, not a recording.
+    pub fn starting(&self) -> bool {
+        !self.recording() && (self.events.is_empty() || self.choosing)
+    }
+
+    /// The start cards over a finished recording, or that recording again
+    /// (back and forward); nothing while one runs.
+    pub fn show_start(&mut self, start: bool) {
+        if !self.recording() && !self.events.is_empty() {
+            self.choosing = start;
+        }
+    }
+
     /// One past the last step's number.
     fn end(&self) -> u64 {
         self.first + self.events.len() as u64
@@ -397,6 +414,7 @@ impl ActivityPage {
 
     fn reset(&mut self, what: String, everything: bool) {
         self.clear();
+        self.choosing = false;
         self.error = None;
         self.summary = ActivitySummary::default();
         self.what = what;
@@ -1423,16 +1441,35 @@ pub fn show(
             if ui.button("Stop").clicked() {
                 page.stop();
             }
+        } else if page.choosing {
+            ui.label(
+                RichText::new(format!("Last recording: {}", page.what)).color(theme::TEXT_WEAK),
+            );
+            if ui
+                .button("Back to it")
+                .on_hover_text("It stays until another recording starts (also Alt+←)")
+                .clicked()
+            {
+                page.choosing = false;
+            }
         } else if !page.events.is_empty() {
             ui.label(widgets::strong(
                 format!("Recorded: {}", page.what),
                 theme::BODY,
             ));
-            if ui.button("New recording").clicked() {
-                page.clear();
+            if ui
+                .button("New recording")
+                .on_hover_text(
+                    "The ways to start one; this recording stays until another starts \
+                     (Alt+← comes back to it)",
+                )
+                .clicked()
+            {
+                page.choosing = true;
             }
         }
         if !page.visible.is_empty()
+            && !page.choosing
             && ui
                 .add_enabled(page.exporting.is_none(), egui::Button::new("Save as CSV"))
                 .on_hover_text(
@@ -1448,7 +1485,7 @@ pub fn show(
     if let Some(e) = &page.error {
         ui.label(RichText::new(e).color(theme::BAD));
     }
-    if !page.recording() && page.events.is_empty() {
+    if page.starting() {
         start_card(ui, page, snap);
         return;
     }

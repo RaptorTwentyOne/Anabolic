@@ -1,7 +1,8 @@
 //! Back and forward, as in a browser: Alt+← and Alt+→, or the mouse's back
 //! and forward buttons. A place is a page or a Performance view, with the
-//! process selected and its details' tab on the Processes page and the
-//! service selected on Services. Going to another page or view is a step,
+//! process selected and its details' tab on the Processes page, the
+//! service selected on Services, and on Activity its start cards or the
+//! recording. Going to another page or view is a step,
 //! and so is following a link to a process or a service on the same page;
 //! picking another row of a list is not.
 
@@ -17,14 +18,17 @@ pub(super) struct Place {
     selected: Option<ProcKey>,
     detail_tab: DetailTab,
     service: Option<Arc<str>>,
+    /// Activity shows its start cards, not a recording.
+    activity_start: bool,
 }
 
 impl Place {
     /// The page and view: what a step changes.
-    fn page(&self) -> (Tab, Option<PerfView>) {
+    fn page(&self) -> (Tab, Option<PerfView>, Option<bool>) {
         (
             self.tab,
             (self.tab == Tab::Performance).then_some(self.perf_view),
+            (self.tab == Tab::Activity).then_some(self.activity_start),
         )
     }
 }
@@ -84,6 +88,7 @@ impl App {
             selected: self.table.selected,
             detail_tab: self.detail_tab,
             service: self.services.selected.clone(),
+            activity_start: self.activity.starting(),
         }
     }
 
@@ -118,6 +123,7 @@ impl App {
                 self.detail_tab = place.detail_tab;
             }
             Tab::Services => self.services.selected = place.service,
+            Tab::Activity => self.activity.show_start(place.activity_start),
             _ => {}
         }
         let here = self.place();
@@ -136,6 +142,7 @@ mod tests {
             selected: None,
             detail_tab: DetailTab::General,
             service: None,
+            activity_start: false,
         }
     }
 
@@ -170,6 +177,18 @@ mod tests {
         places.note(at(Tab::Services));
         assert!(places.step(true, at(Tab::Services)).is_none());
         assert!(places.step(false, at(Tab::Services)).unwrap() == perf(PerfView::Disk));
+    }
+
+    #[test]
+    fn activity_start_cards_and_recording_are_two_places() {
+        let start = Place {
+            activity_start: true,
+            ..at(Tab::Activity)
+        };
+        let mut places = Places::default();
+        places.note(at(Tab::Activity));
+        places.note(start.clone());
+        assert!(places.step(false, start).unwrap() == at(Tab::Activity));
     }
 
     #[test]
