@@ -30,9 +30,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
-use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-
 use crate::model::{ProcKey, ProcState, Snapshot};
 
 pub const BUCKET_SECS: u64 = 10;
@@ -573,25 +570,44 @@ pub fn unix_now() -> u64 {
 /// The local date (`YYYY-MM-DD`) of a Unix time, and the seconds since
 /// local midnight.
 pub fn local_day(unix: u64) -> (String, u32) {
-    let ticks = (unix + 11_644_473_600) * 10_000_000;
-    let ft = FILETIME {
-        dwLowDateTime: ticks as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    };
-    let mut utc = SYSTEMTIME::default();
-    let mut local = SYSTEMTIME::default();
-    let ok = unsafe {
-        FileTimeToSystemTime(&ft, &mut utc).is_ok()
-            && SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_ok()
-    };
-    if !ok {
-        // UTC is still a usable day.
-        local = utc;
-    }
-    (
-        format!("{:04}-{:02}-{:02}", local.wYear, local.wMonth, local.wDay),
-        local.wHour as u32 * 3600 + local.wMinute as u32 * 60 + local.wSecond as u32,
-    )
+    let filetime = (unix as i64 + 11_644_473_600) * 10_000_000;
+    // "YYYY-MM-DD HH:MM:SS"; UTC is still a usable day when the local
+    // time cannot be had.
+    let text = crate::sysinfo::local_time(filetime).unwrap_or_else(|| {
+        let secs = unix % 86_400;
+        let (y, m, d) = civil_from_days((unix / 86_400) as i64);
+        format!(
+            "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}",
+            secs / 3600,
+            secs / 60 % 60,
+            secs % 60
+        )
+    });
+    let (day, time) = text.split_at(10.min(text.len()));
+    let mut parts = time
+        .trim()
+        .split(':')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    let (h, m, s) = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    (day.to_string(), h * 3600 + m * 60 + s)
+}
+
+/// Year, month and day of a count of days since 1970-01-01 (proleptic
+/// Gregorian), after Howard Hinnant's `civil_from_days`.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
 #[cfg(test)]

@@ -1,0 +1,303 @@
+//! Sockets from the kernel's tables in /proc/net, matched to the processes
+//! holding them through their open files; closing a connection through
+//! the socket diagnostics interface (what `ss -K` does).
+
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+use super::*;
+
+/// Which process holds each socket (by inode): finding out reads the name
+/// of every open file of every process, so it is done at most once a
+/// second, and only when a socket nobody is known to hold turns up.
+struct Owners {
+    by_inode: HashMap<u64, u32>,
+    scanned: Option<Instant>,
+}
+
+static OWNERS: LazyLock<Mutex<Owners>> = LazyLock::new(|| {
+    Mutex::new(Owners {
+        by_inode: HashMap::new(),
+        scanned: None,
+    })
+});
+
+fn scan_owners() -> HashMap<u64, u32> {
+    let mut out = HashMap::new();
+    for pid in crate::procfs::pids() {
+        let Ok(dir) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        for e in dir.flatten() {
+            let Ok(target) = std::fs::read_link(e.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy();
+            if let Some(inode) = target
+                .strip_prefix("socket:[")
+                .and_then(|s| s.strip_suffix(']'))
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                out.entry(inode).or_insert(pid);
+            }
+        }
+    }
+    out
+}
+
+/// The owners of these sockets, rescanning when one is unknown.
+fn owners(inodes: &[u64]) -> HashMap<u64, u32> {
+    let mut owners = OWNERS.lock().unwrap_or_else(|e| e.into_inner());
+    let unknown = inodes
+        .iter()
+        .any(|i| *i != 0 && !owners.by_inode.contains_key(i));
+    if unknown
+        && owners
+            .scanned
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(1))
+    {
+        owners.by_inode = scan_owners();
+        owners.scanned = Some(Instant::now());
+    }
+    inodes
+        .iter()
+        .filter_map(|i| Some((*i, *owners.by_inode.get(i)?)))
+        .collect()
+}
+
+/// An address as /proc/net prints it: 32-bit words in hex, each in the
+/// machine's byte order.
+fn address(hex: &str) -> Option<IpAddr> {
+    let words: Vec<u32> = (0..hex.len() / 8)
+        .map(|i| u32::from_str_radix(&hex[i * 8..i * 8 + 8], 16).ok())
+        .collect::<Option<_>>()?;
+    match words.len() {
+        1 => Some(IpAddr::V4(Ipv4Addr::from(words[0].to_ne_bytes()))),
+        4 => {
+            let mut bytes = [0u8; 16];
+            for (i, w) in words.iter().enumerate() {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
+            }
+            Some(ip6(bytes))
+        }
+        _ => None,
+    }
+}
+
+fn endpoint(text: &str) -> Option<(IpAddr, u16)> {
+    let (ip, port) = text.split_once(':')?;
+    Some((address(ip)?, u16::from_str_radix(port, 16).ok()?))
+}
+
+/// The kernel's TCP states, numbered as in /proc/net/tcp.
+fn tcp_state(code: u8) -> Option<TcpState> {
+    Some(match code {
+        1 => TcpState::Established,
+        2 => TcpState::SynSent,
+        3 => TcpState::SynReceived,
+        4 => TcpState::FinWait1,
+        5 => TcpState::FinWait2,
+        6 => TcpState::TimeWait,
+        7 => TcpState::Closed,
+        8 => TcpState::CloseWait,
+        9 => TcpState::LastAck,
+        10 => TcpState::Listen,
+        11 => TcpState::Closing,
+        _ => return None,
+    })
+}
+
+/// One line of a /proc/net table: local and remote end, state, inode.
+type Row = ((IpAddr, u16), (IpAddr, u16), u8, u64);
+
+fn table(file: &str) -> Result<Vec<Row>, String> {
+    let text = std::fs::read_to_string(format!("/proc/net/{file}"))
+        .map_err(|e| crate::util::error_text(&e))?;
+    Ok(text
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split_ascii_whitespace().collect();
+            Some((
+                endpoint(f.get(1)?)?,
+                endpoint(f.get(2)?)?,
+                u8::from_str_radix(f.get(3)?, 16).ok()?,
+                f.get(9)?.parse().ok()?,
+            ))
+        })
+        .collect())
+}
+
+pub fn sockets() -> (Vec<Socket>, Option<String>) {
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+    for (file, proto, what) in [
+        ("tcp", Proto::Tcp, "TCP"),
+        ("tcp6", Proto::Tcp, "TCP over IPv6"),
+        ("udp", Proto::Udp, "UDP"),
+        ("udp6", Proto::Udp, "UDP over IPv6"),
+    ] {
+        match table(file) {
+            Ok(list) => rows.extend(list.into_iter().map(|row| (proto, row))),
+            // No IPv6 in this kernel: nothing to list, nothing wrong.
+            Err(_) if file.ends_with('6') => {}
+            Err(e) => errors.push(format!("{what}: {e}")),
+        }
+    }
+    let inodes: Vec<u64> = rows.iter().map(|(_, (_, _, _, inode))| *inode).collect();
+    let owners = owners(&inodes);
+    let all = rows
+        .into_iter()
+        .map(|(proto, (local, remote, state, inode))| {
+            let unspecified = remote.0.is_unspecified() && remote.1 == 0;
+            Socket {
+                pid: owners.get(&inode).copied().unwrap_or(0),
+                proto,
+                local: local.0,
+                local_port: local.1,
+                remote: (!unspecified).then_some(remote),
+                // A UDP socket's "state" says only whether it is connected.
+                state: (proto == Proto::Tcp).then(|| tcp_state(state)).flatten(),
+            }
+        })
+        .collect();
+    let error = (!errors.is_empty()).then(|| errors.join("; "));
+    (all, error)
+}
+
+/// Drops one TCP connection of `pid` (IPv4) at once, as the kernel's socket
+/// diagnostics interface allows: the program sees it reset. Needs
+/// cap_net_admin.
+pub fn close_tcp(
+    pid: u32,
+    remote: Ipv4Addr,
+    remote_port: u16,
+    local_port: u16,
+) -> Result<(), String> {
+    let (list, _) = sockets();
+    let socket = list
+        .iter()
+        .find(|s| {
+            s.proto == Proto::Tcp
+                && s.local_port == local_port
+                && s.remote == Some((IpAddr::V4(remote), remote_port))
+                && (s.pid == pid || s.pid == 0)
+        })
+        .ok_or("the connection is gone")?;
+    let IpAddr::V4(local) = socket.local else {
+        return Err("not an IPv4 connection".into());
+    };
+    destroy(local, local_port, remote, remote_port)
+}
+
+/// SOCK_DESTROY over NETLINK_SOCK_DIAG for one IPv4 TCP connection.
+fn destroy(
+    local: Ipv4Addr,
+    local_port: u16,
+    remote: Ipv4Addr,
+    remote_port: u16,
+) -> Result<(), String> {
+    const NETLINK_SOCK_DIAG: i32 = 4;
+    const SOCK_DESTROY: u16 = 21;
+    const NLM_F_REQUEST: u16 = 1;
+    const NLM_F_ACK: u16 = 4;
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            NETLINK_SOCK_DIAG,
+        )
+    };
+    if fd < 0 {
+        return Err(crate::util::error_text(&std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    // nlmsghdr (16) + inet_diag_req_v2 (8 + inet_diag_sockid 48) = 72.
+    let mut msg = [0u8; 72];
+    msg[0..4].copy_from_slice(&72u32.to_ne_bytes());
+    msg[4..6].copy_from_slice(&SOCK_DESTROY.to_ne_bytes());
+    msg[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_ACK).to_ne_bytes());
+    msg[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    let req = &mut msg[16..];
+    req[0] = libc::AF_INET as u8;
+    req[1] = libc::IPPROTO_TCP as u8;
+    // Every state.
+    req[4..8].copy_from_slice(&u32::MAX.to_ne_bytes());
+    let id = &mut req[8..];
+    id[0..2].copy_from_slice(&local_port.to_be_bytes());
+    id[2..4].copy_from_slice(&remote_port.to_be_bytes());
+    id[4..8].copy_from_slice(&local.octets());
+    id[20..24].copy_from_slice(&remote.octets());
+    // No cookie: match by address.
+    id[40..48].copy_from_slice(&[0xFF; 8]);
+    let sent = unsafe {
+        libc::send(
+            std::os::fd::AsRawFd::as_raw_fd(&fd),
+            msg.as_ptr().cast(),
+            msg.len(),
+            0,
+        )
+    };
+    if sent < 0 {
+        return Err(crate::util::error_text(&std::io::Error::last_os_error()));
+    }
+    let mut reply = [0u8; 256];
+    let got = unsafe {
+        libc::recv(
+            std::os::fd::AsRawFd::as_raw_fd(&fd),
+            reply.as_mut_ptr().cast(),
+            reply.len(),
+            0,
+        )
+    };
+    if got < 20 {
+        return Err("the kernel did not answer".into());
+    }
+    // NLMSG_ERROR carries the result: 0, or a negated errno.
+    let error = i32::from_ne_bytes(reply[16..20].try_into().unwrap());
+    match -error {
+        0 => Ok(()),
+        libc::EPERM => Err("closing another program's connection needs cap_net_admin".into()),
+        libc::EOPNOTSUPP => {
+            Err("this kernel cannot close connections (CONFIG_INET_DIAG_DESTROY)".into())
+        }
+        libc::ENOENT => Err("the connection is gone".into()),
+        e => Err(crate::util::error_text(&std::io::Error::from_raw_os_error(
+            e,
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_proc_net_addresses() {
+        if cfg!(target_endian = "little") {
+            assert_eq!(
+                endpoint("0100007F:0277"),
+                Some((IpAddr::V4(Ipv4Addr::LOCALHOST), 631))
+            );
+            assert_eq!(
+                endpoint("00000000000000000000000001000000:0016").map(|e| e.0),
+                Some("::1".parse().unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn finds_own_listening_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (list, error) = sockets();
+        assert!(error.is_none(), "{error:?}");
+        let mine = list
+            .iter()
+            .find(|s| s.local_port == port && s.listening())
+            .expect("own listener listed");
+        assert_eq!(mine.pid, std::process::id());
+    }
+}

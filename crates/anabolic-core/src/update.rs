@@ -1,33 +1,16 @@
-//! Updates from the project's GitHub releases: whether a newer one is out,
-//! and putting its anabolic.exe in place of this copy's.
-//!
-//! A check is one HTTPS request to GitHub's API, through Windows' own HTTP
-//! stack (its proxy settings and certificate store). It carries nothing
-//! about this PC beyond what any download does: its address and
-//! "Anabolic/<version>". A release's zip must match the SHA-256 GitHub lists
-//! for it before anything is written.
-//!
-//! A running program's file cannot be overwritten, but it can be renamed:
-//! the old one steps aside as anabolic.exe.old, the new one takes its name,
-//! and the next start deletes the old one. The program goes on running from
-//! the renamed file until it restarts.
+//! Updates from GitHub's releases: is there a newer one, fetch it, check it
+//! against the SHA-256 GitHub lists for it, and put it in place of the
+//! running executable for the next start.
 
 use std::path::{Path, PathBuf};
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use serde::Deserialize;
-use windows::Win32::Networking::WinHttp::{
-    INTERNET_DEFAULT_HTTPS_PORT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
-    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-    WinHttpSendRequest, WinHttpSetTimeouts,
-};
-use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-use windows::core::{PCWSTR, w};
 
-use crate::util::wide;
+#[cfg_attr(windows, path = "windows/update.rs")]
+#[cfg_attr(target_os = "linux", path = "linux/update.rs")]
+mod imp;
 
 /// A release on GitHub, newer than this copy.
 #[derive(Clone, Debug)]
@@ -111,7 +94,7 @@ impl Updater {
                                 Err(e) => Event::InstallFailed(release, e),
                             }
                         }
-                        Request::Restart(args) => match relaunch(&exe, &args) {
+                        Request::Restart(args) => match imp::relaunch(&exe, &args) {
                             Ok(()) => Event::Restarting,
                             Err(e) => Event::RestartFailed(e),
                         },
@@ -168,8 +151,16 @@ pub fn from_source(exe: &Path) -> bool {
 /// Deletes what the last update left: the old executable it moved aside,
 /// and a download it could not put in place.
 pub fn clean_up(exe: &Path) {
-    let _ = std::fs::remove_file(exe.with_extension("exe.old"));
-    let _ = std::fs::remove_file(exe.with_extension("exe.new"));
+    let _ = std::fs::remove_file(aside(exe, "old"));
+    let _ = std::fs::remove_file(aside(exe, "new"));
+}
+
+/// `anabolic.exe.old` beside `anabolic.exe`; `anabolic.old` beside `anabolic`.
+fn aside(exe: &Path, what: &str) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(what);
+    exe.with_file_name(name)
 }
 
 /// "RaptorTwentyOne/Anabolic", from the workspace's repository address.
@@ -201,7 +192,7 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
         "https://api.github.com/repos/{}/releases/latest",
         repository()
     );
-    let (status, body) = get(
+    let (status, body) = imp::get(
         &url,
         "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28",
         1 << 20,
@@ -223,8 +214,8 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
     let asset = release
         .assets
         .into_iter()
-        .find(|a| a.name.ends_with("-windows-x64.zip"))
-        .ok_or_else(|| format!("Anabolic {version} has no download for Windows x64"))?;
+        .find(|a| a.name.ends_with(imp::ASSET))
+        .ok_or_else(|| format!("Anabolic {version} has no download for {}", imp::PLATFORM))?;
     Ok(Some(Release {
         version,
         page: release.html_url,
@@ -254,7 +245,7 @@ pub fn newer(version: &str, current: &str) -> bool {
     new > old
 }
 
-/// Downloads `release`, checks it, and puts its anabolic.exe where `exe`
+/// Downloads `release`, checks it, and puts its executable where `exe`
 /// is. The license and notice files that came with an earlier release are
 /// replaced too, where they lie beside it. `progress` hears the bytes so
 /// far and the total.
@@ -268,7 +259,7 @@ fn install(
         .as_deref()
         .ok_or("GitHub lists no checksum for this release, so it is not installed")?;
     let limit = (release.size as usize).saturating_add(1 << 20);
-    let (status, zip) = get(&release.zip, "", limit, |done| {
+    let (status, zip) = imp::get(&release.zip, "", limit, |done| {
         progress(done as u64, release.size)
     })?;
     if status != 200 {
@@ -281,9 +272,9 @@ fn install(
     let files = unzip(&zip)?;
     let new = files
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("anabolic.exe"))
-        .filter(|(_, data)| data.starts_with(b"MZ"))
-        .ok_or("the release holds no anabolic.exe")?;
+        .find(|(name, _)| name.eq_ignore_ascii_case(imp::EXECUTABLE))
+        .filter(|(_, data)| data.starts_with(imp::MAGIC))
+        .ok_or_else(|| format!("the release holds no {}", imp::EXECUTABLE))?;
     replace(exe, &new.1)?;
     // The others only where they came from us: a README.md of someone
     // else's in the same folder stays as it is.
@@ -307,15 +298,17 @@ fn install(
 
 /// Puts `data` in place of `exe`, running or not.
 fn replace(exe: &Path, data: &[u8]) -> Result<(), String> {
-    let staged = exe.with_extension("exe.new");
-    let old = exe.with_extension("exe.old");
+    let staged = aside(exe, "new");
+    let old = aside(exe, "old");
     let refused = |e: std::io::Error| {
         format!(
-            "Windows did not let Anabolic replace {}: {e}",
+            "{} did not let Anabolic replace {}: {e}",
+            imp::SYSTEM,
             exe.display()
         )
     };
     write_all(&staged, data).map_err(refused)?;
+    imp::make_runnable(&staged).map_err(refused)?;
     // Not running (installed once already, still running the copy before):
     // replaced as it is.
     if std::fs::rename(&staged, exe).is_ok() {
@@ -341,173 +334,6 @@ fn write_all(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(data)?;
     file.sync_all()
-}
-
-/// Starts `exe` with `--after <this process>` and `args`: it waits for
-/// this one to exit before it takes over as the session's Anabolic.
-fn relaunch(exe: &Path, args: &[String]) -> Result<(), String> {
-    let pid = std::process::id().to_string();
-    match std::process::Command::new(exe)
-        .arg("--after")
-        .arg(&pid)
-        .args(args)
-        .spawn()
-    {
-        Ok(_) => Ok(()),
-        // ERROR_ELEVATION_REQUIRED: an administrator's copy running
-        // without elevation; the new one asks through UAC as at any start.
-        Err(e) if e.raw_os_error() == Some(740) => {
-            let file = wide(&exe.to_string_lossy());
-            let line = wide(&format!("--after {pid} {}", args.join(" ")));
-            let result = unsafe {
-                ShellExecuteW(
-                    None,
-                    w!("runas"),
-                    PCWSTR(file.as_ptr()),
-                    PCWSTR(line.as_ptr()),
-                    PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                )
-            };
-            if result.0 as usize > 32 {
-                Ok(())
-            } else {
-                Err("the new version could not start: elevation was cancelled".into())
-            }
-        }
-        Err(e) => Err(format!("the new version could not start: {e}")),
-    }
-}
-
-/// A WinHTTP handle, closed on drop.
-struct Internet(*mut core::ffi::c_void);
-
-impl Internet {
-    fn open(handle: *mut core::ffi::c_void, doing: &str) -> Result<Self, String> {
-        if handle.is_null() {
-            Err(failure(doing))
-        } else {
-            Ok(Self(handle))
-        }
-    }
-}
-
-impl Drop for Internet {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = WinHttpCloseHandle(self.0);
-        }
-    }
-}
-
-/// Why the last WinHTTP call failed, in words: WinHTTP's errors have no
-/// text in the system's message table.
-fn failure(doing: &str) -> String {
-    let e = windows::core::Error::from_thread();
-    let why = match e.code().0 as u32 & 0xFFFF {
-        12002 => "it took too long".to_string(),
-        12007 => "the server could not be found (is this PC online?)".to_string(),
-        12029 => "no connection could be made".to_string(),
-        12030 | 12031 => "the connection was dropped".to_string(),
-        12038 | 12044 | 12045 | 12057 | 12157 | 12175 => "the secure connection failed".to_string(),
-        _ => crate::util::error_text(&e),
-    };
-    format!("{doing}: {why}")
-}
-
-/// GETs an https:// address, following redirects: the status and at most
-/// `limit` bytes of the body. `progress` hears the bytes read so far.
-fn get(
-    url: &str,
-    headers: &str,
-    limit: usize,
-    mut progress: impl FnMut(usize),
-) -> Result<(u32, Vec<u8>), String> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| format!("not an https address: {url}"))?;
-    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-    let doing = format!("Could not reach {host}");
-    let agent = wide(&format!("Anabolic/{}", env!("CARGO_PKG_VERSION")));
-    let (host, path) = (wide(host), wide(if path.is_empty() { "/" } else { path }));
-    unsafe {
-        let session = Internet::open(
-            WinHttpOpen(
-                PCWSTR(agent.as_ptr()),
-                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                PCWSTR::null(),
-                PCWSTR::null(),
-                0,
-            ),
-            &doing,
-        )?;
-        // Name lookup, connecting, sending, each read.
-        let _ = WinHttpSetTimeouts(session.0, 15_000, 15_000, 30_000, 30_000);
-        let connection = Internet::open(
-            WinHttpConnect(
-                session.0,
-                PCWSTR(host.as_ptr()),
-                INTERNET_DEFAULT_HTTPS_PORT,
-                0,
-            ),
-            &doing,
-        )?;
-        let request = Internet::open(
-            WinHttpOpenRequest(
-                connection.0,
-                w!("GET"),
-                PCWSTR(path.as_ptr()),
-                PCWSTR::null(),
-                PCWSTR::null(),
-                std::ptr::null(),
-                WINHTTP_FLAG_SECURE,
-            ),
-            &doing,
-        )?;
-        let headers: Vec<u16> = headers.encode_utf16().collect();
-        WinHttpSendRequest(
-            request.0,
-            (!headers.is_empty()).then_some(&headers[..]),
-            None,
-            0,
-            0,
-            0,
-        )
-        .map_err(|_| failure(&doing))?;
-        WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|_| failure(&doing))?;
-        let mut status = 0u32;
-        let mut len = size_of::<u32>() as u32;
-        WinHttpQueryHeaders(
-            request.0,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            PCWSTR::null(),
-            Some((&raw mut status).cast()),
-            &mut len,
-            std::ptr::null_mut(),
-        )
-        .map_err(|_| failure(&doing))?;
-        let mut body = Vec::new();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let mut read = 0u32;
-            WinHttpReadData(
-                request.0,
-                buf.as_mut_ptr().cast(),
-                buf.len() as u32,
-                &mut read,
-            )
-            .map_err(|_| failure(&doing))?;
-            if read == 0 {
-                break;
-            }
-            body.extend_from_slice(&buf[..read as usize]);
-            if body.len() > limit {
-                return Err(format!("{doing}: the answer was larger than expected"));
-            }
-            progress(body.len());
-        }
-        Ok((status, body))
-    }
 }
 
 /// The files of a zip archive, by name without their folders: stored or
@@ -571,169 +397,4 @@ fn unzip(zip: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         files.push((file, data));
     }
     Ok(files)
-}
-
-#[cfg(test)]
-mod tests {
-    use windows::Win32::Foundation::FreeLibrary;
-    use windows::Win32::System::LibraryLoader::{DONT_RESOLVE_DLL_REFERENCES, LoadLibraryExW};
-
-    use super::*;
-
-    /// A zip as Compress-Archive makes one: a folder entry, then files,
-    /// deflated or (when tiny) stored.
-    fn zip_of(files: &[(&str, &[u8], bool)]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut central = Vec::new();
-        let entries = std::iter::once(("pack/", &b""[..], false))
-            .chain(files.iter().map(|&(n, d, deflate)| (n, d, deflate)));
-        let mut count = 0u16;
-        for (name, data, deflate) in entries {
-            let packed = if deflate {
-                miniz_oxide::deflate::compress_to_vec(data, 6)
-            } else {
-                data.to_vec()
-            };
-            let method: u16 = if deflate { 8 } else { 0 };
-            let crc = crc32fast::hash(data);
-            let offset = out.len() as u32;
-            let mut common = Vec::new();
-            common.extend_from_slice(&20u16.to_le_bytes());
-            common.extend_from_slice(&0u16.to_le_bytes());
-            common.extend_from_slice(&method.to_le_bytes());
-            common.extend_from_slice(&[0; 4]);
-            common.extend_from_slice(&crc.to_le_bytes());
-            common.extend_from_slice(&(packed.len() as u32).to_le_bytes());
-            common.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            common.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            common.extend_from_slice(&0u16.to_le_bytes());
-            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
-            out.extend_from_slice(&common);
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(&packed);
-            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-            central.extend_from_slice(&20u16.to_le_bytes());
-            central.extend_from_slice(&common);
-            central.extend_from_slice(&[0; 10]);
-            central.extend_from_slice(&offset.to_le_bytes());
-            central.extend_from_slice(name.as_bytes());
-            count += 1;
-        }
-        let at = out.len() as u32;
-        out.extend_from_slice(&central);
-        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
-        out.extend_from_slice(&[0; 4]);
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&(central.len() as u32).to_le_bytes());
-        out.extend_from_slice(&at.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out
-    }
-
-    #[test]
-    fn versions_compare_by_number() {
-        assert!(newer("0.1.1", "0.1.0"));
-        assert!(newer("v0.10.0", "0.9.3"));
-        assert!(newer("1.0", "0.99.99"));
-        assert!(!newer("0.1.0", "0.1.0"));
-        assert!(!newer("0.1", "0.1.0"));
-        assert!(!newer("0.1.0", "0.2.0"));
-        assert!(!newer("0.2.0-rc.1", "0.1.0"));
-    }
-
-    #[test]
-    fn unpacks_what_it_packed() {
-        let exe = b"MZ"
-            .iter()
-            .chain(&[7u8; 5000])
-            .copied()
-            .collect::<Vec<_>>();
-        let zip = zip_of(&[
-            (r"pack\anabolic.exe", &exe, true),
-            ("pack/LICENSE-MIT", b"MIT License", false),
-        ]);
-        let files = unzip(&zip).unwrap();
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0], ("anabolic.exe".to_string(), exe));
-        assert_eq!(
-            files[1],
-            ("LICENSE-MIT".to_string(), b"MIT License".to_vec())
-        );
-    }
-
-    #[test]
-    fn refuses_damaged_zips() {
-        let mut zip = zip_of(&[("pack/anabolic.exe", &[1u8; 3000], true)]);
-        assert!(unzip(&zip[..zip.len() - 30]).is_err());
-        // A flipped byte in the packed data fails its CRC (or the inflate):
-        // past the folder's entry and the file's header.
-        let data = 30 + "pack/".len() + 30 + "pack/anabolic.exe".len();
-        zip[data + 2] ^= 0xFF;
-        assert!(unzip(&zip).is_err());
-        assert!(unzip(b"").is_err());
-    }
-
-    #[test]
-    fn replaces_a_running_program() {
-        let dir = std::env::temp_dir().join(format!("anabolic-update-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("anabolic.exe");
-        // A PE file mapped as an image, as a running program's is: it can
-        // be renamed, not overwritten or deleted.
-        std::fs::copy(r"C:\Windows\System32\version.dll", &exe).unwrap();
-        let image = std::fs::read(&exe).unwrap();
-        let path = wide(&exe.to_string_lossy());
-        let module =
-            unsafe { LoadLibraryExW(PCWSTR(path.as_ptr()), None, DONT_RESOLVE_DLL_REFERENCES) }
-                .unwrap();
-        assert!(std::fs::write(&exe, b"x").is_err());
-        replace(&exe, b"new").unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
-        assert_eq!(std::fs::read(exe.with_extension("exe.old")).unwrap(), image);
-        // Again before a restart: the old one is still mapped, the file in
-        // place is not.
-        replace(&exe, b"newer").unwrap();
-        assert_eq!(std::fs::read(&exe).unwrap(), b"newer");
-        unsafe {
-            let _ = FreeLibrary(module);
-        }
-        clean_up(&exe);
-        assert!(!exe.with_extension("exe.old").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Asks GitHub for real: `cargo test -p anabolic-core latest_release
-    /// -- --ignored`.
-    #[test]
-    #[ignore]
-    fn latest_release() {
-        let release = check("0.0.1").unwrap().expect("a release");
-        println!("{release:?}");
-        assert!(release.sha256.is_some());
-        assert!(newer(&release.version, "0.0.1"));
-        assert_eq!(check(&release.version).unwrap().map(|r| r.version), None);
-    }
-
-    /// Downloads and unpacks the real zip into a folder of its own:
-    /// `cargo test -p anabolic-core installs_the_latest -- --ignored`.
-    #[test]
-    #[ignore]
-    fn installs_the_latest_release() {
-        let dir = std::env::temp_dir().join(format!("anabolic-install-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("anabolic.exe");
-        std::fs::write(&exe, b"MZ old").unwrap();
-        let release = check("0.0.1").unwrap().expect("a release");
-        let mut last = (0, 0);
-        install(&release, &exe, |done, total| last = (done, total)).unwrap();
-        assert_eq!(last, (release.size, release.size));
-        let new = std::fs::read(&exe).unwrap();
-        assert!(new.starts_with(b"MZ") && new.len() > 1 << 20);
-        // Only the program: nothing else of ours lay beside it.
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

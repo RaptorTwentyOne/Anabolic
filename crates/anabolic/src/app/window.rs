@@ -97,7 +97,9 @@ impl App {
     }
 
     /// Keeps the window off a full-screen game's monitor at startup, and on
-    /// a monitor that exists (checked every couple of seconds).
+    /// a monitor that exists (checked every couple of seconds). A Wayland
+    /// compositor places windows itself.
+    #[cfg(windows)]
     pub(super) fn place_window(&mut self) {
         if self.avoid_monitor.is_none() && self.placed_at.elapsed() < Duration::from_secs(2) {
             return;

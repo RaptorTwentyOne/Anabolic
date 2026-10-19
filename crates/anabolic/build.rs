@@ -9,10 +9,14 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    // Linux has no resources: the icon comes with the .desktop file.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     println!("cargo:rerun-if-changed=anabolic.exe.manifest");
     println!("cargo:rerun-if-changed=assets/logo/anabolic.ico");
-    println!("cargo:rerun-if-changed=build.rs");
 
     let level = match env::var("PROFILE").as_deref() {
         Ok("release") => "highestAvailable",

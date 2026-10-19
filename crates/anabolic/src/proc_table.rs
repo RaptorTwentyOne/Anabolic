@@ -933,10 +933,19 @@ pub fn context_menu(
 
 /// Windows' own files serve many programs at once (svchost.exe runs half
 /// of Windows' services): blocking one cuts Windows off.
+#[cfg(windows)]
 pub fn system_file(path: &str) -> bool {
     let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     path.to_lowercase()
         .starts_with(&format!("{}\\", windows.to_lowercase()))
+}
+
+/// The system's own programs, which the package manager put in place.
+#[cfg(target_os = "linux")]
+pub fn system_file(path: &str) -> bool {
+    ["/usr/", "/bin/", "/sbin/", "/lib/"]
+        .iter()
+        .any(|dir| path.starts_with(dir))
 }
 
 fn network_item(

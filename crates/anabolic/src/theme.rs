@@ -96,6 +96,7 @@ pub fn icon_font(size: f32) -> FontId {
 }
 
 /// Segoe Fluent Icons (Windows 11) / Segoe MDL2 Assets (Windows 10).
+#[cfg(windows)]
 pub mod icon {
     pub const MENU: &str = "\u{E700}";
     pub const PROCESSES: &str = "\u{E8FD}";
@@ -128,6 +129,43 @@ pub mod icon {
     pub const MCP: &str = "\u{E99A}";
     /// An arrow into a tray: a new release.
     pub const UPDATE: &str = "\u{E896}";
+}
+
+/// The symbols in egui's own fonts (its emoji and icon fonts), which come
+/// with Anabolic: Linux has no icon font everyone has.
+#[cfg(target_os = "linux")]
+pub mod icon {
+    pub const MENU: &str = "\u{2630}";
+    pub const PROCESSES: &str = "\u{1F5D0}";
+    pub const PERFORMANCE: &str = "\u{1F4C8}";
+    pub const SEARCH: &str = "\u{1F50D}";
+    pub const SETTINGS: &str = "\u{2699}";
+    pub const PAUSE: &str = "\u{23F8}";
+    pub const PLAY: &str = "\u{25B6}";
+    pub const WARNING: &str = "\u{26A0}";
+    pub const LOCK: &str = "\u{1F512}";
+    pub const CLOSE: &str = "\u{2716}";
+    pub const CHECK: &str = "\u{2714}";
+    pub const CHEVRON_DOWN: &str = "\u{23F7}";
+    pub const CHEVRON_UP: &str = "\u{23F6}";
+    pub const SHIELD: &str = "\u{1F6E1}";
+    pub const SPEED: &str = "\u{26A1}";
+    pub const HISTORY: &str = "\u{1F553}";
+    pub const RULES: &str = "\u{1F4DC}";
+    /// Tools.
+    pub const SERVICES: &str = "\u{2692}";
+    /// A rocket.
+    pub const STARTUP: &str = "\u{1F680}";
+    /// A game controller.
+    pub const STUTTERS: &str = "\u{1F3AE}";
+    /// Networked computers.
+    pub const NETWORK: &str = "\u{1F5A7}";
+    /// A recording dot.
+    pub const RECORD: &str = "\u{23FA}";
+    /// A plug: AI assistants connect here (the MCP page).
+    pub const MCP: &str = "\u{1F50C}";
+    /// Arrows going round: a new release.
+    pub const UPDATE: &str = "\u{27F3}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for
@@ -228,31 +266,77 @@ pub fn apply(ctx: &egui::Context) {
     });
 }
 
+/// The faces taken from the system.
+#[derive(Clone, Copy)]
+enum Face {
+    Regular,
+    Semibold,
+    Mono,
+    Symbol,
+    Icons,
+}
+
 /// Windows' own faces: Segoe UI (its digits are tabular, so live numbers
 /// keep still), Segoe UI Semibold for hierarchy, Cascadia Mono for code and
-/// addresses, the Fluent icon font for icons. Aldrich, embedded (OFL, see
-/// assets/fonts), is the brand. egui's own fonts stay as fallbacks.
-fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = FontDefinitions::default();
+/// addresses, the Fluent icon font for icons.
+#[cfg(windows)]
+fn system_face(face: Face) -> Option<Vec<u8>> {
     let dir = std::env::var("WINDIR")
         .map(|w| format!(r"{w}\Fonts"))
         .unwrap_or_else(|_| r"C:\Windows\Fonts".into());
-    let mut loaded = |name: &str, files: &[&str]| -> bool {
-        for file in files {
-            if let Ok(bytes) = std::fs::read(format!(r"{dir}\{file}")) {
-                fonts
-                    .font_data
-                    .insert(name.into(), Arc::new(FontData::from_owned(bytes)));
-                return true;
-            }
-        }
-        false
+    let files: &[&str] = match face {
+        Face::Regular => &["segoeui.ttf"],
+        Face::Semibold => &["seguisb.ttf", "segoeuib.ttf"],
+        Face::Mono => &["CascadiaMono.ttf", "consola.ttf"],
+        Face::Symbol => &["seguisym.ttf"],
+        Face::Icons => &["SegoeIcons.ttf", "segmdl2.ttf"],
     };
-    let segoe = loaded("segoe", &["segoeui.ttf"]);
-    let semibold = loaded("segoe-semibold", &["seguisb.ttf", "segoeuib.ttf"]);
-    let mono = loaded("cascadia", &["CascadiaMono.ttf", "consola.ttf"]);
-    let symbol = loaded("segoe-symbol", &["seguisym.ttf"]);
-    let icons = loaded("fluent", &["SegoeIcons.ttf", "segmdl2.ttf"]);
+    files
+        .iter()
+        .find_map(|file| std::fs::read(format!(r"{dir}\{file}")).ok())
+}
+
+/// The desktop's own faces, as fontconfig picks them (Noto Sans on KDE,
+/// Cantarell or Adwaita Sans on GNOME), medium weight for hierarchy, its
+/// monospace for code and addresses. Icons come from egui's fonts.
+#[cfg(target_os = "linux")]
+fn system_face(face: Face) -> Option<Vec<u8>> {
+    let pattern = match face {
+        Face::Regular => "sans-serif",
+        Face::Semibold => "sans-serif:weight=medium",
+        Face::Mono => "monospace",
+        Face::Symbol | Face::Icons => return None,
+    };
+    let out = std::process::Command::new("fc-match")
+        .args(["--format=%{file}", pattern])
+        .output()
+        .ok()?;
+    let file = String::from_utf8(out.stdout).ok()?;
+    // egui reads TrueType and OpenType outlines, not bitmap or Type 1 faces.
+    let usable = [".ttf", ".otf", ".TTF", ".OTF"]
+        .iter()
+        .any(|e| file.ends_with(e));
+    usable.then(|| std::fs::read(file.trim()).ok()).flatten()
+}
+
+/// The system's faces (see `system_face`); Aldrich, embedded (OFL, see
+/// assets/fonts), is the brand. egui's own fonts stay as fallbacks.
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    let mut loaded = |name: &str, face: Face| -> bool {
+        let Some(bytes) = system_face(face) else {
+            return false;
+        };
+        fonts
+            .font_data
+            .insert(name.into(), Arc::new(FontData::from_owned(bytes)));
+        true
+    };
+    let segoe = loaded("segoe", Face::Regular);
+    let semibold = loaded("segoe-semibold", Face::Semibold);
+    let mono = loaded("cascadia", Face::Mono);
+    let symbol = loaded("segoe-symbol", Face::Symbol);
+    let icons = loaded("fluent", Face::Icons);
     fonts.font_data.insert(
         "aldrich".into(),
         Arc::new(FontData::from_static(include_bytes!(

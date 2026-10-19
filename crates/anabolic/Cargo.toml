@@ -20,14 +20,23 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync",
 tokio-util = "0.7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 serde_json = "1"
-# glow: OpenGL, only for GPUs without a Direct3D 12 driver (see renderer()
-# in main.rs).
+# glow: OpenGL, only for GPUs without a Direct3D 12 driver on Windows, and
+# what draws on Linux (see renderer() in main.rs).
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wgpu_no_default_features"] }
 egui_extras = { version = "0.36", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
 # Direct3D 12 only: see wgpu_options in main.rs.
 wgpu = { version = "30", default-features = false, features = ["dx12"] }
 
-[dependencies.windows]
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
+# Vulkan, when OpenGL cannot draw: see renderer() in main.rs.
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+libc = "0.2"
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+[target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
     "Win32_Foundation",

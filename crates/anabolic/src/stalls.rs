@@ -1,4 +1,4 @@
-//! Records UI stalls in %LOCALAPPDATA%\Anabolic\stalls.log, one line each
+//! Records UI stalls in stalls.log in Anabolic's data folder, one line each
 //! with the page:
 //!
 //! - a late frame: one that was due at once (the previous frame asked for
@@ -154,9 +154,8 @@ fn log(line: String) {
 }
 
 fn local_time() -> String {
-    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
-    )
+    use anabolic_core::sysinfo::{local_time, now_filetime};
+    let now = now_filetime();
+    let ms = now / 10_000 % 1000;
+    format!("{}.{ms:03}", local_time(now).unwrap_or_default())
 }

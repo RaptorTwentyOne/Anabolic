@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::disktrace::{DiskSample, IoTotals};
 use crate::model::{DiskActivity, DiskFile, DiskUse, DiskUser};
-use crate::winfile::DeviceMap;
+use crate::util::DeviceMap;
 
 /// Seconds over which rates are averaged.
 const SMOOTHING: f64 = 4.0;

@@ -69,7 +69,7 @@ impl Users {
         let name = self
             .0
             .entry(sid.clone())
-            .or_insert_with(|| anabolic_core::winfile::lookup_account(sid).unwrap_or_default());
+            .or_insert_with(|| anabolic_core::enrich::user_name(sid).unwrap_or_default());
         if name.is_empty() {
             Value::Null
         } else {

@@ -96,11 +96,18 @@ fn status_text(s: &Service) -> (String, Color32, Option<String>) {
     }
 }
 
+#[cfg(windows)]
 fn windows_error(code: u32) -> String {
     windows::core::Error::from(windows::Win32::Foundation::WIN32_ERROR(code).to_hresult())
         .message()
         .trim()
         .to_string()
+}
+
+/// The status a systemd service's main process exited with.
+#[cfg(target_os = "linux")]
+fn windows_error(code: u32) -> String {
+    format!("exit status {code}")
 }
 
 fn startup_text(s: &Service) -> String {

@@ -173,7 +173,7 @@ impl AnabolicMcp {
                     "enabled": i.enabled,
                     "publisher": i.publisher,
                     "description": i.description,
-                    "part_of_windows": i.windows,
+                    "part_of_windows": i.system,
                     "file_missing": i.missing,
                     "running_now": running.len(),
                     "cpu_percent_now": super::json::pct(running.iter().map(|p| p.cpu).sum()),

@@ -225,7 +225,7 @@ pub fn show(
     let mut rows: Vec<&StartupItem> = list
         .items
         .iter()
-        .filter(|i| shown_windows || !i.windows)
+        .filter(|i| shown_windows || !i.system)
         .filter(|i| {
             view.matches(&[
                 title(i),
@@ -253,12 +253,12 @@ pub fn show(
     let total = list
         .items
         .iter()
-        .filter(|i| shown_windows || !i.windows)
+        .filter(|i| shown_windows || !i.system)
         .count();
     let on = list
         .items
         .iter()
-        .filter(|i| (shown_windows || !i.windows) && i.enabled)
+        .filter(|i| (shown_windows || !i.system) && i.enabled)
         .count();
 
     ui.horizontal(|ui| {

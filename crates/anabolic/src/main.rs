@@ -1,5 +1,5 @@
-//! Anabolic: a Windows task manager that stays responsive when the machine
-//! does not.
+//! Anabolic: a task manager for Windows and Linux that stays responsive
+//! when the machine does not.
 
 // Debug builds too: started from Explorer or at sign-in, a console program
 // would bring a console window along. Run from a terminal, the parent's
@@ -37,6 +37,8 @@ mod startup_page;
 mod stutters_page;
 mod table;
 mod theme;
+#[cfg_attr(windows, path = "windows/tray.rs")]
+#[cfg_attr(target_os = "linux", path = "linux/tray.rs")]
 mod tray;
 mod tree;
 mod widgets;
@@ -45,6 +47,7 @@ use anabolic_core::instance::{self, Claim};
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    #[cfg(windows)]
     attach_parent_console();
     // "Restart as admin" and updates start us while the instance we replace
     // closes.
@@ -91,10 +94,7 @@ fn main() -> eframe::Result {
             // Benchmarks and self-screenshots run beside someone's work: do
             // not take the focus from them.
             .with_active(!(bench::enabled() || std::env::var_os("ANABOLIC_SCREENSHOT").is_some())),
-        renderer: match draw {
-            Draw::OpenGl => eframe::Renderer::Glow,
-            Draw::Direct3D12 | Draw::Software => eframe::Renderer::Wgpu,
-        },
+        renderer: draw.renderer(),
         wgpu_options: wgpu_options(),
         // Test instances keep their state elsewhere, away from the user's.
         // (eframe wants the file here, not the folder its docs mention.)
@@ -116,11 +116,7 @@ fn main() -> eframe::Result {
     // A window program has nowhere to print why it could not start.
     if let Err(e) = &result {
         message_box(
-            &format!(
-                "Anabolic could not start: {e}\n\nIt draws with Direct3D 12, which Windows 10 and \
-                 11 have on every PC: through the graphics driver, or without one through \
-                 Windows' own software renderer. Updating the graphics driver usually helps."
-            ),
+            &format!("Anabolic could not start: {e}\n\n{}", Draw::ADVICE),
             true,
         );
     }
@@ -128,6 +124,7 @@ fn main() -> eframe::Result {
 }
 
 /// What a window program has to say before (or instead of) its window.
+#[cfg(windows)]
 fn message_box(text: &str, error: bool) {
     use windows::Win32::UI::WindowsAndMessaging::{
         MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW,
@@ -154,12 +151,41 @@ fn message_box(text: &str, error: bool) {
 /// closing it again would do nothing.
 pub(crate) fn come_forward(ctx: &egui::Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    // On Wayland the compositor decides; this asks it (xdg-activation).
+    #[cfg(target_os = "linux")]
+    {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
     activated();
     stalls::wake(ctx);
 }
 
+/// What a window program has to say before (or instead of) its window:
+/// on standard error, and in a dialog when the desktop has a tool for one.
+#[cfg(target_os = "linux")]
+fn message_box(text: &str, error: bool) {
+    use std::process::Command;
+    eprintln!("{text}");
+    let (kdialog, zenity) = if error {
+        ("--error", "--error")
+    } else {
+        ("--msgbox", "--info")
+    };
+    let shown = Command::new("kdialog")
+        .args(["--title", "Anabolic", kdialog, text])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !shown {
+        let _ = Command::new("zenity")
+            .args([zenity, "--title=Anabolic", &format!("--text={text}")])
+            .status();
+    }
+}
+
 /// What draws the window.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg(windows)]
 enum Draw {
     Direct3D12,
     /// A GPU whose driver has no Direct3D 12 (one from before about 2012):
@@ -170,9 +196,68 @@ enum Draw {
     Software,
 }
 
+#[cfg(windows)]
+impl Draw {
+    const ADVICE: &str = "It draws with Direct3D 12, which Windows 10 and 11 have on every PC: \
+                          through the graphics driver, or without one through Windows' own \
+                          software renderer. Updating the graphics driver usually helps.";
+
+    fn renderer(self) -> eframe::Renderer {
+        match self {
+            Draw::OpenGl => eframe::Renderer::Glow,
+            Draw::Direct3D12 | Draw::Software => eframe::Renderer::Wgpu,
+        }
+    }
+}
+
+/// What draws the window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg(target_os = "linux")]
+enum Draw {
+    /// OpenGL on the GPU the desktop already runs on: a laptop's discrete
+    /// GPU stays asleep.
+    OpenGl,
+    /// Vulkan, when asked (ANABOLIC_RENDERER=vulkan).
+    Vulkan,
+    /// Mesa's software rasterizer (llvmpipe): no GPU at all.
+    Software,
+}
+
+#[cfg(target_os = "linux")]
+impl Draw {
+    const ADVICE: &str = "It draws with OpenGL through the desktop's graphics driver. \
+                          ANABOLIC_RENDERER=vulkan or ANABOLIC_RENDERER=software picks another way.";
+
+    fn renderer(self) -> eframe::Renderer {
+        match self {
+            Draw::Vulkan => eframe::Renderer::Wgpu,
+            Draw::OpenGl | Draw::Software => eframe::Renderer::Glow,
+        }
+    }
+}
+
+/// OpenGL unless ANABOLIC_RENDERER=vulkan|software says otherwise. Vulkan
+/// is not the default: enumerating Vulkan devices wakes every GPU, a
+/// laptop's sleeping discrete one included.
+#[cfg(target_os = "linux")]
+fn renderer() -> Draw {
+    let software = match std::env::var("ANABOLIC_RENDERER").as_deref() {
+        Ok("vulkan") => return Draw::Vulkan,
+        Ok("software") => true,
+        _ => std::env::var_os("ANABOLIC_SOFTWARE").is_some(),
+    };
+    if software {
+        // Read by Mesa as it loads; nothing else runs yet.
+        unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
+        return Draw::Software;
+    }
+    Draw::OpenGl
+}
+
 /// Direct3D 12 when a GPU has it; else OpenGL on a GPU that has a driver;
 /// else Windows' software renderer. ANABOLIC_RENDERER=gl|software picks
 /// one (tests).
+#[cfg(windows)]
 fn renderer() -> Draw {
     match std::env::var("ANABOLIC_RENDERER").as_deref() {
         Ok("gl") => return Draw::OpenGl,
@@ -223,14 +308,24 @@ fn renderer() -> Draw {
 /// foreground DWM walks the session's named objects on every frame it
 /// composes (dwmcore!OpenDxBltEvent). On a busy session that keeps DWM's
 /// composition thread at a full core and the whole desktop stops keeping up.
+///
+/// On Linux, Vulkan, on the integrated GPU where there is one.
 fn wgpu_options() -> eframe::WgpuConfiguration {
     use eframe::egui_wgpu::{WgpuSetup, WgpuSetupCreateNew};
     let mut setup = WgpuSetupCreateNew::without_display_handle();
-    setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
-    // Debug builds are what the user runs every day: no D3D12 debug layer
+    #[cfg(windows)]
+    {
+        setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+        setup.native_adapter_selector = Some(std::sync::Arc::new(pick_adapter));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        setup.instance_descriptor.backends = eframe::wgpu::Backends::VULKAN;
+        setup.power_preference = eframe::wgpu::PowerPreference::LowPower;
+    }
+    // Debug builds are what the user runs every day: no debug layer
     // (WGPU_VALIDATION=1 brings it back).
     setup.instance_descriptor.flags = eframe::wgpu::InstanceFlags::empty().with_env();
-    setup.native_adapter_selector = Some(std::sync::Arc::new(pick_adapter));
     // The default sizes memory blocks for games: 128 MB on the GPU, 64 MB in
     // system memory, some 260 MB of private bytes for a few MB of egui.
     let device = setup.device_descriptor.clone();
@@ -245,6 +340,7 @@ fn wgpu_options() -> eframe::WgpuConfiguration {
     }
 }
 
+#[cfg(windows)]
 /// Draws on the GPU the monitors hang off, the primary one's first: a frame
 /// rendered elsewhere has to be copied across to be shown. Windows' own
 /// order is no guide, it can put an idle integrated GPU first. The software
@@ -338,14 +434,30 @@ fn window_size() -> [f32; 2] {
     }
 }
 
-/// %LOCALAPPDATA%\Anabolic, or ANABOLIC_DATA_DIR for a test instance.
+/// %LOCALAPPDATA%\Anabolic on Windows, $XDG_DATA_HOME/anabolic (usually
+/// ~/.local/share/anabolic) on Linux, or ANABOLIC_DATA_DIR for a test
+/// instance.
 pub fn data_dir() -> Option<std::path::PathBuf> {
-    match std::env::var_os("ANABOLIC_DATA_DIR") {
-        Some(dir) => Some(dir.into()),
-        None => Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Anabolic")),
+    if let Some(dir) = std::env::var_os("ANABOLIC_DATA_DIR") {
+        return Some(dir.into());
+    }
+    #[cfg(windows)]
+    {
+        Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Anabolic"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".local/share"))
+            })?;
+        Some(base.join("anabolic"))
     }
 }
 
+#[cfg(windows)]
 /// A GUI program has no console of its own. Started from one (cargo run)
 /// with nowhere else for its output to go, it writes to the parent's.
 fn attach_parent_console() {

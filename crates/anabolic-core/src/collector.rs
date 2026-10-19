@@ -12,8 +12,6 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
-use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::System::Threading::THREAD_PRIORITY_ABOVE_NORMAL;
 
 use crate::coretrace::CoreTracer;
 use crate::cpu::CpuSampler;
@@ -23,7 +21,7 @@ use crate::diskusage::DiskUsage;
 use crate::enrich::{self, EnrichRequest, Enriched};
 use crate::frames::FrameTracer;
 use crate::gpu::{self, GpuProcessMap, GpuSampler};
-use crate::hardening::set_current_thread_priority;
+use crate::hardening::{ThreadPriority, set_current_thread_priority};
 use crate::history::History;
 use crate::hwinfo::{PageFile, page_files};
 use crate::latency::LatencyTracer;
@@ -32,7 +30,7 @@ use crate::model::*;
 use crate::net::NetSampler;
 use crate::nettrace::{ConnKey, NetTracer, Traffic};
 use crate::recorder::{Recorder, RecorderConfig};
-use crate::scan::{Entry, ProcessScanner};
+use crate::scan::{self, Entry, ProcessScanner};
 
 #[derive(Clone, Debug)]
 pub struct CollectorConfig {
@@ -121,7 +119,7 @@ impl Collector {
         thread::Builder::new()
             .name("anabolic-collector".into())
             .spawn(move || {
-                set_current_thread_priority(THREAD_PRIORITY_ABOVE_NORMAL);
+                set_current_thread_priority(ThreadPriority::AboveNormal);
                 let mut state = State::new(
                     config,
                     Samplers { cpu, gpu, history },
@@ -322,9 +320,7 @@ impl State {
                 let _ = thread::Builder::new()
                     .name("anabolic-dnscache".into())
                     .spawn(move || {
-                        set_current_thread_priority(
-                            windows::Win32::System::Threading::THREAD_PRIORITY_BELOW_NORMAL,
-                        );
+                        set_current_thread_priority(ThreadPriority::BelowNormal);
                         while tx.send(crate::dnscache::names()).is_ok() {
                             thread::sleep(Duration::from_secs(120));
                         }
@@ -797,17 +793,17 @@ impl State {
         let level = self.scanner.level();
 
         for e in self.scanner.entries() {
-            let spi = e.spi;
-            let pid = e.pid();
+            let sample = e.sample();
+            let pid = sample.pid;
             let key = ProcKey {
                 pid,
-                create_time: spi.CreateTime,
+                create_time: sample.create_time,
             };
             let tracked = match self.tracked.entry(key) {
                 MapEntry::Occupied(o) => o.into_mut(),
                 MapEntry::Vacant(v) => {
                     let sid: Option<Arc<[u8]>> = e.user_sid().map(Arc::from);
-                    let image = String::from_utf16_lossy(&e.image_name());
+                    let image = e.image();
                     if pid != 0 {
                         // The full information class reports the NT path of the image.
                         let nt_path = image.starts_with('\\').then(|| image.clone());
@@ -832,45 +828,24 @@ impl State {
                 }
             };
             tracked.last_seen = seq;
-            if tracing_threads {
-                for t in e.threads() {
-                    self.thread_owners
-                        .insert(t.info.ClientId.UniqueThread as u32, (pid, seq));
+            if tracing_threads && scan::TRACES_NEED_THREAD_OWNERS {
+                for t in e.thread_samples() {
+                    self.thread_owners.insert(t.tid, (pid, seq));
                 }
             }
             let (net_rx, net_tx) = traffic.per_pid.get(&pid).copied().unwrap_or_default();
             tracked.net_rx_total += net_rx;
             tracked.net_tx_total += net_tx;
 
-            let ext = e.extension();
-            let io = IoCounters {
-                read_bytes: spi.ReadTransferCount as u64,
-                write_bytes: spi.WriteTransferCount as u64,
-                other_bytes: spi.OtherTransferCount as u64,
-                read_ops: spi.ReadOperationCount as u64,
-                write_ops: spi.WriteOperationCount as u64,
-                other_ops: spi.OtherOperationCount as u64,
-            };
-            let disk = ext.map(|x| DiskCounters {
-                read_bytes: x.DiskCounters.BytesRead,
-                write_bytes: x.DiskCounters.BytesWritten,
-                read_ops: x.DiskCounters.ReadOperationCount,
-                write_ops: x.DiskCounters.WriteOperationCount,
-                flush_ops: x.DiskCounters.FlushOperationCount,
-            });
-            let context_switches = match ext {
-                Some(x) => x.ContextSwitches,
-                None => e.threads().map(|t| t.info.ContextSwitches as u64).sum(),
-            };
             let now = Previous {
-                cpu_time: (spi.KernelTime + spi.UserTime) as u64,
-                kernel_time: spi.KernelTime as u64,
-                cycles: spi.CycleTime,
-                io,
-                disk,
-                context_switches,
-                page_faults: spi.PageFaultCount,
-                handles: spi.HandleCount,
+                cpu_time: sample.kernel_time + sample.user_time,
+                kernel_time: sample.kernel_time,
+                cycles: sample.cycles,
+                io: sample.io,
+                disk: sample.disk,
+                context_switches: sample.context_switches,
+                page_faults: sample.page_faults,
+                handles: sample.handles,
             };
             // A process born during this interval did all its work in it, so
             // diffing against zero is exact.
@@ -886,22 +861,23 @@ impl State {
             let d = |a: u64, b: u64| a.saturating_sub(b);
             let disk_before = before.disk.unwrap_or_default();
 
+            let (io, disk) = (sample.io, sample.disk);
             let info = ProcessInfo {
                 key,
                 pid,
-                ppid: spi.InheritedFromUniqueProcessId as u32,
+                ppid: sample.ppid,
                 name: tracked.name.clone(),
-                session_id: spi.SessionId,
-                state: if pid > 4 && e.is_suspended() {
+                session_id: sample.session_id,
+                state: if sample.suspended {
                     ProcState::Suspended
                 } else {
                     ProcState::Running
                 },
                 first_seen: tracked.first_seen,
                 exited_at: 0,
-                base_priority: spi.BasePriority,
-                threads: spi.NumberOfThreads,
-                handles: spi.HandleCount,
+                base_priority: sample.base_priority,
+                threads: sample.threads,
+                handles: sample.handles,
                 cpu: if primed {
                     cpu_pct(d(now.cpu_time, before.cpu_time))
                 } else {
@@ -919,20 +895,20 @@ impl State {
                 } else {
                     0
                 },
-                private_bytes: spi.PagefileUsage as u64,
-                working_set: spi.WorkingSetSize as u64,
-                private_working_set: spi.WorkingSetPrivateSize as u64,
-                peak_working_set: spi.PeakWorkingSetSize as u64,
-                virtual_size: spi.VirtualSize as u64,
-                paged_pool: spi.QuotaPagedPoolUsage as u64,
-                nonpaged_pool: spi.QuotaNonPagedPoolUsage as u64,
-                page_faults: spi.PageFaultCount,
+                private_bytes: sample.private_bytes,
+                working_set: sample.working_set,
+                private_working_set: sample.private_working_set,
+                peak_working_set: sample.peak_working_set,
+                virtual_size: sample.virtual_size,
+                paged_pool: sample.paged_pool,
+                nonpaged_pool: sample.nonpaged_pool,
+                page_faults: sample.page_faults,
                 page_faults_delta: if primed {
                     now.page_faults.saturating_sub(before.page_faults)
                 } else {
                     0
                 },
-                hard_faults: spi.HardFaultCount,
+                hard_faults: sample.hard_faults,
                 io,
                 io_read_rate: rate(d(io.read_bytes, before.io.read_bytes)),
                 io_write_rate: rate(d(io.write_bytes, before.io.write_bytes)),
@@ -954,9 +930,7 @@ impl State {
                 net_tx_total: tracked.net_tx_total,
                 user_sid: tracked.sid.clone(),
                 not_responding: false,
-                // Only threadless processes are asked: rare, and one
-                // limited query each.
-                ending: spi.NumberOfThreads == 0 && pid > 4 && crate::ending::is_ending(pid),
+                ending: sample.ending,
             };
 
             if self.selected == Some(key) {
@@ -1093,12 +1067,9 @@ impl State {
         }
         system.dns_names = self.dns_names.clone();
         system.dns_lookups = self.dns_lookups.clone();
-        system.uptime = Duration::from_millis(unsafe { GetTickCount64() });
-        // Live processes plus exited ones somebody still holds a handle to.
-        system.process_objects = crate::handles::object_types()
-            .into_values()
-            .find(|t| &*t.name == "Process")
-            .map_or(0, |t| t.objects);
+        system.uptime = crate::sysinfo::uptime();
+        // Live processes plus exited ones somebody still holds on to.
+        system.process_objects = crate::handles::process_objects();
 
         if scheduled && primed {
             let h = &mut self.history;
@@ -1190,37 +1161,35 @@ fn collect_threads(
     cpu_pct: &dyn Fn(u64) -> f32,
 ) -> Vec<ThreadInfo> {
     let has_baseline = *thread_prev_for == Some(key);
-    let mut next_prev = HashMap::with_capacity(e.spi.NumberOfThreads as usize);
+    let mut next_prev = HashMap::with_capacity(thread_prev.len());
     let threads = e
-        .threads()
+        .thread_samples()
         .map(|t| {
-            let i = t.info;
-            let tid = i.ClientId.UniqueThread as u32;
-            let cpu_time = (i.KernelTime + i.UserTime) as u64;
-            let (prev_cpu, prev_cs) = match thread_prev.get(&tid) {
-                Some(&(created, cpu, cs)) if created == i.CreateTime => (cpu, cs),
+            let cpu_time = t.kernel_time + t.user_time;
+            let (prev_cpu, prev_cs) = match thread_prev.get(&t.tid) {
+                Some(&(created, cpu, cs)) if created == t.create_time => (cpu, cs),
                 // New thread: everything it did happened during this interval.
                 _ if has_baseline => (0, 0),
-                _ => (cpu_time, i.ContextSwitches),
+                _ => (cpu_time, t.context_switches),
             };
-            next_prev.insert(tid, (i.CreateTime, cpu_time, i.ContextSwitches));
+            next_prev.insert(t.tid, (t.create_time, cpu_time, t.context_switches));
             ThreadInfo {
-                tid,
-                create_time: i.CreateTime,
-                start_address: i.StartAddress as u64,
-                win32_start_address: t.ext.map_or(0, |x| x.Win32StartAddress as u64),
-                priority: i.Priority,
-                base_priority: i.BasePriority,
-                state: i.ThreadState,
-                wait_reason: i.WaitReason,
+                tid: t.tid,
+                create_time: t.create_time,
+                start_address: t.start_address,
+                win32_start_address: t.win32_start_address,
+                priority: t.priority,
+                base_priority: t.base_priority,
+                state: t.state,
+                wait_reason: t.wait_reason,
                 cpu: cpu_pct(cpu_time.saturating_sub(prev_cpu)),
-                kernel_time: i.KernelTime as u64,
-                user_time: i.UserTime as u64,
-                context_switches: i.ContextSwitches,
-                context_switches_delta: i.ContextSwitches.saturating_sub(prev_cs),
-                stack_base: t.ext.map_or(0, |x| x.StackBase as u64),
-                stack_limit: t.ext.map_or(0, |x| x.StackLimit as u64),
-                teb: t.ext.map_or(0, |x| x.TebBase as u64),
+                kernel_time: t.kernel_time,
+                user_time: t.user_time,
+                context_switches: t.context_switches,
+                context_switches_delta: t.context_switches.saturating_sub(prev_cs),
+                stack_base: t.stack_base,
+                stack_limit: t.stack_limit,
+                teb: t.teb,
             }
         })
         .collect();
@@ -1243,7 +1212,7 @@ fn interrupts_pseudo(cpu: f32) -> ProcessInfo {
             pid: INTERRUPTS_PID,
             create_time: 0,
         },
-        4,
+        scan::KERNEL_PID,
         Arc::from("Interrupts"),
     );
     p.base_priority = 0;

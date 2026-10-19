@@ -14,9 +14,7 @@ use anabolic_core::{
     Collector, CollectorConfig, Command, InfoLevel, ProcKey, ProcState, ProcessInfo, Snapshot,
 };
 use crossbeam_channel::Receiver;
-use eframe::egui::{
-    self, Align, Color32, Frame, Key, Layout, Margin, Modifiers, RichText, TextEdit,
-};
+use eframe::egui::{self, Align, Frame, Key, Layout, Margin, Modifiers, RichText, TextEdit};
 
 use crate::details::{self, DetailTab, HandleView, ModuleView};
 use crate::dialogs::{
@@ -162,9 +160,11 @@ pub struct App {
     cmdlines: HashMap<ProcKey, Arc<str>>,
     /// The monitor a full-screen game filled at startup: the window moves
     /// off it once it exists.
+    #[cfg(windows)]
     avoid_monitor: Option<isize>,
     /// The window's monitor was last checked (one unplugged or switched
     /// off strands a window).
+    #[cfg(windows)]
     placed_at: Instant,
     /// The monitors, read on a thread of their own while their view is open.
     displays: Option<Arc<Vec<anabolic_core::displays::Display>>>,
@@ -205,6 +205,7 @@ pub struct App {
     /// The logo mark beside the wordmark in the rail.
     mark: egui::TextureHandle,
     /// The title bar has been painted to match (tries until the window exists).
+    #[cfg(windows)]
     title_bar_styled: bool,
     pinned: Option<Result<u64, String>>,
     focus_search: bool,
@@ -257,7 +258,7 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         hardening: Vec<HardeningItem>,
         elevated: bool,
-        avoid_monitor: Option<isize>,
+        #[cfg_attr(not(windows), allow(unused_variables))] avoid_monitor: Option<isize>,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
         let mut settings: Settings = cc
@@ -548,7 +549,9 @@ impl App {
             activity,
             growth: Default::default(),
             cmdlines: HashMap::new(),
+            #[cfg(windows)]
             avoid_monitor,
+            #[cfg(windows)]
             placed_at: Instant::now(),
             displays: None,
             displays_rx: None,
@@ -587,6 +590,7 @@ impl App {
                 ),
                 egui::TextureOptions::LINEAR,
             ),
+            #[cfg(windows)]
             title_bar_styled: false,
             pinned: None,
             focus_search: false,
@@ -1028,8 +1032,10 @@ impl eframe::App for App {
             Tab::Settings => "Settings".to_string(),
         };
         self.stalls.frame(ui.ctx(), frame.info().cpu_usage, &page);
+        // The desktop's own decorations draw Linux windows' title bars.
+        #[cfg(windows)]
         if !self.title_bar_styled {
-            let rgb = |c: Color32| u32::from_be_bytes([0, c.r(), c.g(), c.b()]);
+            let rgb = |c: egui::Color32| u32::from_be_bytes([0, c.r(), c.g(), c.b()]);
             self.title_bar_styled =
                 anabolic_core::instance::style_title_bar(rgb(theme::PANEL), rgb(theme::BORDER));
         }
@@ -1322,6 +1328,7 @@ impl eframe::App for App {
             self.services_at = Some(Instant::now());
             self.service_watch.refresh();
         }
+        #[cfg(windows)]
         self.place_window();
         // The monitors: every 5 s while their view is open.
         if let Some(rx) = &self.displays_rx

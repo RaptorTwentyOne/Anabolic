@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::model::{ProcKey, ProcState, ProcessInfo};
 use crate::nettrace::{ProcessStart, ProcessStop};
-use crate::winfile::DeviceMap;
+use crate::util::DeviceMap;
 
 /// A process another one descends from, as seen this session.
 #[derive(Clone, Debug)]
@@ -282,6 +282,7 @@ mod tests {
     /// The real trace: a launcher that exits at once is still the parent.
     /// Needs an elevated test run (the trace does); skips itself otherwise.
     #[test]
+    #[cfg(windows)]
     fn a_launcher_that_exited_is_named() {
         use std::os::windows::process::CommandExt;
         if !crate::hardening::is_elevated() {

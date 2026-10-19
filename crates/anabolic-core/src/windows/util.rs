@@ -5,6 +5,8 @@ use windows::Win32::System::Threading::{
 
 use crate::model::ProcKey;
 
+pub use crate::winfile::DeviceMap;
+
 /// Closes the handle on drop.
 pub struct OwnedHandle(pub HANDLE);
 

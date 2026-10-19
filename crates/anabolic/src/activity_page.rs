@@ -772,6 +772,7 @@ impl ActivityPage {
 
 /// A file picker for the program to record, on a thread of its own (the
 /// dialog runs its own message loop).
+#[cfg(windows)]
 fn pick_program(owner: Option<isize>) -> Receiver<Option<String>> {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let _ = std::thread::Builder::new()
@@ -810,6 +811,32 @@ fn pick_program(owner: Option<isize>) -> Receiver<Option<String>> {
                 })()
             };
             let _ = tx.send(picked.ok());
+        });
+    rx
+}
+
+/// A file picker for the program to record: the desktop's own (KDE's
+/// kdialog, else GNOME's zenity), on a thread of its own.
+#[cfg(target_os = "linux")]
+fn pick_program(_owner: Option<isize>) -> Receiver<Option<String>> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let _ = std::thread::Builder::new()
+        .name("anabolic-pick".into())
+        .spawn(move || {
+            use std::process::Command;
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+            let ask = |program: &str, args: &[&str]| {
+                let out = Command::new(program).args(args).output().ok()?;
+                let path = String::from_utf8(out.stdout).ok()?.trim().to_string();
+                Some((out.status.success() && !path.is_empty()).then_some(path))
+            };
+            let picked = ask(
+                "kdialog",
+                &["--title", "Record a program", "--getopenfilename", &home],
+            )
+            .or_else(|| ask("zenity", &["--file-selection", "--title=Record a program"]))
+            .flatten();
+            let _ = tx.send(picked);
         });
     rx
 }
@@ -948,7 +975,10 @@ fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
                 .add_enabled(page.picking.is_none(), egui::Button::new("Browse…"))
                 .clicked()
             {
+                #[cfg(windows)]
                 let owner = anabolic_core::instance::own_window().map(|h| h.0 as isize);
+                #[cfg(not(windows))]
+                let owner = None;
                 page.picking = Some(pick_program(owner));
             }
         });
