@@ -80,3 +80,5 @@ png = "0.18"
 resvg = { version = "0.45", default-features = false }
 # File hashes: Windows has BCrypt; Linux leaves them to programs.
 sha2 = "0.10"
+# The active window on X11 desktops (foreground).
+x11rb = { version = "0.13", default-features = false }

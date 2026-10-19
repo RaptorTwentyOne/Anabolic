@@ -8,7 +8,8 @@ pub use imp::*;
 
 #[derive(Clone, Debug, Default)]
 pub struct Display {
-    /// Windows' name for it, like `\\.\DISPLAY3`.
+    /// The system's name for it: `\\.\DISPLAY3` on Windows, the connector
+    /// (`eDP-1`) on Linux.
     pub device: String,
     /// The monitor's own name, from its EDID ("DELL S2721DGF"); empty for
     /// some built-in and virtual ones.
@@ -32,7 +33,7 @@ pub struct Display {
     pub hdr_supported: bool,
     pub hdr_on: bool,
     pub bits_per_color: u32,
-    /// Windows' scaling, percent.
+    /// The desktop's scaling, percent.
     pub scale_pct: u32,
 }
 

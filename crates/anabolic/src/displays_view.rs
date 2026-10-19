@@ -11,13 +11,52 @@ use eframe::egui::{
 
 use crate::{theme, widgets};
 
+/// Who scales a picture up to a panel run below its own resolution, and
+/// where its refresh rate is set.
+#[cfg(windows)]
+const SCALER: &str = "Windows";
+#[cfg(windows)]
+const SETTINGS: &str = "Windows' display settings, Advanced display";
+#[cfg(target_os = "linux")]
+const SCALER: &str = "the desktop";
+#[cfg(target_os = "linux")]
+const SETTINGS: &str = "the desktop's display settings";
+
+/// What a monitor is called on the map: Windows' number for it.
+#[cfg(windows)]
+fn tag(d: &Display) -> String {
+    d.device.trim_start_matches(r"\\.\DISPLAY").to_string()
+}
+
+/// What a monitor is called on the map: its connector (eDP-1, DP-2).
+#[cfg(target_os = "linux")]
+fn tag(d: &Display) -> String {
+    d.device.clone()
+}
+
 fn label(d: &Display) -> String {
-    let number = d.device.trim_start_matches(r"\\.\DISPLAY");
-    if d.name.is_empty() {
-        format!("Display {number}")
+    let tag = if cfg!(windows) {
+        format!("Display {}", tag(d))
     } else {
-        format!("{}  ·  Display {number}", d.name)
+        tag(d)
+    };
+    if d.name.is_empty() {
+        tag
+    } else {
+        format!("{}  ·  {tag}", d.name)
     }
+}
+
+/// How much of the desktop a monitor covers. Windows' desktop is laid out
+/// in pixels; a Wayland desktop in scaled units, where a monitor at 125 %
+/// covers less than its resolution.
+fn extent(d: &Display) -> (f32, f32) {
+    let scale = if cfg!(windows) {
+        1.0
+    } else {
+        d.scale_pct.max(1) as f32 / 100.0
+    };
+    (d.width as f32 / scale, d.height as f32 / scale)
 }
 
 fn hz(v: f64) -> String {
@@ -33,11 +72,12 @@ fn layout(ui: &mut Ui, displays: &[Display]) {
     let (min_x, min_y, max_x, max_y) = displays.iter().fold(
         (i32::MAX, i32::MAX, i32::MIN, i32::MIN),
         |(a, b, c, d), m| {
+            let (w, h) = extent(m);
             (
                 a.min(m.x),
                 b.min(m.y),
-                c.max(m.x + m.width as i32),
-                d.max(m.y + m.height as i32),
+                c.max(m.x + w as i32),
+                d.max(m.y + h as i32),
             )
         },
     );
@@ -47,12 +87,13 @@ fn layout(ui: &mut Ui, displays: &[Display]) {
     let (outer, _) = ui.allocate_exact_size(vec2(w * scale, h * scale), Sense::hover());
     let painter = ui.painter();
     for d in displays {
+        let (w, h) = extent(d);
         let r = Rect::from_min_size(
             pos2(
                 outer.left() + (d.x - min_x) as f32 * scale,
                 outer.top() + (d.y - min_y) as f32 * scale,
             ),
-            vec2(d.width as f32 * scale, d.height as f32 * scale),
+            vec2(w * scale, h * scale),
         )
         .shrink(2.0);
         let warn = d.below_max() || d.below_native();
@@ -72,11 +113,10 @@ fn layout(ui: &mut Ui, displays: &[Display]) {
             ),
             StrokeKind::Inside,
         );
-        let number = d.device.trim_start_matches(r"\\.\DISPLAY");
         painter.text(
             r.center() - vec2(0.0, 8.0),
             Align2::CENTER_CENTER,
-            number,
+            tag(d),
             FontId::proportional(theme::TITLE),
             theme::TEXT,
         );
@@ -119,7 +159,7 @@ fn card(ui: &mut Ui, d: &Display) {
                     fact(ui, "Connection", d.connection);
                     let res = if d.below_native() {
                         RichText::new(format!(
-                            "{}×{}  ·  its own is {}×{}: Windows scales the picture up, and \
+                            "{}×{}  ·  its own is {}×{}: {SCALER} scales the picture up, and \
                              text and edges come out soft",
                             d.width, d.height, d.native.0, d.native.1
                         ))
@@ -130,8 +170,7 @@ fn card(ui: &mut Ui, d: &Display) {
                     fact(ui, "Resolution", res);
                     let rate = if d.below_max() {
                         RichText::new(format!(
-                            "{}  ·  it can do {} Hz at this resolution (Windows' display \
-                             settings, Advanced display)",
+                            "{}  ·  it can do {} Hz at this resolution ({SETTINGS})",
                             hz(d.refresh_hz),
                             d.max_hz_here
                         ))

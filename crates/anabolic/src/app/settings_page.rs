@@ -13,6 +13,16 @@ const PAGE_WIDTH: f32 = 780.0;
 /// The column the controls line up in.
 const CONTROL_WIDTH: f32 = 250.0;
 
+/// What the hotkey setting says it does.
+#[cfg(windows)]
+const HOTKEY_HINT: &str = "From any program, while Anabolic runs: in the notification area too, \
+                           when it keeps running there. Windows' Task Manager and Ctrl+Shift+Esc \
+                           stay as they are.";
+#[cfg(target_os = "linux")]
+const HOTKEY_HINT: &str = "From any program, while Anabolic runs: in the notification area too, \
+                           when it keeps running there. The desktop asks once whether Anabolic \
+                           may have the key, and lets you pick another in its shortcut settings.";
+
 /// A section: more room above the heading than below, and a hairline.
 pub(super) fn heading(ui: &mut Ui, title: &str) {
     ui.add_space(26.0);
@@ -94,28 +104,22 @@ impl App {
 
     fn window_section(&mut self, ui: &mut Ui) {
         heading(ui, "Window");
-        row(
-            ui,
-            "Bring to front with",
-            "From any program, while Anabolic runs: in the notification area too, when it \
-             keeps running there. Windows' Task Manager and Ctrl+Shift+Esc stay as they are.",
-            |ui| {
-                egui::ComboBox::from_id_salt("settings-hotkey")
-                    .selected_text(self.settings.hotkey.label())
-                    .width(180.0)
-                    .show_ui(ui, |ui| {
-                        for key in Hotkey::ALL {
-                            ui.selectable_value(&mut self.settings.hotkey, key, key.label());
-                        }
-                    });
-                if let Some(e) = &self.hotkey_error {
-                    caution(
-                        ui,
-                        format!("{}: {e}. Pick another.", self.settings.hotkey.label()),
-                    );
-                }
-            },
-        );
+        row(ui, "Bring to front with", HOTKEY_HINT, |ui| {
+            egui::ComboBox::from_id_salt("settings-hotkey")
+                .selected_text(self.settings.hotkey.label())
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    for key in Hotkey::ALL {
+                        ui.selectable_value(&mut self.settings.hotkey, key, key.label());
+                    }
+                });
+            if let Some(e) = &self.hotkey_error {
+                caution(
+                    ui,
+                    format!("{}: {e}. Pick another.", self.settings.hotkey.label()),
+                );
+            }
+        });
         row(
             ui,
             "Keep running in the notification area when closed",

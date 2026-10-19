@@ -181,6 +181,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "windows",
+ "x11rb",
  "zbus",
 ]
 

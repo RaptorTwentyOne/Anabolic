@@ -110,7 +110,7 @@ fn read(path: &str) -> Option<String> {
 }
 
 /// A PCI device's name from udev's hardware database.
-fn pci_name(pdev: &str) -> Option<String> {
+pub(crate) fn pci_name(pdev: &str) -> Option<String> {
     let data = std::fs::read_to_string(format!("/run/udev/data/+pci:{pdev}")).ok()?;
     let value = |key: &str| {
         data.lines()
