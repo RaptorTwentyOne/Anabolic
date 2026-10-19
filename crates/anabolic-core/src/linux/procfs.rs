@@ -29,7 +29,6 @@ pub struct Stat {
     pub starttime: u64,
     pub vsize: u64,
     pub rss_pages: u64,
-    pub rt_priority: u32,
     pub policy: u32,
 }
 
@@ -82,7 +81,6 @@ pub fn parse_stat(text: &str) -> Option<Stat> {
         starttime: num(22),
         vsize: num(23),
         rss_pages: num(24),
-        rt_priority: num(40) as u32,
         policy: num(41) as u32,
     })
 }

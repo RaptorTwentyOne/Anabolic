@@ -86,17 +86,6 @@ impl Pidfd {
         }
     }
 
-    /// Whether the process has ended (and is waiting to be collected, or
-    /// gone): the pidfd turns readable then.
-    pub fn ended(&self) -> bool {
-        let mut poll = libc::pollfd {
-            fd: self.0.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        unsafe { libc::poll(&mut poll, 1, 0) > 0 }
-    }
-
     /// Waits up to `ms` for the process to end.
     pub fn wait_ended(&self, ms: i32) -> bool {
         let mut poll = libc::pollfd {
@@ -157,7 +146,7 @@ mod tests {
             create_time: me.create_time(),
         };
         let fd = open_process(key).expect("own pidfd");
-        assert!(!fd.ended());
+        assert!(!fd.wait_ended(0));
         let stale = ProcKey {
             create_time: key.create_time - 10_000_000,
             ..key
