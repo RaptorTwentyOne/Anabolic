@@ -15,7 +15,8 @@ use super::*;
 /// Devices come and go (a dock, a module loaded): look again now and then.
 const RELIST: Duration = Duration::from_secs(60);
 /// NVMe drives answer from their controller, which a question keeps out
-/// of its deepest power state for a moment.
+/// of its deepest power state for a moment; memory modules over the
+/// SMBus, whose controller a question wakes.
 const SLOW: Duration = Duration::from_secs(10);
 
 /// Where a device's group goes in the list.
@@ -103,7 +104,7 @@ fn pci_device(device: &Path) -> Option<&Path> {
 
 /// The power state to check before reading a device's sensors: its PCI
 /// device's. Not an SMBus controller's (memory modules hang off it): it
-/// wakes in an instant and sleeps again.
+/// wakes in an instant and sleeps again, and is asked only now and then.
 fn pci_power(device: &Path) -> Option<PathBuf> {
     let pci = pci_device(device)?;
     let smbus = read(pci.join("class")).is_some_and(|c| c.starts_with("0x0c05"));
@@ -474,7 +475,7 @@ fn sources() -> Vec<Source> {
                 s.critical = s.critical.or(critical);
             }
         }
-        if name == "nvme" {
+        if name == "nvme" || MEMORY_MONITORS.contains(&name.as_str()) {
             for s in &mut found {
                 s.slow = true;
             }
