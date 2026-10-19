@@ -84,6 +84,8 @@ const FLAG_FD_CLOEXEC: libc::c_ulong = 1 << 3;
 
 const IOC_ENABLE: libc::c_ulong = 0x2400;
 const IOC_SET_OUTPUT: libc::c_ulong = 0x2405;
+/// _IOW('$', 6, char *): a tracepoint's filter, in ftrace's words.
+const IOC_SET_FILTER: libc::c_ulong = 0x4008_2406;
 
 impl Attr {
     /// An attribute for `kind`/`config`, timed by CLOCK_MONOTONIC so its
@@ -627,14 +629,34 @@ impl TaskRings {
     /// and enables them (those with `ENABLE_ON_EXEC` wait for an exec).
     /// All or none: returns how many were opened.
     pub fn attach(&mut self, tid: u32, attrs: &[Attr]) -> io::Result<usize> {
+        self.open_into(tid as i32, attrs, None)
+    }
+
+    /// Opens tracepoint `attrs` for every process, once per processor,
+    /// into the rings, and enables them. `filter`, in ftrace's words,
+    /// leaves out what the kernel need not write (best effort).
+    pub fn attach_everywhere(&mut self, attrs: &[Attr], filter: Option<&str>) -> io::Result<usize> {
+        let filter = filter.and_then(|f| std::ffi::CString::new(f).ok());
+        self.open_into(-1, attrs, filter.as_deref())
+    }
+
+    fn open_into(
+        &mut self,
+        pid: i32,
+        attrs: &[Attr],
+        filter: Option<&std::ffi::CStr>,
+    ) -> io::Result<usize> {
         let mut opened = Vec::with_capacity(attrs.len() * self.rings.len());
         for (ring, &cpu) in self.rings.iter().zip(&self.cpus) {
             for attr in attrs {
-                let fd = open(attr, tid as i32, cpu as i32)?;
+                let fd = open(attr, pid, cpu as i32)?;
                 let done =
                     unsafe { libc::ioctl(fd.as_raw_fd(), IOC_SET_OUTPUT, ring.fd().as_raw_fd()) };
                 if done != 0 {
                     return Err(io::Error::last_os_error());
+                }
+                if let Some(filter) = filter {
+                    unsafe { libc::ioctl(fd.as_raw_fd(), IOC_SET_FILTER, filter.as_ptr()) };
                 }
                 opened.push((fd, attr.flags & ENABLE_ON_EXEC == 0));
             }

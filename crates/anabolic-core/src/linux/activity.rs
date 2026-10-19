@@ -174,6 +174,12 @@ impl ActivityRecorder {
         Self::start(Target::Everything, false)
     }
 
+    /// As `everything`, with every system call too: heavy, as a busy
+    /// machine makes hundreds of thousands a second.
+    pub fn everything_with_syscalls() -> Result<Self, String> {
+        Self::start(Target::Everything, true)
+    }
+
     /// Records several running processes (a program and its children).
     pub fn attach_all(pids: &[u32]) -> Result<Self, String> {
         Self::start(Target::Attach(pids.to_vec()), false)
@@ -352,6 +358,10 @@ const PSEUDO: [&str; 22] = [
     "selinuxfs",
     "ramfs",
 ];
+
+/// What makes calls one row: thread, call, what it is about, the file of
+/// its descriptor, result.
+type CallRun = (u32, u32, Object, Option<Arc<str>>, Option<u32>);
 
 /// One file event, named.
 struct FileEvent {
@@ -658,9 +668,8 @@ struct Recorder {
     /// System calls were asked for.
     syscalls: bool,
     tracer: Option<Tracer>,
-    /// Open rows of system calls: (thread, call, what it is about, result)
-    /// -> seq.
-    call_runs: HashMap<(u32, u32, Object, Option<u32>), u64>,
+    /// Open rows of system calls -> seq.
+    call_runs: HashMap<CallRun, u64>,
     /// Totals by call number.
     call_stats: HashMap<u32, SyscallStat>,
 }
@@ -796,6 +805,11 @@ impl Recorder {
         let Ok(nr) = u16::try_from(c.nr) else {
             return;
         };
+        // The whole machine: not Anabolic's own (threads it started after
+        // the kernel's filter was set).
+        if self.everything && c.pid == self.own {
+            return;
+        }
         let took = c.took().unwrap_or_default();
         let status = c.status();
         let stat = self.call_stats.entry(c.nr).or_insert_with(|| SyscallStat {
@@ -805,10 +819,25 @@ impl Recorder {
         stat.calls += 1;
         stat.errors += u64::from(c.errno().is_some());
         stat.time += took;
+        // The whole machine: every idle thread waits in a call (poll,
+        // futex), so one begun before the recording, or still under way
+        // at its end, says little. They count, as rows they would bury the
+        // rest.
+        if self.everything
+            && (c.args.is_none() || matches!(c.outcome, crate::syscalls::Outcome::Waiting))
+        {
+            return;
+        }
         let object = c.object();
+        // Descriptor numbers are used again: the file one is open on tells
+        // the calls on it apart.
+        let file = match object {
+            Object::Fd(_) => Some(names.path(c, &object)),
+            _ => None,
+        };
         let bytes = c.bytes();
         let now = Instant::now();
-        let key = (c.tid, c.nr, object, status);
+        let key = (c.tid, c.nr, object, file.clone(), status);
         if let Some(&seq) = self.call_runs.get(&key)
             && let Some(slot) = seq
                 .checked_sub(self.base)
@@ -820,7 +849,10 @@ impl Recorder {
             slot.ev.took += took;
             return;
         }
-        let path = names.path(c, &key.2);
+        let path = match file {
+            Some(file) => file,
+            None => names.path(c, &key.2),
+        };
         let mut detail = c.text();
         match c.outcome {
             _ if c.args.is_none() => detail.push_str("  (began before it was seen)"),
@@ -1297,8 +1329,13 @@ impl Recorder {
             Err(e) => problems.push(format!("file activity is not recorded: {e}")),
         }
         // On this thread: it reads the trace, and its buffers live with it.
-        if self.syscalls && !self.everything {
-            match Tracer::new() {
+        if self.syscalls {
+            let tracer = if self.everything {
+                Tracer::everywhere()
+            } else {
+                Tracer::new()
+            };
+            match tracer {
                 Ok(tracer) => self.tracer = Some(tracer),
                 Err(e) => problems.push(format!("system calls are not recorded: {e}")),
             }

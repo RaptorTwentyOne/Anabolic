@@ -1211,10 +1211,25 @@ impl Names {
             "execve" | "execveat" => self.forget(pid),
             _ => {
                 // A new descriptor: what was known of its number is stale.
+                // When the kernel copied the name it was opened by, the
+                // calls after it on the descriptor are about that file
+                // (it may be closed before /proc could say so).
                 if call.signature().is_some_and(|(_, r)| r == Ret::Fd)
                     && fresh != Some((pid, ret as i32))
                 {
-                    self.fds.remove(&(pid, ret as i32));
+                    let opened = call
+                        .names
+                        .first()
+                        .map(|(_, name)| self.full(call, name))
+                        .filter(|path| path.starts_with('/'));
+                    match opened {
+                        Some(path) => {
+                            self.fds.insert((pid, ret as i32), path.into());
+                        }
+                        None => {
+                            self.fds.remove(&(pid, ret as i32));
+                        }
+                    }
                 }
             }
         }
@@ -1242,6 +1257,9 @@ impl Names {
 
 /// Ring buffer pages per processor: 512 KB each.
 const PAGES: usize = 128;
+/// For every process: 2 MB each, as busy machines make hundreds of
+/// thousands of calls a second.
+const PAGES_EVERYWHERE: usize = 512;
 /// Kernel events (each a descriptor) one recording opens at most.
 const MOST_EVENTS: usize = 32_768;
 /// Records are put in order across processors once this old (ns): one
@@ -1558,9 +1576,39 @@ impl Tracer {
     /// Ready to follow processes; on the thread that reads it, which must
     /// outlive it.
     pub fn new() -> Result<Tracer, String> {
-        let format = Format::read()?;
-        let rings = [PAGES, PAGES / 4, 8]
+        Self::with_rings(&[PAGES, PAGES / 4, 8])
+    }
+
+    /// Every process' calls but Anabolic's own, as `perf trace -a` reads
+    /// them: one event per processor for the whole machine. Its own are
+    /// left out by the kernel, or else would feed the trace they read.
+    pub fn everywhere() -> Result<Tracer, String> {
+        let mut tracer = Self::with_rings(&[PAGES_EVERYWHERE, PAGES, PAGES / 4])?;
+        let attrs: Vec<Attr> = tracer
+            .attrs(false)
             .into_iter()
+            .map(|mut attr| {
+                attr.flags &= !perf::INHERIT;
+                attr
+            })
+            .collect();
+        let own: Vec<String> = procfs::tids(std::process::id())
+            .iter()
+            .map(|tid| format!("common_pid != {tid}"))
+            .collect();
+        let filter = (!own.is_empty()).then(|| own.join(" && "));
+        tracer
+            .rings
+            .attach_everywhere(&attrs, filter.as_deref())
+            .map_err(|e| perf::refused(&e))?;
+        Ok(tracer)
+    }
+
+    fn with_rings(sizes: &[usize]) -> Result<Tracer, String> {
+        let format = Format::read()?;
+        let rings = sizes
+            .iter()
+            .copied()
             .find_map(|pages| TaskRings::new(pages).ok())
             .ok_or_else(|| {
                 format!(
@@ -2187,6 +2235,25 @@ mod tests {
             &*names.path(&accept, &accept.object()),
             format!("TCP, listening on port {port}")
         );
+    }
+
+    #[test]
+    fn names_a_descriptor_by_the_open_that_made_it() {
+        let mut names = Names::default();
+        let mut open = call("openat", [AT_FDCWD, 0, 0, 0, 0, 0], Outcome::Returned(77));
+        open.names = vec![(1, "/usr/lib/libc.so.6".into())];
+        let pid = open.pid;
+        names.learn(&open);
+        // Gone from /proc by now; the open said what it was.
+        let read = call("read", [77, 0, 64, 0, 0, 0], Outcome::Returned(64));
+        assert_eq!(&*names.path(&read, &read.object()), "/usr/lib/libc.so.6");
+        names.learn(&call("close", [77, 0, 0, 0, 0, 0], Outcome::Returned(0)));
+        assert_eq!(&*names.path(&read, &read.object()), "fd 77");
+        // A failed open names nothing.
+        let mut failed = call("openat", [AT_FDCWD, 0, 0, 0, 0, 0], Outcome::Returned(-2));
+        failed.names = vec![(1, "/nope".into())];
+        names.learn(&failed);
+        assert!(!names.fds.contains_key(&(pid, -2)));
     }
 
     #[test]

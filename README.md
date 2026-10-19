@@ -107,7 +107,7 @@ differently, the pages say how:
 | **Startup** | Autostart entries and systemd user units, turned off the way the desktop does it: a system-wide entry is hidden by a copy in your own folder. Nothing is deleted. |
 | **Stutters** | Interrupt and softirq time per handler, in the manner of LatencyMon. Linux reports no frame times to anyone outside a game, so frame times and 1 % lows are Windows only. |
 | **Network** | TCP traffic per program and per connection; Linux counts no UDP traffic per program. Its firewalls filter by address, port and user, not by program, so blocking a program is Windows only, as is the list of DNS lookups. |
-| **Activity** | Every file, program and connection a process touches. There is no registry; instead, a program or process can be recorded with its system calls, as strace shows them, with a count, the failures and the time spent per call. They come from the kernel's tracepoints: the process is never stopped or read. |
+| **Activity** | Every file, program and connection a process touches. There is no registry; instead, a program, a process or the whole machine can be recorded with its system calls, as strace shows them, with a count, the failures and the time spent per call. They come from the kernel's tracepoints: the process is never stopped or read. |
 
 Around them: the notification area icon is a StatusNotifierItem (KDE has
 it; GNOME needs the AppIndicator extension), the hotkey goes through the

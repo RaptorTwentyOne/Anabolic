@@ -45,9 +45,11 @@ pub struct RecordArgs {
     /// Seconds to record: 1 to 120 (default 10).
     pub seconds: Option<u32>,
     /// Every system call too, as strace shows it: the call, its arguments,
-    /// its result and the time it took (default false; with pid or name,
-    /// not everything). Calls a thread repeats within a second are one step
-    /// with a count; syscall_summary counts every call.
+    /// its result and the time it took (default false). With everything,
+    /// heavy: often hundreds of thousands a second, and calls a thread was
+    /// already waiting in, or still is at the end, are counted, not listed.
+    /// Calls a thread repeats within a second are one step with a count;
+    /// syscall_summary counts every call.
     #[cfg(target_os = "linux")]
     pub syscalls: Option<bool>,
     #[cfg_attr(
@@ -152,6 +154,16 @@ fn attach(pids: &[u32], syscalls: bool) -> Result<ActivityRecorder, String> {
     ActivityRecorder::attach_all(pids)
 }
 
+fn everything_recorder(syscalls: bool) -> Result<ActivityRecorder, String> {
+    #[cfg(target_os = "linux")]
+    if syscalls {
+        return ActivityRecorder::everything_with_syscalls();
+    }
+    #[cfg(windows)]
+    let _ = syscalls;
+    ActivityRecorder::everything()
+}
+
 /// Clears the busy mark however the recording ends.
 struct Busy<'a>(&'a std::sync::Mutex<Recordings>);
 
@@ -208,9 +220,6 @@ impl AnabolicMcp {
         let syscalls = args.syscalls.unwrap_or(false);
         #[cfg(windows)]
         let syscalls = false;
-        if syscalls && everything {
-            return fail("System calls are recorded for a pid or a name, not everything.");
-        }
         let snap = match args.pid {
             Some(pid) => self.snapshot_with(pid).await,
             None => self.snapshot().await,
@@ -266,7 +275,7 @@ impl AnabolicMcp {
         let target_pids = pids.clone();
         let work = tokio::task::spawn_blocking(move || {
             let recorder = if everything {
-                ActivityRecorder::everything()
+                everything_recorder(syscalls)
             } else {
                 attach(&target_pids, syscalls)
             };

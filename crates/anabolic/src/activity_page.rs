@@ -51,8 +51,8 @@ const FAILURES_TIP: &str = "Steps that did not succeed. Linux reports file steps
 #[cfg(target_os = "linux")]
 const SYSCALLS_TIP: &str = "Every call the program makes into the kernel, as strace shows it: \
                             the call, its arguments, its result and the time it took, for the \
-                            program or process recorded and what it starts (not for \
-                            everything). The program is not stopped and its memory is not \
+                            program or process recorded and what it starts, or for every \
+                            process. The program is not stopped and its memory is not \
                             read: files are named by the descriptors they are open on, and by \
                             the names the kernel itself copies. Busy programs make hundreds of \
                             thousands a second: a call a thread repeats within a second is one \
@@ -502,7 +502,15 @@ impl ActivityPage {
     pub fn record_everything(&mut self) {
         self.stop();
         self.reset("everything on this computer".into(), true);
-        match ActivityRecorder::everything() {
+        #[cfg(target_os = "linux")]
+        let recorder = if self.syscalls {
+            ActivityRecorder::everything_with_syscalls()
+        } else {
+            ActivityRecorder::everything()
+        };
+        #[cfg(windows)]
+        let recorder = ActivityRecorder::everything();
+        match recorder {
             Ok(r) => self.recorder = Some(r),
             Err(e) => self.error = Some(e),
         }
@@ -1062,8 +1070,8 @@ fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
                 .on_hover_text(SYSCALLS_TIP);
             ui.label(
                 RichText::new(
-                    "Every call into the kernel, as strace shows it, for a program or a running \
-                     process.",
+                    "Every call into the kernel, as strace shows it: for a program, a running \
+                     process, or everything (heavy).",
                 )
                 .size(theme::META)
                 .color(theme::TEXT_WEAK),
@@ -1128,6 +1136,20 @@ fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
             .size(theme::META)
             .color(theme::TEXT_WEAK),
         );
+        #[cfg(target_os = "linux")]
+        if page.syscalls {
+            ui.label(
+                RichText::new(
+                    "With system calls: every process' calls, often hundreds of thousands a \
+                     second. Anabolic takes a good share of a processor to read them while it \
+                     records, and the steps kept fill in a minute or less. Calls a thread was \
+                     already waiting in when the recording started, or still is when it stops, \
+                     are counted, not listed.",
+                )
+                .size(theme::META)
+                .color(theme::ELEVATED_TEXT),
+            );
+        }
         ui.add_space(6.0);
         if ui
             .button(widgets::strong("Record everything", theme::BODY))
