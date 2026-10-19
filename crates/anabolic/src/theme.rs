@@ -298,25 +298,37 @@ fn system_face(face: Face) -> Option<Vec<u8>> {
 
 /// The desktop's own faces, as fontconfig picks them (Noto Sans on KDE,
 /// Cantarell or Adwaita Sans on GNOME), medium weight for hierarchy, its
-/// monospace for code and addresses. Icons come from egui's fonts.
+/// monospace for code and addresses, and a face with the arrows (← ↑ → ↓)
+/// when its own has none. Icons come from egui's fonts.
 #[cfg(target_os = "linux")]
 fn system_face(face: Face) -> Option<Vec<u8>> {
+    use std::sync::Mutex;
+    /// The regular face's file: the arrows' face is not loaded twice.
+    static REGULAR: Mutex<String> = Mutex::new(String::new());
     let pattern = match face {
         Face::Regular => "sans-serif",
         Face::Semibold => "sans-serif:weight=medium",
         Face::Mono => "monospace",
-        Face::Symbol | Face::Icons => return None,
+        Face::Symbol => "sans-serif:charset=2190 2191 2192 2193",
+        Face::Icons => return None,
     };
     let out = std::process::Command::new("fc-match")
         .args(["--format=%{file}", pattern])
         .output()
         .ok()?;
     let file = String::from_utf8(out.stdout).ok()?;
+    let file = file.trim();
     // egui reads TrueType and OpenType outlines, not bitmap or Type 1 faces.
     let usable = [".ttf", ".otf", ".TTF", ".OTF"]
         .iter()
         .any(|e| file.ends_with(e));
-    usable.then(|| std::fs::read(file.trim()).ok()).flatten()
+    let mut regular = REGULAR.lock().unwrap_or_else(|e| e.into_inner());
+    match face {
+        Face::Regular => *regular = file.to_string(),
+        Face::Symbol if *regular == file => return None,
+        _ => {}
+    }
+    usable.then(|| std::fs::read(file).ok()).flatten()
 }
 
 /// The system's faces (see `system_face`); Aldrich, embedded (OFL, see
