@@ -284,7 +284,7 @@ impl State {
         interval_ms: Arc<AtomicU64>,
     ) -> Self {
         let Samplers { cpu, gpu, history } = samplers;
-        let (net_trace, net_trace_error) = if !crate::hardening::is_elevated() {
+        let (net_trace, net_trace_error) = if !crate::hardening::may_trace() {
             (None, Some("needs administrator rights".to_string()))
         } else {
             match NetTracer::start() {
@@ -369,7 +369,7 @@ impl State {
 
     fn trace_disks(&mut self, on: bool) {
         match (on, self.disk_tracer.is_some()) {
-            (true, false) if !crate::hardening::is_elevated() => {
+            (true, false) if !crate::hardening::may_trace() => {
                 self.disk_trace_error = Some("needs administrator rights".into());
             }
             (true, false) => match DiskTracer::start() {
@@ -392,7 +392,7 @@ impl State {
 
     fn trace_frames(&mut self, on: bool) {
         match (on, self.frame_tracer.is_some()) {
-            (true, false) if !crate::hardening::is_elevated() => {
+            (true, false) if !crate::hardening::may_trace() => {
                 self.frame_trace_error = Some("needs administrator rights".into());
             }
             (true, false) => match FrameTracer::start(true) {
@@ -409,7 +409,7 @@ impl State {
 
     fn trace_latency(&mut self, on: bool) {
         match (on, self.latency_tracer.is_some()) {
-            (true, false) if !crate::hardening::is_elevated() => {
+            (true, false) if !crate::hardening::may_trace() => {
                 self.latency_trace_error = Some("needs administrator rights".into());
             }
             (true, false) => match LatencyTracer::start() {

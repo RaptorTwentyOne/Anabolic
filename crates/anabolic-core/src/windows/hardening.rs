@@ -29,6 +29,12 @@ use crate::util::{OwnedHandle, error_text};
 
 use super::*;
 
+/// Kernel traces start only elevated: an unelevated try gets a vaguer
+/// answer than "needs administrator rights".
+pub fn may_trace() -> bool {
+    is_elevated()
+}
+
 pub fn is_elevated() -> bool {
     let mut token = HANDLE::default();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.is_err() {

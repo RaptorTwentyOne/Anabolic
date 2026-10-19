@@ -29,8 +29,6 @@ pub struct Stat {
     pub starttime: u64,
     pub vsize: u64,
     pub rss_pages: u64,
-    /// The processor it last ran on.
-    pub processor: u32,
     pub rt_priority: u32,
     pub policy: u32,
 }
@@ -84,7 +82,6 @@ pub fn parse_stat(text: &str) -> Option<Stat> {
         starttime: num(22),
         vsize: num(23),
         rss_pages: num(24),
-        processor: num(39) as u32,
         rt_priority: num(40) as u32,
         policy: num(41) as u32,
     })
@@ -239,7 +236,6 @@ mod tests {
         assert_eq!(s.starttime, 5000);
         assert_eq!(s.vsize, 1_000_000);
         assert_eq!(s.rss_pages, 300);
-        assert_eq!(s.processor, 5);
     }
 
     #[test]

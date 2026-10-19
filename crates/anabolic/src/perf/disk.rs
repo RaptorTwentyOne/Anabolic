@@ -1,6 +1,8 @@
 //! The disk views: every volume, and each physical disk with the processes
 //! and files that use it.
 
+use anabolic_core::disktrace::NAMES_FILES;
+
 use super::*;
 
 pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut Vec<UiCmd>) {
@@ -91,15 +93,24 @@ pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut 
         disk_users(ui, snap, only.number, out);
     } else if s.disk_tracing {
         ui.label(
-            RichText::new("Open a disk to see which processes and files use it.")
-                .small()
-                .color(theme::TEXT_DIM),
+            RichText::new(if NAMES_FILES {
+                "Open a disk to see which processes and files use it."
+            } else {
+                "Open a disk to see which processes use it."
+            })
+            .small()
+            .color(theme::TEXT_DIM),
         );
     }
     if snap.info_level != anabolic_core::InfoLevel::Full {
         ui.label(
-            RichText::new("Per-process disk counters need administrator rights.")
-                .color(theme::ELEVATED_TEXT),
+            RichText::new(if cfg!(windows) {
+                "Per-process disk counters need administrator rights."
+            } else {
+                "Other users' disk counters need cap_sys_ptrace: grant Anabolic its rights in \
+                 Settings."
+            })
+            .color(theme::ELEVATED_TEXT),
         );
     }
     top(
@@ -363,6 +374,18 @@ pub(super) fn disk_users(ui: &mut Ui, snap: &Snapshot, number: u32, out: &mut Ve
     widgets::blank_rows(ui, shown, DISK_PROCESS_ROWS, width);
 
     ui.add_space(10.0);
+    if !NAMES_FILES {
+        ui.label(
+            RichText::new(
+                "Which files: the kernel's block layer, where disks are traced, knows sectors, \
+                 not files. Averaged over a few seconds. Cached writes reach the disk later \
+                 through the kernel's flusher threads, counted under Kernel.",
+            )
+            .small()
+            .color(theme::TEXT_DIM),
+        );
+        return;
+    }
     ui.label(RichText::new("Files").color(theme::TEXT_WEAK));
     let columns = [
         ("File", 440.0, Align::Min),

@@ -28,6 +28,9 @@ use crate::hardening::set_current_thread_priority;
 
 use super::*;
 
+/// Whether the trace says which files a disk's traffic was for.
+pub const NAMES_FILES: bool = true;
+
 const OPCODE_READ: u8 = 10;
 const OPCODE_WRITE: u8 = 11;
 const OPCODE_FILE_NAME: u8 = 0;

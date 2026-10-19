@@ -71,14 +71,17 @@ pub mod ntapi;
 #[path = "windows/winfile.rs"]
 pub mod winfile;
 
-// Linux only: reading /proc, the desktop's programs and icons, and the
-// package manager's records.
+// Linux only: reading /proc, the kernel's tracing (perf events), the
+// desktop's programs and icons, and the package manager's records.
 #[cfg(target_os = "linux")]
 #[path = "linux/apps.rs"]
 mod apps;
 #[cfg(target_os = "linux")]
 #[path = "linux/packages.rs"]
 pub mod packages;
+#[cfg(target_os = "linux")]
+#[path = "linux/perf.rs"]
+mod perf;
 #[cfg(target_os = "linux")]
 #[path = "linux/procfs.rs"]
 mod procfs;

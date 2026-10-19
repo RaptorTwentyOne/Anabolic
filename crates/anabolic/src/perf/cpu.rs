@@ -3,6 +3,15 @@
 
 use super::*;
 
+/// Work interrupts leave for later: Windows' deferred procedure calls,
+/// Linux's softirqs.
+const DEFERRED: &str = if cfg!(windows) { "DPC" } else { "Softirq" };
+const DEFERRED_PER_SEC: &str = if cfg!(windows) {
+    "DPCs/s"
+} else {
+    "Softirqs/s"
+};
+
 pub(super) fn cpu(
     ui: &mut Ui,
     snap: &Snapshot,
@@ -35,7 +44,7 @@ pub(super) fn cpu(
                     ("Utilization", format!("{:.1} %", s.cpu.total)),
                     ("Speed", ghz(s.cpu.mhz)),
                     ("Kernel", format!("{:.1} %", s.cpu.kernel)),
-                    ("DPC", format!("{:.2} %", s.cpu.dpc)),
+                    (DEFERRED, format!("{:.2} %", s.cpu.dpc)),
                     ("Interrupts", format!("{:.2} %", s.cpu.interrupt)),
                     ("Processes", fmt::count(s.processes as u64)),
                     ("Threads", fmt::count(s.threads as u64)),
@@ -216,14 +225,14 @@ pub(super) fn core_detail(
             ("Utilization", format!("{:.1} %", times.total)),
             ("Clock", ghz(times.mhz)),
             ("Kernel", format!("{:.1} %", times.kernel)),
-            ("DPC", format!("{:.2} %", times.dpc)),
+            (DEFERRED, format!("{:.2} %", times.dpc)),
             ("Interrupt time", format!("{:.2} %", times.interrupt)),
             ("Interrupts/s", fmt::count(times.interrupt_rate as u64)),
             (
                 "Context switches/s",
                 fmt::count(times.context_switch_rate as u64),
             ),
-            ("DPCs/s", fmt::count(times.dpc_rate as u64)),
+            (DEFERRED_PER_SEC, fmt::count(times.dpc_rate as u64)),
         ],
     );
     let empty = CoreActivity::default();

@@ -53,6 +53,12 @@ pub fn has_capability(bit: u32) -> bool {
     effective_capabilities() & (1 << bit) != 0
 }
 
+/// Every kernel trace is tried: what it lacks (cap_perfmon, tracefs), the
+/// kernel says itself, and a lowered perf_event_paranoid may need neither.
+pub fn may_trace() -> bool {
+    true
+}
+
 /// Root, or holding every capability Anabolic asks for.
 pub fn is_elevated() -> bool {
     if unsafe { libc::geteuid() } == 0 {

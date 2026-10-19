@@ -3,6 +3,9 @@
 //! moment, and the drivers that hold the processors in interrupts and DPCs.
 //! All of it from ETW: present events the graphics runtime writes and the
 //! kernel's DPC/ISR timing. No game is opened or touched.
+//!
+//! On Linux nothing reports frames system-wide; the page times interrupt
+//! handlers and softirqs (Linux's DPCs) from the kernel's tracepoints.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -25,6 +28,41 @@ const MOMENTS: usize = 600;
 const STUTTERS_SHOWN: usize = 40;
 /// Drivers listed, worst first.
 const DRIVERS_SHOWN: usize = 24;
+
+/// The latency view's words: Windows times DPCs and ISRs per driver, Linux
+/// softirqs and interrupt handlers.
+#[cfg(windows)]
+mod words {
+    pub const INTRO: &str = "From the events the graphics runtime and the kernel write; no game \
+                             is opened or touched.";
+    pub const WATCH: &str = "Stutters are caught while you play with Anabolic in the background \
+                             or the notification area; look here afterwards. Costs about 0.2 % \
+                             of one processor.";
+    pub const SECTION: &str = "Drivers holding the processors";
+    pub const WHAT: &str = "Interrupts (ISR) and deferred calls (DPC) run ahead of every \
+                            program, games included; while one runs, its processor does nothing \
+                            else. Over a millisecond, audio can crackle and frames slip.";
+    pub const LONGEST: &str = "The longest DPC or interrupt per logical processor";
+    pub const HANDLER: &str = "Driver";
+    pub const DEFERRED: &str = "DPC/s";
+    pub const WHERE: &str = "File";
+}
+
+#[cfg(target_os = "linux")]
+mod words {
+    pub const INTRO: &str = "From the kernel's own interrupt timing; no game is opened or touched.";
+    pub const WATCH: &str = "Interrupt timing keeps being recorded while you play with Anabolic \
+                             in the background or the notification area; look here afterwards.";
+    pub const SECTION: &str = "Interrupts holding the processors";
+    pub const WHAT: &str = "Interrupt handlers, and the softirqs that finish their work (network, \
+                            disks, timers), run ahead of every program, games included; while \
+                            one runs, its processor does nothing else. Over a millisecond, audio \
+                            can crackle and frames slip.";
+    pub const LONGEST: &str = "The longest softirq or interrupt per logical processor";
+    pub const HANDLER: &str = "Handler";
+    pub const DEFERRED: &str = "Softirqs/s";
+    pub const WHERE: &str = "Interrupt lines";
+}
 
 /// What the machine was doing over one refresh.
 struct Moment {
@@ -523,13 +561,12 @@ fn histogram(ui: &mut Ui, width: f32, d: &DriverLatency) {
 }
 
 fn drivers(ui: &mut Ui, latency: &LatencyStats) {
-    widgets::section(ui, "Drivers holding the processors");
+    widgets::section(ui, words::SECTION);
     caption(
         ui,
         format!(
-            "Interrupts (ISR) and deferred calls (DPC) run ahead of every program, games \
-             included; while one runs, its processor does nothing else. Over a millisecond, \
-             audio can crackle and frames slip. Measured for {}{}{}.",
+            "{} Measured for {}{}{}.",
+            words::WHAT,
             fmt::span(latency.measured),
             if latency.lost_events > 0 {
                 format!(", {} events lost", fmt::count(latency.lost_events as u64))
@@ -583,22 +620,22 @@ fn drivers(ui: &mut Ui, latency: &LatencyStats) {
             .max_by(|a, b| a.1.total_cmp(b.1));
         if let Some((cpu, us)) = worst {
             response.on_hover_text(format!(
-                "The longest DPC or interrupt per logical processor (bars up to 2 ms). Worst: \
-                 CPU {cpu}, {}.",
+                "{} (bars up to 2 ms). Worst: CPU {cpu}, {}.",
+                words::LONGEST,
                 micros(*us)
             ));
         }
         ui.add_space(4.0);
     }
     let columns: [(&str, f32, Align); 8] = [
-        ("Driver", 170.0, Align::Min),
+        (words::HANDLER, 170.0, Align::Min),
         ("Longest", 80.0, Align::Max),
         ("Lately", 80.0, Align::Max),
-        ("DPC/s", 70.0, Align::Max),
+        (words::DEFERRED, 70.0, Align::Max),
         ("Interrupts/s", 90.0, Align::Max),
         ("Of a core", 76.0, Align::Max),
         ("How long they take", 180.0, Align::Min),
-        ("File", 360.0, Align::Min),
+        (words::WHERE, 360.0, Align::Min),
     ];
     widgets::header(ui, &columns);
     let shown = latency.drivers.len().min(DRIVERS_SHOWN);
@@ -662,6 +699,47 @@ fn drivers(ui: &mut Ui, latency: &LatencyStats) {
     );
 }
 
+/// Whether this system reports games' frames (Windows' present events);
+/// Linux has nothing of the kind.
+const FRAMES: bool = cfg!(windows);
+
+/// No frame times to show, only the interrupt timing.
+fn interrupts_only(ui: &mut Ui, snap: &Snapshot, relaunching: bool, out: &mut Vec<UiCmd>) {
+    if let Some(e) = snap.system.frame_trace_error.as_deref() {
+        caption(ui, format!("No frame times: {e}."));
+        ui.add_space(6.0);
+    }
+    if let Some(e) = snap.system.latency_trace_error.as_deref() {
+        ui.horizontal(|ui| {
+            ui.label(widgets::icon(theme::icon::LOCK, 13.0).color(theme::ELEVATED_TEXT));
+            ui.label(
+                RichText::new(format!("Interrupt timing could not start: {e}."))
+                    .color(theme::ELEVATED_TEXT),
+            );
+            if ui
+                .add_enabled(!relaunching, egui::Button::new("Grant rights and restart"))
+                .clicked()
+            {
+                out.push(UiCmd::RelaunchElevated);
+            }
+        });
+        return;
+    }
+    let Some(latency) = snap.system.latency.clone() else {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Starting the interrupt trace…").color(theme::TEXT_WEAK));
+        });
+        return;
+    };
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            drivers(ui, &latency);
+            ui.add_space(10.0);
+        });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -674,23 +752,20 @@ pub fn show(
 ) {
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(
-                "From the events the graphics runtime and the kernel write; no game is opened \
-                 or touched.",
-            )
-            .size(theme::META)
-            .color(theme::TEXT_WEAK),
+            RichText::new(words::INTRO)
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
         );
         ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
             ui.checkbox(watching, "Keep watching with this page closed")
-                .on_hover_text(
-                    "Stutters are caught while you play with Anabolic in the background or \
-                     the notification area; look here afterwards. Costs about 0.2 % of one \
-                     processor.",
-                );
+                .on_hover_text(words::WATCH);
         });
     });
     ui.add_space(6.0);
+    if !FRAMES {
+        interrupts_only(ui, snap, relaunching, out);
+        return;
+    }
     let error = snap
         .system
         .frame_trace_error

@@ -155,6 +155,11 @@ impl DiskUsage {
                 .entry((r.disk, pid))
                 .or_default()
                 .add(&r.totals);
+            // A trace that knows no files would list one "no file" row per
+            // process.
+            if !crate::disktrace::NAMES_FILES {
+                continue;
+            }
             let f = self
                 .files
                 .entry((r.disk, pid, r.file_object))
@@ -295,11 +300,16 @@ mod tests {
         assert_eq!(d0.disk, 0);
         assert_eq!(&*d0.processes[0].name, "p100.exe");
         assert_eq!(d0.processes[0].io.write_total, 1500);
+        assert_eq!(&*out[1].processes[0].name, "<unknown thread>");
+        if !crate::disktrace::NAMES_FILES {
+            // Traffic per process only: no file rows at all.
+            assert!(out.iter().all(|d| d.files.is_empty()));
+            return;
+        }
         // Two file objects for one path make one row.
         let a = d0.files.iter().find(|f| f.path.ends_with("a.bin")).unwrap();
         assert_eq!(a.io.write_total, 1500);
         assert!(d0.files.iter().any(|f| f.pid == 200 && &*f.path == UNNAMED));
-        assert_eq!(&*out[1].processes[0].name, "<unknown thread>");
 
         // A rundown names the file afterwards.
         let sample = DiskSample {

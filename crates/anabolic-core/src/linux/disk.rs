@@ -295,18 +295,24 @@ fn diskstats() -> HashMap<String, Counters> {
         .collect()
 }
 
+/// The physical disks' kernel names, in the order they are numbered (the
+/// disk trace numbers them the same way).
+pub(crate) fn physical_disks() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir("/sys/block")
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| physical(n))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 impl DiskSampler {
     pub fn new() -> Self {
-        let mut names: Vec<String> = std::fs::read_dir("/sys/block")
-            .map(|d| {
-                d.flatten()
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|n| physical(n))
-                    .collect()
-            })
-            .unwrap_or_default();
-        names.sort();
-        let disks = names
+        let disks = physical_disks()
             .into_iter()
             .enumerate()
             .map(|(number, name)| Disk {
