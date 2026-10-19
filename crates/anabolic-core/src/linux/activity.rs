@@ -9,6 +9,8 @@
 //!   at the process list ten times a second.
 //! - connections: the socket table four times a second: connections made,
 //!   accepted and closed, and the bytes each carried (TCP).
+//! - system calls, when asked (a program or processes, not the whole
+//!   machine): the kernel's syscall tracepoints, see `syscalls`.
 //!
 //! The registry kinds do not occur on Linux.
 
@@ -26,6 +28,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use crate::netlink::{self, DiagSocket, ProcEvent, ProcEvents};
 use crate::nettrace::Proto;
 use crate::procfs;
+use crate::syscalls::{Call, Names, Object, Tracer};
 
 use super::*;
 
@@ -35,14 +38,26 @@ impl ActivityEvent {
         match (self.kind, self.status) {
             (_, None) => String::new(),
             (ActivityKind::ProcessExit, Some(code)) => format!("exit code {code}"),
+            // A failed system call: its errno's symbol, and what it means.
+            (ActivityKind::Syscall(_), Some(errno)) if errno != 0 => {
+                match (crate::syscalls::errno_name(errno), status_word(errno)) {
+                    (Some(name), Some(word)) => format!("{name} ({word})"),
+                    (Some(name), None) => name.to_string(),
+                    _ => status_text(errno),
+                }
+            }
             (_, Some(status)) => status_text(status),
         }
     }
 
-    /// `result_text` when it is a fixed phrase.
+    /// `result_text` when it is a fixed phrase (a failed system call: its
+    /// errno's symbol).
     pub fn result_word(&self) -> Option<&'static str> {
         match (self.kind, self.status) {
             (ActivityKind::ProcessExit, _) | (_, None) => None,
+            (ActivityKind::Syscall(_), Some(errno)) if errno != 0 => {
+                crate::syscalls::errno_name(errno)
+            }
             (_, Some(status)) => status_word(status),
         }
     }
@@ -78,6 +93,33 @@ pub fn status_word(status: u32) -> Option<&'static str> {
         libc::ECONNRESET => "connection reset",
         libc::ETIMEDOUT => "timed out",
         libc::EINPROGRESS => "in progress",
+        libc::EINTR => "interrupted",
+        libc::EBADF => "bad descriptor",
+        libc::ENOTTY => "not a terminal",
+        libc::ESPIPE => "not seekable",
+        libc::EPIPE => "broken pipe",
+        libc::ENOSYS => "not implemented",
+        libc::ENODATA => "no data",
+        libc::EOPNOTSUPP => "not supported",
+        libc::ENOTCONN => "not connected",
+        libc::ENOTSOCK => "not a socket",
+        libc::ESRCH => "no such process",
+        libc::ECHILD => "no child process",
+        libc::ENOMEM => "out of memory",
+        libc::EFAULT => "bad address",
+        libc::EMFILE => "too many open files",
+        libc::ENOSPC => "no space left",
+        libc::EROFS => "read-only file system",
+        libc::ELOOP => "too many links",
+        libc::ENAMETOOLONG => "name too long",
+        libc::EXDEV => "across file systems",
+        libc::ENXIO | libc::ENODEV => "no such device",
+        libc::EIO => "input/output error",
+        libc::ERANGE => "out of range",
+        libc::EADDRINUSE => "address in use",
+        libc::EALREADY => "already in progress",
+        libc::EHOSTUNREACH => "host unreachable",
+        libc::ENETUNREACH => "network unreachable",
         _ => return None,
     })
 }
@@ -123,18 +165,39 @@ pub struct ActivityRecorder {
 impl ActivityRecorder {
     /// Records a running process, and what it starts from now on.
     pub fn attach(pid: u32) -> Result<Self, String> {
-        Self::start(Target::Attach(vec![pid]))
+        Self::start(Target::Attach(vec![pid]), false)
     }
 
     /// Records every process of the machine but Anabolic itself: what is
     /// wanted is found by filtering after.
     pub fn everything() -> Result<Self, String> {
-        Self::start(Target::Everything)
+        Self::start(Target::Everything, false)
     }
 
     /// Records several running processes (a program and its children).
     pub fn attach_all(pids: &[u32]) -> Result<Self, String> {
-        Self::start(Target::Attach(pids.to_vec()))
+        Self::start(Target::Attach(pids.to_vec()), false)
+    }
+
+    /// As `attach_all`, with every system call they make too.
+    pub fn attach_with_syscalls(pids: &[u32]) -> Result<Self, String> {
+        Self::start(Target::Attach(pids.to_vec()), true)
+    }
+
+    /// As `launch`, with every system call it makes too, from its first.
+    pub fn launch_with_syscalls(
+        program: &str,
+        args: &str,
+        dir: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::start(
+            Target::Launch {
+                program: program.to_string(),
+                args: args.to_string(),
+                dir: dir.map(str::to_string),
+            },
+            true,
+        )
     }
 
     /// Starts a program and records it from its first step. It runs as the
@@ -152,14 +215,17 @@ impl ActivityRecorder {
         dir: Option<&str>,
         _how: LaunchHow,
     ) -> Result<Self, String> {
-        Self::start(Target::Launch {
-            program: program.to_string(),
-            args: args.to_string(),
-            dir: dir.map(str::to_string),
-        })
+        Self::start(
+            Target::Launch {
+                program: program.to_string(),
+                args: args.to_string(),
+                dir: dir.map(str::to_string),
+            },
+            false,
+        )
     }
 
-    fn start(target: Target) -> Result<Self, String> {
+    fn start(target: Target, syscalls: bool) -> Result<Self, String> {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (control, control_rx) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
@@ -167,7 +233,11 @@ impl ActivityRecorder {
             let (shared, stop) = (shared.clone(), stop.clone());
             thread::Builder::new()
                 .name("anabolic-activity".into())
-                .spawn(move || Recorder::new(target, shared, control_rx, stop).run())
+                .spawn(move || {
+                    let mut recorder = Recorder::new(target, shared, control_rx, stop);
+                    recorder.syscalls = syscalls;
+                    recorder.run()
+                })
                 .map_err(|e| e.to_string())?
         };
         Ok(Self {
@@ -585,6 +655,14 @@ struct Recorder {
     endpoints: HashSet<(IpAddr, u16)>,
     paths: HashSet<Arc<str>>,
     lost_events: u32,
+    /// System calls were asked for.
+    syscalls: bool,
+    tracer: Option<Tracer>,
+    /// Open rows of system calls: (thread, call, what it is about, result)
+    /// -> seq.
+    call_runs: HashMap<(u32, u32, Object, Option<u32>), u64>,
+    /// Totals by call number.
+    call_stats: HashMap<u32, SyscallStat>,
 }
 
 impl Recorder {
@@ -617,6 +695,10 @@ impl Recorder {
             endpoints: HashSet::new(),
             paths: HashSet::new(),
             lost_events: 0,
+            syscalls: false,
+            tracer: None,
+            call_runs: HashMap::new(),
+            call_stats: HashMap::new(),
         }
     }
 
@@ -698,12 +780,91 @@ impl Recorder {
                 status,
                 count: 1,
                 bytes,
+                took: Duration::ZERO,
             },
             open_until: merges.then_some(now + MERGE),
         });
         if merges {
             self.runs.insert(key, seq);
         }
+    }
+
+    /// A system call, at the end of the timeline. Calls a thread repeats on
+    /// the same thing with the same result go into one row while it is
+    /// open, so that a loop of poll or futex stays readable.
+    fn on_call(&mut self, c: &Call, names: &mut Names) {
+        let Ok(nr) = u16::try_from(c.nr) else {
+            return;
+        };
+        let took = c.took().unwrap_or_default();
+        let status = c.status();
+        let stat = self.call_stats.entry(c.nr).or_insert_with(|| SyscallStat {
+            name: ActivityKind::Syscall(nr).label(),
+            ..Default::default()
+        });
+        stat.calls += 1;
+        stat.errors += u64::from(c.errno().is_some());
+        stat.time += took;
+        let object = c.object();
+        let bytes = c.bytes();
+        let now = Instant::now();
+        let key = (c.tid, c.nr, object, status);
+        if let Some(&seq) = self.call_runs.get(&key)
+            && let Some(slot) = seq
+                .checked_sub(self.base)
+                .and_then(|i| self.queue.get_mut(i as usize))
+            && slot.open_until.is_some_and(|until| until > now)
+        {
+            slot.ev.count += 1;
+            slot.ev.bytes += bytes;
+            slot.ev.took += took;
+            return;
+        }
+        let path = names.path(c, &key.2);
+        let mut detail = c.text();
+        match c.outcome {
+            _ if c.args.is_none() => detail.push_str("  (began before it was seen)"),
+            crate::syscalls::Outcome::Waiting => detail.push_str(
+                if std::path::Path::new(&format!("/proc/{}/task/{}", c.pid, c.tid)).exists() {
+                    "  (still in it when the recording stopped)"
+                } else {
+                    "  (the thread ended in it)"
+                },
+            ),
+            crate::syscalls::Outcome::Unknown => detail.push_str("  (its end was lost)"),
+            _ => {}
+        }
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.queue.push_back(Slot {
+            ev: ActivityEvent {
+                seq,
+                at: crate::perf::wall(c.time),
+                pid: c.pid,
+                tid: c.tid,
+                kind: ActivityKind::Syscall(nr),
+                path,
+                detail,
+                status,
+                count: 1,
+                bytes,
+                took,
+            },
+            open_until: Some(now + MERGE),
+        });
+        self.call_runs.insert(key, seq);
+    }
+
+    /// Every system call finished by now. `all`: the recording ends.
+    fn read_calls(&mut self, all: bool) {
+        let Some(mut tracer) = self.tracer.take() else {
+            return;
+        };
+        self.summary.seen += tracer.read(all, |c, names| self.on_call(c, names));
+        if all {
+            tracer.unfinished(|c, names| self.on_call(c, names));
+        }
+        self.tracer = Some(tracer);
     }
 
     /// Hands finished steps over, in order. `all`: the recording ended.
@@ -726,7 +887,22 @@ impl Recorder {
         }
         let base = self.base;
         self.runs.retain(|_, seq| *seq >= base);
-        self.summary.lost = self.lost_events + self.files.as_ref().map_or(0, |f| f.overflows);
+        self.call_runs.retain(|_, seq| *seq >= base);
+        let calls_lost = self.tracer.as_ref().map_or(0, |t| t.lost);
+        self.summary.lost = (u64::from(self.lost_events)
+            + u64::from(self.files.as_ref().map_or(0, |f| f.overflows))
+            + calls_lost)
+            .min(u64::from(u32::MAX)) as u32;
+        if !self.call_stats.is_empty() {
+            let mut stats: Vec<SyscallStat> = self.call_stats.values().cloned().collect();
+            stats.sort_by(|a, b| {
+                b.time
+                    .cmp(&a.time)
+                    .then(b.calls.cmp(&a.calls))
+                    .then(a.name.cmp(b.name))
+            });
+            self.summary.syscalls = stats;
+        }
         if let Ok(mut s) = self.shared.lock() {
             s.out.append(&mut out);
             s.summary = self.summary.clone();
@@ -770,6 +946,9 @@ impl Recorder {
     /// `status` as wait(2) gives it, when known: the exit code, or 128 and
     /// the signal that ended it, as a shell says.
     fn ended(&mut self, pid: u32, status: Option<u32>) {
+        if let Some(t) = &mut self.tracer {
+            t.names.forget(pid);
+        }
         if !self.wants(pid) {
             self.images.remove(&pid);
             return;
@@ -1081,8 +1260,14 @@ impl Recorder {
     /// Starts the program to record: as the user (Anabolic's capabilities
     /// do not pass to a program it starts), with no terminal. It is
     /// recorded from the moment it exists; the steps it takes meanwhile
-    /// wait in the kernel's queues and are read right after.
-    fn launch(&mut self, program: &str, args: &str, dir: Option<&str>) -> Result<(), String> {
+    /// wait in the kernel's queues and are read right after. Its system
+    /// calls, when asked, from its first. Says what is not recorded.
+    fn launch(
+        &mut self,
+        program: &str,
+        args: &str,
+        dir: Option<&str>,
+    ) -> Result<Option<String>, String> {
         let mut command = std::process::Command::new(program);
         command
             .args(split_args(args))
@@ -1092,15 +1277,17 @@ impl Recorder {
         if let Some(dir) = dir.filter(|d| !d.is_empty()) {
             command.current_dir(dir);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("{program} could not start: {e}"))?;
+        let (child, problem) = match &mut self.tracer {
+            Some(tracer) => tracer.launch(&mut command),
+            None => (command.spawn(), None),
+        };
+        let mut child = child.map_err(|e| format!("{program} could not start: {e}"))?;
         self.tracked.insert(child.id());
         // Collected when it ends, so it does not linger as a zombie.
         let _ = thread::Builder::new()
             .name("anabolic-launched".into())
             .spawn(move || child.wait());
-        Ok(())
+        Ok(problem)
     }
 
     fn run(mut self) {
@@ -1108,6 +1295,13 @@ impl Recorder {
         match Files::open() {
             Ok(files) => self.files = Some(files),
             Err(e) => problems.push(format!("file activity is not recorded: {e}")),
+        }
+        // On this thread: it reads the trace, and its buffers live with it.
+        if self.syscalls && !self.everything {
+            match Tracer::new() {
+                Ok(tracer) => self.tracer = Some(tracer),
+                Err(e) => problems.push(format!("system calls are not recorded: {e}")),
+            }
         }
         self.events = ProcEvents::open().ok();
         if self.events.is_none() {
@@ -1121,16 +1315,23 @@ impl Recorder {
                     self.images.insert(pid, image.into());
                 }
             }
+            if let Some(why) = self.tracer.as_mut().and_then(|t| t.follow(pids)) {
+                problems.push(format!("system calls: {why}"));
+            }
         }
         // The connections open now: what recorded processes do with them
         // from now on counts; a launched program's are all new.
         self.poll_connections();
-        if let Some(Target::Launch { program, args, dir }) = &target
-            && let Err(e) = self.launch(program, args, dir.as_deref())
-        {
-            self.set_state(RecorderState::Failed(e));
-            self.flush(true);
-            return;
+        if let Some(Target::Launch { program, args, dir }) = &target {
+            match self.launch(program, args, dir.as_deref()) {
+                Ok(None) => {}
+                Ok(Some(why)) => problems.push(format!("system calls are not recorded: {why}")),
+                Err(e) => {
+                    self.set_state(RecorderState::Failed(e));
+                    self.flush(true);
+                    return;
+                }
+            }
         }
         self.set_state(if problems.is_empty() {
             RecorderState::Recording
@@ -1145,6 +1346,9 @@ impl Recorder {
             let stopping = self.stop.load(Ordering::Relaxed);
             while let Ok(pid) = self.control.try_recv() {
                 self.tracked.insert(pid);
+                if let Some(t) = &mut self.tracer {
+                    t.follow(&[pid]);
+                }
             }
             let mut waits = Vec::with_capacity(2);
             if let Some(f) = &self.files {
@@ -1160,6 +1364,13 @@ impl Recorder {
                     events: libc::POLLIN,
                     revents: 0,
                 });
+            }
+            if let Some(t) = &self.tracer {
+                waits.extend(t.fds().map(|fd| libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                }));
             }
             if !stopping {
                 unsafe { libc::poll(waits.as_mut_ptr(), waits.len() as libc::nfds_t, 50) };
@@ -1185,6 +1396,7 @@ impl Recorder {
                     self.on_file(event);
                 }
             }
+            self.read_calls(stopping);
             if last_net.elapsed() >= NET_EVERY || stopping {
                 last_net = Instant::now();
                 self.poll_connections();
@@ -1263,6 +1475,128 @@ mod tests {
         );
         assert!(split_args("   ").is_empty());
         assert_eq!(split_args(r#""""#), vec![""]);
+    }
+
+    /// The calls a thread repeats on the same thing with the same result
+    /// are one row; the totals count every call.
+    #[test]
+    fn merges_repeated_system_calls() {
+        use crate::syscalls::Outcome;
+        let (_control, control) = unbounded();
+        let mut r = Recorder::new(
+            Target::Attach(Vec::new()),
+            Arc::default(),
+            control,
+            Arc::default(),
+        );
+        let mut names = Names::default();
+        // A process that is not there: its descriptors go unnamed.
+        let read = |time: u64, ret: i64| Call {
+            pid: 4_000_000_000,
+            tid: 2,
+            nr: 0,
+            time,
+            end: time + 1_000,
+            args: Some([5, 0, 64, 0, 0, 0]),
+            names: Vec::new(),
+            outcome: Outcome::Returned(ret),
+        };
+        for i in 0..3 {
+            r.on_call(&read(i * 10_000, 64), &mut names);
+        }
+        r.on_call(&read(40_000, -i64::from(libc::EAGAIN)), &mut names);
+        r.on_call(
+            &Call {
+                tid: 3,
+                ..read(50_000, 64)
+            },
+            &mut names,
+        );
+        r.on_call(
+            &Call {
+                args: None,
+                ..read(60_000, 1)
+            },
+            &mut names,
+        );
+        r.flush(true);
+        let out = std::mem::take(&mut r.shared.lock().unwrap().out);
+        let rows: Vec<(u32, u32, u64, Option<u32>)> = out
+            .iter()
+            .map(|e| (e.tid, e.count, e.bytes, e.status))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (2, 3, 192, Some(0)),
+                (2, 1, 0, Some(11)),
+                (3, 1, 64, Some(0)),
+                (2, 1, 1, Some(0)),
+            ]
+        );
+        let first = &out[0];
+        assert_eq!(first.kind.label(), "read");
+        assert_eq!(first.kind.group(), Group::Syscall);
+        assert_eq!(
+            (&*first.path, first.detail.as_str()),
+            ("fd 5", "read(5, NULL, 64) = 64")
+        );
+        assert_eq!(first.took, Duration::from_micros(3));
+        assert_eq!(out[1].result_text(), "EAGAIN (try again)");
+        assert_eq!(out[1].result_word(), Some("EAGAIN"));
+        assert!(out[1].failed());
+        assert_eq!(out[3].detail, "read(…) = 1  (began before it was seen)");
+        let summary = r.summary.syscalls;
+        assert_eq!(summary.len(), 1);
+        assert_eq!(
+            (summary[0].name, summary[0].calls, summary[0].errors),
+            ("read", 6, 1)
+        );
+        assert_eq!(summary[0].time, Duration::from_micros(5));
+    }
+
+    /// A program's system calls from its first, with the rights for them
+    /// (root, or the capabilities Anabolic is given); skipped without.
+    #[test]
+    fn records_system_calls_when_allowed() {
+        let mut recorder = ActivityRecorder::launch_with_syscalls(
+            "sh",
+            "-c 'cat /etc/hostname > /dev/null'",
+            None,
+        )
+        .unwrap();
+        let mut events = Vec::new();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            events.extend(recorder.take());
+            if events.iter().any(|e| e.kind == ActivityKind::ProcessExit) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if let RecorderState::Failed(why) = recorder.state()
+            && why.contains("system calls are not recorded")
+        {
+            eprintln!("{why}: skipping");
+            return;
+        }
+        let summary = recorder.summary();
+        events.extend(recorder.stop());
+        let calls: Vec<&ActivityEvent> = events
+            .iter()
+            .filter(|e| e.kind.group() == Group::Syscall)
+            .collect();
+        let named = |name: &str| calls.iter().any(|e| e.kind.label() == name);
+        assert!(
+            named("openat") && named("read") && named("exit_group"),
+            "{calls:#?}"
+        );
+        assert!(summary.syscalls.iter().any(|s| s.name == "openat"));
+        // With a kernel that copies file names, the file read is named.
+        eprintln!(
+            "/etc/hostname named: {}",
+            calls.iter().any(|e| e.path.ends_with("/etc/hostname"))
+        );
     }
 
     #[test]

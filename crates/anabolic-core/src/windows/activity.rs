@@ -470,6 +470,7 @@ impl Consumer {
                 status,
                 count: 1,
                 bytes,
+                took: Duration::ZERO,
             },
             open_until: if open_ms > 0.0 {
                 at + self.ticks(open_ms)

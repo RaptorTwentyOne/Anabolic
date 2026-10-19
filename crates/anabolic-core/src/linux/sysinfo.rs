@@ -84,57 +84,9 @@ pub fn wait_reason_name(reason: u32) -> &'static str {
     syscall_name(reason - 1).unwrap_or("?")
 }
 
-/// The system calls threads wait in, by number (x86-64).
-#[cfg(target_arch = "x86_64")]
+/// A system call's name by its number (x86-64).
 pub fn syscall_name(nr: u32) -> Option<&'static str> {
-    Some(match nr {
-        0 => "read",
-        1 => "write",
-        7 => "poll",
-        17 => "pread64",
-        18 => "pwrite64",
-        19 => "readv",
-        20 => "writev",
-        23 => "select",
-        34 => "pause",
-        35 => "nanosleep",
-        42 => "connect",
-        43 => "accept",
-        44 => "sendto",
-        45 => "recvfrom",
-        46 => "sendmsg",
-        47 => "recvmsg",
-        61 => "wait4",
-        69 => "msgsnd",
-        70 => "msgrcv",
-        72 => "fcntl",
-        73 => "flock",
-        74 => "fsync",
-        75 => "fdatasync",
-        128 => "rt_sigtimedwait",
-        130 => "rt_sigsuspend",
-        202 => "futex",
-        208 => "io_getevents",
-        230 => "clock_nanosleep",
-        232 => "epoll_wait",
-        247 => "waitid",
-        270 => "pselect6",
-        271 => "ppoll",
-        281 => "epoll_pwait",
-        288 => "accept4",
-        299 => "recvmmsg",
-        307 => "sendmmsg",
-        426 => "io_uring_enter",
-        441 => "epoll_pwait2",
-        449 => "futex_waitv",
-        454 => "futex_wait",
-        _ => return None,
-    })
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn syscall_name(_nr: u32) -> Option<&'static str> {
-    None
+    crate::syscalls::name(nr)
 }
 
 #[cfg(test)]

@@ -44,7 +44,20 @@ pub struct RecordArgs {
     pub everything: Option<bool>,
     /// Seconds to record: 1 to 120 (default 10).
     pub seconds: Option<u32>,
-    /// Kinds of steps to keep: process, file, registry, network (default all).
+    /// Every system call too, as strace shows it: the call, its arguments,
+    /// its result and the time it took (default false; with pid or name,
+    /// not everything). Calls a thread repeats within a second are one step
+    /// with a count; syscall_summary counts every call.
+    #[cfg(target_os = "linux")]
+    pub syscalls: Option<bool>,
+    #[cfg_attr(
+        windows,
+        doc = "Kinds of steps to keep: process, file, registry, network (default all)."
+    )]
+    #[cfg_attr(
+        target_os = "linux",
+        doc = "Kinds of steps to keep: process, file, network, syscall (default all)."
+    )]
     pub kinds: Option<Vec<String>>,
     /// Words a step's process, path or detail must all contain; "-word"
     /// leaves out the steps that contain it.
@@ -77,9 +90,18 @@ impl Keep {
                 "file" | "files" => Group::File,
                 "registry" => Group::Registry,
                 "network" => Group::Network,
+                #[cfg(target_os = "linux")]
+                "syscall" | "syscalls" | "system_call" | "system_calls" => Group::Syscall,
+                #[cfg(windows)]
                 other => {
                     return Err(format!(
                         "Unknown kind {other}: process, file, registry or network."
+                    ));
+                }
+                #[cfg(target_os = "linux")]
+                other => {
+                    return Err(format!(
+                        "Unknown kind {other}: process, file, network or syscall."
                     ));
                 }
             });
@@ -118,6 +140,18 @@ impl Keep {
     }
 }
 
+/// Records these processes and what they start; their system calls too
+/// when asked (Linux).
+fn attach(pids: &[u32], syscalls: bool) -> Result<ActivityRecorder, String> {
+    #[cfg(target_os = "linux")]
+    if syscalls {
+        return ActivityRecorder::attach_with_syscalls(pids);
+    }
+    #[cfg(windows)]
+    let _ = syscalls;
+    ActivityRecorder::attach_all(pids)
+}
+
 /// Clears the busy mark however the recording ends.
 struct Busy<'a>(&'a std::sync::Mutex<Recordings>);
 
@@ -141,9 +175,11 @@ const RECORD_ACTIVITY: &str = "Records what a process (with the processes under 
     process of a name, or the whole machine does for some seconds, step by step like Process \
     Monitor: programs started and how they ended, shared libraries loaded, files opened, read, \
     written, renamed and deleted (only when Anabolic has full access; Linux reports what was \
-    done, not what failed), TCP connections with the bytes they carried. Nothing is opened or \
-    injected. Reports progress every second; returns the counts and the steps kept (filter them \
-    with kinds, filter, only_failures, only_changes).";
+    done, not what failed), TCP connections with the bytes they carried; with syscalls=true, \
+    every system call of a process or program like strace, with a per-call summary like \
+    strace -c (full access). Nothing is opened, stopped or injected. Reports progress every \
+    second; returns the counts and the steps kept (filter them with kinds, filter, \
+    only_failures, only_changes).";
 
 #[tool_router(router = activity_tools, vis = "pub(super)")]
 impl AnabolicMcp {
@@ -167,6 +203,13 @@ impl AnabolicMcp {
         let targets = [args.pid.is_some(), args.name.is_some(), everything];
         if targets.iter().filter(|t| **t).count() != 1 {
             return fail("Give exactly one of pid, name or everything=true.");
+        }
+        #[cfg(target_os = "linux")]
+        let syscalls = args.syscalls.unwrap_or(false);
+        #[cfg(windows)]
+        let syscalls = false;
+        if syscalls && everything {
+            return fail("System calls are recorded for a pid or a name, not everything.");
         }
         let snap = match args.pid {
             Some(pid) => self.snapshot_with(pid).await,
@@ -225,7 +268,7 @@ impl AnabolicMcp {
             let recorder = if everything {
                 ActivityRecorder::everything()
             } else {
-                ActivityRecorder::attach_all(&target_pids)
+                attach(&target_pids, syscalls)
             };
             let mut recorder = recorder?;
             let mut events: Vec<ActivityEvent> = Vec::new();
@@ -248,8 +291,9 @@ impl AnabolicMcp {
                 take(recorder.take(), &mut events);
                 let _ = tx.blocking_send((second, events.len()));
             }
+            let summary = recorder.summary();
             take(recorder.stop(), &mut events);
-            Ok((events, total, counts))
+            Ok((events, total, counts, summary.syscalls))
         });
         while let Some((second, steps)) = rx.recv().await {
             progress(
@@ -260,7 +304,7 @@ impl AnabolicMcp {
             )
             .await;
         }
-        let (events, total, counts) = match work.await {
+        let (events, total, counts, calls) = match work.await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => return fail(format!("Could not record: {e}")),
             Err(e) => return fail(format!("The recording stopped: {e}")),
@@ -287,7 +331,7 @@ impl AnabolicMcp {
         top.sort_by_key(|t| std::cmp::Reverse(t.1));
         let mut counts: Vec<_> = counts.into_iter().collect();
         counts.sort_by_key(|c| std::cmp::Reverse(c.1));
-        ok(json!({
+        let mut out = json!({
             "recorded_seconds": secs,
             "processes": if everything { Value::String("every process".into()) } else {
                 json!(pids.iter().map(|p| json!({ "pid": p, "name": &*name_of(*p) })).collect::<Vec<_>>())
@@ -298,17 +342,36 @@ impl AnabolicMcp {
             "failures_matching": failures,
             "most_touched_paths": top.iter().take(15).map(|(p, n)| json!({ "path": p, "times": n })).collect::<Vec<_>>(),
             "earlier_steps_left_out": skipped,
-            "steps": kept[skipped..].iter().map(|e| json!({
-                "at": crate::fmt::clock(e.at, true),
-                "pid": e.pid,
-                "process": &*name_of(e.pid),
-                "operation": e.kind.label(),
-                "path": &*e.path,
-                "detail": e.detail,
-                "result": e.result_text(),
-                "times": e.count,
-                "bytes": e.bytes,
-            })).collect::<Vec<_>>(),
-        }))
+            "steps": kept[skipped..].iter().map(|e| {
+                let mut step = json!({
+                    "at": crate::fmt::clock(e.at, true),
+                    "pid": e.pid,
+                    "process": &*name_of(e.pid),
+                    "operation": e.kind.label(),
+                    "path": &*e.path,
+                    "detail": e.detail,
+                    "result": e.result_text(),
+                    "times": e.count,
+                    "bytes": e.bytes,
+                });
+                // A system call: the time inside it (all of them, merged).
+                if !e.took.is_zero() {
+                    step["tid"] = json!(e.tid);
+                    step["took_us"] = json!((e.took.as_secs_f64() * 1e6 * 10.0).round() / 10.0);
+                }
+                step
+            }).collect::<Vec<_>>(),
+        });
+        // Every call, as strace -c counts them: the most time first.
+        if !calls.is_empty() {
+            out["syscall_summary"] = json!(calls.iter().map(|s| json!({
+                "call": s.name,
+                "calls": s.calls,
+                "errors": s.errors,
+                "total_ms": (s.time.as_secs_f64() * 1e3 * 1000.0).round() / 1000.0,
+                "average_us": (s.time.as_secs_f64() * 1e6 / s.calls.max(1) as f64 * 10.0).round() / 10.0,
+            })).collect::<Vec<_>>());
+        }
+        ok(out)
     }
 }

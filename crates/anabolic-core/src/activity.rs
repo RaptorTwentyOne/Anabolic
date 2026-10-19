@@ -1,15 +1,15 @@
 //! What a program does, step by step, the way Process Monitor shows it:
 //! the processes it starts, the code it loads, every file it opens,
 //! creates, reads, writes, renames or deletes, every registry key and value
-//! it touches (Windows), and its network connections, with the result of
-//! each.
+//! it touches (Windows), its network connections, with the result of each,
+//! and, when asked, every system call it makes (Linux).
 //!
 //! All of it comes from the kernel's own reporting: no driver, no hook, and
 //! the program is never opened: recording a game touches it no more than
 //! watching it in the process list.
 
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 #[cfg_attr(windows, path = "windows/activity.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/activity.rs")]
@@ -25,6 +25,8 @@ pub enum Group {
     File,
     Registry,
     Network,
+    #[cfg(target_os = "linux")]
+    Syscall,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -53,6 +55,9 @@ pub enum ActivityKind {
     NetDisconnect,
     NetSend,
     NetReceive,
+    /// A system call, by its number.
+    #[cfg(target_os = "linux")]
+    Syscall(u16),
 }
 
 impl ActivityKind {
@@ -82,6 +87,10 @@ impl ActivityKind {
             ActivityKind::NetDisconnect => "Disconnect",
             ActivityKind::NetSend => "Send",
             ActivityKind::NetReceive => "Receive",
+            #[cfg(target_os = "linux")]
+            ActivityKind::Syscall(nr) => {
+                crate::sysinfo::syscall_name(u32::from(nr)).unwrap_or("system call")
+            }
         }
     }
 
@@ -94,6 +103,8 @@ impl ActivityKind {
             RegOpenKey | RegCreateKey | RegQueryValue | RegSetValue | RegDeleteValue
             | RegDeleteKey | RegEnumKey | RegEnumValue => Group::Registry,
             NetConnect | NetAccept | NetDisconnect | NetSend | NetReceive => Group::Network,
+            #[cfg(target_os = "linux")]
+            Syscall(_) => Group::Syscall,
         }
     }
 
@@ -130,13 +141,27 @@ pub struct ActivityEvent {
     /// Value name, offset and size, command line, options: what else there
     /// is to say.
     pub detail: String,
-    /// NTSTATUS (files, registry), exit code (process exit); None when the
-    /// event carries no result.
+    /// NTSTATUS (files, registry), exit code (process exit), errno (Linux);
+    /// None when the event carries no result.
     pub status: Option<u32>,
     /// Merged events: how many operations this one stands for.
     pub count: u32,
     /// Bytes read, written, sent or received.
     pub bytes: u64,
+    /// Time spent in it (system calls; all of them when merged); zero when
+    /// not measured.
+    pub took: Duration,
+}
+
+/// One system call's totals over a recording, as `strace -c` gives them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyscallStat {
+    pub name: &'static str,
+    pub calls: u64,
+    /// Calls that returned an error.
+    pub errors: u64,
+    /// Time inside the calls that returned.
+    pub time: Duration,
 }
 
 /// What the recording found so far.
@@ -163,6 +188,8 @@ pub struct ActivitySummary {
     pub endpoints: u32,
     pub sent: u64,
     pub received: u64,
+    /// System calls by call, the most time first (Linux, when asked).
+    pub syscalls: Vec<SyscallStat>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

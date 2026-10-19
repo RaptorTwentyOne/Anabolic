@@ -3,8 +3,8 @@
 //! running one, or record the whole computer and narrow it down afterwards
 //! with the filters: every file opened, read, written, renamed or deleted,
 //! every registry key and value (Windows), every connection and every
-//! program started, in order. From what the kernel reports: nothing is
-//! injected or opened.
+//! program started, in order, and on Linux every system call when asked.
+//! From what the kernel reports: nothing is injected or opened.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anabolic_core::activity::{
     ActivityEvent, ActivityKind, ActivityRecorder, ActivitySummary, Group, RecorderState,
+    SyscallStat,
 };
 use anabolic_core::{ProcKey, ProcState, Snapshot};
 use crossbeam_channel::Receiver;
@@ -37,12 +38,26 @@ const GROUPS: &[(Group, &str)] = &[
     (Group::Process, "Processes"),
     (Group::File, "Files"),
     (Group::Network, "Network"),
+    (Group::Syscall, "System calls"),
 ];
 
 /// Linux reports what was done, not what was refused.
 #[cfg(target_os = "linux")]
 const FAILURES_TIP: &str = "Steps that did not succeed. Linux reports file steps only when they \
-                            succeed: what fails here is programs ending with an error";
+                            succeed: what fails here is system calls that returned an error \
+                            (when they are recorded) and programs ending with an error";
+
+/// The option that records system calls too, and what it costs.
+#[cfg(target_os = "linux")]
+const SYSCALLS_TIP: &str = "Every call the program makes into the kernel, as strace shows it: \
+                            the call, its arguments, its result and the time it took, for the \
+                            program or process recorded and what it starts (not for \
+                            everything). The program is not stopped and its memory is not \
+                            read: files are named by the descriptors they are open on, and by \
+                            the names the kernel itself copies. Busy programs make hundreds of \
+                            thousands a second: a call a thread repeats within a second is one \
+                            row with a count, and the summary counts them all. Needs full \
+                            access.";
 
 /// What recording sees, for the card that starts it.
 #[cfg(windows)]
@@ -75,6 +90,9 @@ fn group_color(g: Group) -> Color32 {
         Group::File => theme::DISK_WRITE,
         Group::Registry => theme::MEMORY,
         Group::Network => theme::NET_RX,
+        // The registry's color: Linux has none.
+        #[cfg(target_os = "linux")]
+        Group::Syscall => theme::MEMORY,
     }
 }
 
@@ -84,6 +102,28 @@ fn group_index(g: Group) -> usize {
         Group::File => 1,
         Group::Registry => 2,
         Group::Network => 3,
+        #[cfg(target_os = "linux")]
+        Group::Syscall => 4,
+    }
+}
+
+/// Time inside a system call: "850 ns", "12.4 µs", "3.10 ms", "1.25 s".
+fn call_time(d: Duration) -> String {
+    let ns = d.as_nanos();
+    match ns {
+        0..1_000 => format!("{ns} ns"),
+        1_000..1_000_000 => format!("{:.1} µs", ns as f64 / 1e3),
+        1_000_000..1_000_000_000 => format!("{:.2} ms", ns as f64 / 1e6),
+        _ => format!("{:.2} s", d.as_secs_f64()),
+    }
+}
+
+/// A step's detail as listed and saved: with the time a system call took.
+fn detail_text(e: &ActivityEvent) -> Cow<'_, str> {
+    if e.took.is_zero() {
+        Cow::Borrowed(&e.detail)
+    } else {
+        Cow::Owned(format!("{}  ·  {}", e.detail, call_time(e.took)))
     }
 }
 
@@ -188,8 +228,11 @@ pub struct ActivityPage {
     pub args: String,
     picking: Option<Receiver<Option<String>>>,
     exporting: Option<Receiver<Result<std::path::PathBuf, String>>>,
+    /// Record system calls too (a program or processes).
+    #[cfg(target_os = "linux")]
+    pub syscalls: bool,
     view: TableView,
-    groups: [bool; 4],
+    groups: [bool; 5],
     only_changes: bool,
     only_failures: bool,
     /// Steps the filters hide are let go as they come, not kept.
@@ -245,8 +288,10 @@ impl Default for ActivityPage {
             args: String::new(),
             picking: None,
             exporting: None,
+            #[cfg(target_os = "linux")]
+            syscalls: false,
             view: TableView::default(),
-            groups: [true; 4],
+            groups: [true; 5],
             only_changes: false,
             only_failures: false,
             keep_shown: false,
@@ -366,7 +411,15 @@ impl ActivityPage {
     pub fn record_pids(&mut self, pids: &[u32], what: String) {
         self.stop();
         self.reset(what, false);
-        match ActivityRecorder::attach_all(pids) {
+        #[cfg(target_os = "linux")]
+        let recorder = if self.syscalls {
+            ActivityRecorder::attach_with_syscalls(pids)
+        } else {
+            ActivityRecorder::attach_all(pids)
+        };
+        #[cfg(windows)]
+        let recorder = ActivityRecorder::attach_all(pids);
+        match recorder {
             Ok(r) => self.recorder = Some(r),
             Err(e) => self.error = Some(e),
         }
@@ -469,7 +522,16 @@ impl ActivityPage {
         let dir = std::path::Path::new(&program)
             .parent()
             .map(|d| d.to_string_lossy().into_owned());
-        match ActivityRecorder::launch(&program, self.args.trim(), dir.as_deref()) {
+        let (args, dir) = (self.args.trim(), dir.as_deref());
+        #[cfg(target_os = "linux")]
+        let recorder = if self.syscalls {
+            ActivityRecorder::launch_with_syscalls(&program, args, dir)
+        } else {
+            ActivityRecorder::launch(&program, args, dir)
+        };
+        #[cfg(windows)]
+        let recorder = ActivityRecorder::launch(&program, args, dir);
+        match recorder {
             Ok(r) => self.recorder = Some(r),
             Err(e) => self.error = Some(e),
         }
@@ -909,7 +971,7 @@ fn export(
                             quote(e.kind.label()),
                             quote(&e.path),
                             quote(&e.result_text()),
-                            quote(&e.detail),
+                            quote(&detail_text(e)),
                             e.count,
                             e.bytes
                         )?;
@@ -960,6 +1022,17 @@ fn summary_line(page: &ActivityPage) -> String {
             fmt::bytes(s.received)
         ));
     }
+    let (calls, failed) = s
+        .syscalls
+        .iter()
+        .fold((0, 0), |(c, f), stat| (c + stat.calls, f + stat.errors));
+    if calls > 0 {
+        parts.push(format!(
+            "{} system calls, {} failed",
+            fmt::count(calls),
+            fmt::count(failed)
+        ));
+    }
     if s.dropped + s.lost as u64 > 0 {
         parts.push(format!(
             "{} not kept",
@@ -982,6 +1055,23 @@ fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 }
 
 fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
+    #[cfg(target_os = "linux")]
+    {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut page.syscalls, "System calls too")
+                .on_hover_text(SYSCALLS_TIP);
+            ui.label(
+                RichText::new(
+                    "Every call into the kernel, as strace shows it, for a program or a running \
+                     process.",
+                )
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
+            )
+            .on_hover_text(SYSCALLS_TIP);
+        });
+        ui.add_space(6.0);
+    }
     card(ui, |ui| {
         ui.label(widgets::strong("Record a program", theme::SUBTITLE));
         ui.label(
@@ -1119,6 +1209,71 @@ fn running_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
     }
 }
 
+/// The system calls recorded, by call, as `strace -c` lists them: the most
+/// time first. Returns a call to filter the list by, when one is clicked.
+fn syscall_summary(ui: &mut Ui, stats: &[SyscallStat]) -> Option<&'static str> {
+    let mut picked = None;
+    ui.menu_button("System calls", |ui| {
+        ui.set_min_width(420.0);
+        let total: Duration = stats.iter().map(|s| s.time).sum();
+        ui.label(
+            RichText::new(
+                "Every call recorded, merged rows and rows let go too; time is spent inside \
+                 the call. Click a call to list only it.",
+            )
+            .size(theme::META)
+            .color(theme::TEXT_WEAK),
+        );
+        egui::ScrollArea::vertical()
+            .max_height(420.0)
+            .show(ui, |ui| {
+                egui::Grid::new("activity-syscalls")
+                    .num_columns(6)
+                    .spacing([14.0, 2.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for title in ["Call", "Calls", "Errors", "Time", "% time", "Average"] {
+                            ui.label(
+                                RichText::new(title)
+                                    .size(theme::META)
+                                    .color(theme::TEXT_WEAK),
+                            );
+                        }
+                        ui.end_row();
+                        for s in stats {
+                            if ui
+                                .add(egui::Button::new(RichText::new(s.name).monospace()).small())
+                                .clicked()
+                            {
+                                picked = Some(s.name);
+                                ui.close();
+                            }
+                            ui.label(fmt::count(s.calls));
+                            let errors = RichText::new(fmt::count(s.errors));
+                            ui.label(if s.errors > 0 {
+                                errors.color(theme::BAD)
+                            } else {
+                                errors.color(theme::TEXT_DIM)
+                            });
+                            ui.label(call_time(s.time));
+                            let share = if total.is_zero() {
+                                0.0
+                            } else {
+                                s.time.as_secs_f64() / total.as_secs_f64() * 100.0
+                            };
+                            ui.label(format!("{share:.1}"));
+                            let average = s.time.as_nanos() / u128::from(s.calls.max(1));
+                            ui.label(call_time(Duration::from_nanos(average as u64)));
+                            ui.end_row();
+                        }
+                    });
+            });
+    })
+    .response
+    .on_hover_text("The calls recorded, by call: how many, how many failed, and the time in them");
+    picked
+}
+
 /// Shown and hidden processes, each with a cross that drops it.
 fn process_filters(ui: &mut Ui, page: &mut ActivityPage) -> bool {
     if page.only.is_empty() && page.hidden.is_empty() {
@@ -1190,7 +1345,7 @@ pub fn show(
         return;
     }
     // Processes and connections are recorded by anyone; files need the
-    // right to watch every file system.
+    // right to watch every file system, system calls the kernel's tracing.
     #[cfg(target_os = "linux")]
     if !elevated {
         ui.horizontal(|ui| {
@@ -1198,7 +1353,7 @@ pub fn show(
             ui.label(
                 RichText::new(
                     "Without full access only programs started and connections are recorded: \
-                     watching files needs cap_sys_admin.",
+                     watching files needs cap_sys_admin, and system calls cap_perfmon.",
                 )
                 .color(theme::ELEVATED_TEXT),
             );
@@ -1322,6 +1477,13 @@ pub fn show(
         })
         .response
         .on_hover_text("The processes with the most steps; show only one, or hide it");
+        if !page.summary.syscalls.is_empty()
+            && let Some(call) = syscall_summary(ui, &page.summary.syscalls)
+        {
+            page.view.set_filter(call);
+            page.parse_filter();
+            changed = true;
+        }
         ui.add_space(6.0);
         for &(g, label) in GROUPS {
             let i = group_index(g);
@@ -1469,7 +1631,7 @@ pub fn show(
                         ui.label(RichText::new(e.result_text()).color(color));
                     });
                     row.col(|ui| {
-                        let mut detail = e.detail.clone();
+                        let mut detail = detail_text(e).into_owned();
                         if e.count > 1 {
                             detail = format!("{}×  {detail}", e.count);
                         }
@@ -1609,6 +1771,18 @@ fn step_pane(
         if e.bytes > 0 {
             panes::fact(ui, "Bytes", fmt::bytes(e.bytes));
         }
+        if !e.took.is_zero() {
+            let took = if e.count > 1 {
+                format!(
+                    "{} in all, {} on average",
+                    call_time(e.took),
+                    call_time(e.took / e.count)
+                )
+            } else {
+                call_time(e.took)
+            };
+            panes::fact(ui, "In the call", took);
+        }
         if !e.detail.is_empty() {
             panes::fact(ui, "Detail", e.detail.as_str());
         }
@@ -1644,7 +1818,21 @@ mod tests {
             status: None,
             count: 1,
             bytes: 0,
+            took: Duration::ZERO,
         }
+    }
+
+    #[test]
+    fn shows_the_time_in_a_call() {
+        assert_eq!(call_time(Duration::from_nanos(850)), "850 ns");
+        assert_eq!(call_time(Duration::from_nanos(12_400)), "12.4 µs");
+        assert_eq!(call_time(Duration::from_micros(3_100)), "3.10 ms");
+        assert_eq!(call_time(Duration::from_millis(1_250)), "1.25 s");
+        let mut step = step_of(1);
+        step.detail = "read(5, NULL, 64) = 64".into();
+        assert_eq!(detail_text(&step), "read(5, NULL, 64) = 64");
+        step.took = Duration::from_micros(2);
+        assert_eq!(detail_text(&step), "read(5, NULL, 64) = 64  ·  2.0 µs");
     }
 
     #[test]
@@ -1697,6 +1885,7 @@ mod tests {
             status: Some(0),
             count: 1,
             bytes: 0,
+            took: Duration::ZERO,
         };
         assert!(page.passes(&step(r"HKLM\Software\Microsoft")));
         assert!(!page.passes(&step(r"HKLM\Software\Microsoft\PolicyManager\default")));
@@ -1720,6 +1909,7 @@ mod tests {
             status: None,
             count: 1,
             bytes: 0,
+            took: Duration::ZERO,
         };
         page.names.insert(1, "a.exe".into());
         page.names.insert(2, "b.exe".into());
@@ -1756,6 +1946,7 @@ mod tests {
             status: Some(0),
             count: 1,
             bytes: 0,
+            took: Duration::ZERO,
         };
         page.add(vec![step(0, "c"), step(1, "A"), step(2, "e")]);
         while page.refilter() {}

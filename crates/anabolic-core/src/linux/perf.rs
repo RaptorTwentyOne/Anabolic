@@ -52,6 +52,8 @@ pub const TYPE_TRACEPOINT: u32 = 2;
 
 pub const HW_CPU_CYCLES: u64 = 0;
 pub const SW_CPU_CLOCK: u64 = 0;
+/// Counts nothing: a ring buffer's owner, for other events to write into.
+pub const SW_DUMMY: u64 = 9;
 
 pub const SAMPLE_TID: u64 = 1 << 1;
 pub const SAMPLE_TIME: u64 = 1 << 2;
@@ -59,9 +61,15 @@ pub const SAMPLE_CPU: u64 = 1 << 7;
 pub const SAMPLE_RAW: u64 = 1 << 10;
 
 pub const DISABLED: u64 = 1 << 0;
+/// Copied to every thread and process the task starts from then on.
+pub const INHERIT: u64 = 1 << 1;
+pub const EXCLUDE_KERNEL: u64 = 1 << 5;
+pub const EXCLUDE_HV: u64 = 1 << 6;
 pub const EXCLUDE_IDLE: u64 = 1 << 7;
 pub const COMM: u64 = 1 << 9;
 pub const FREQ: u64 = 1 << 10;
+/// Enabled when the task starts a program (exec), not before.
+pub const ENABLE_ON_EXEC: u64 = 1 << 12;
 pub const WATERMARK: u64 = 1 << 14;
 pub const SAMPLE_ID_ALL: u64 = 1 << 18;
 pub const COMM_EXEC: u64 = 1 << 24;
@@ -570,6 +578,141 @@ impl Drop for Trace {
     }
 }
 
+/// Events on chosen threads and on everything they start, written into one
+/// ring buffer per processor that the owner reads: what `perf record -p`
+/// does. The kernel copies a thread's events to each thread and process it
+/// starts, but lets such events write into a buffer only per processor: a
+/// thread gets each event once per processor.
+pub struct TaskRings {
+    rings: Vec<Ring>,
+    cpus: Vec<u32>,
+    /// The threads' events, written into the rings.
+    events: Vec<OwnedFd>,
+}
+
+impl TaskRings {
+    /// A ring of `pages` pages for each processor online, each owned by an
+    /// event of the calling thread that counts nothing. That thread must
+    /// outlive the rings: their wakeups go through it.
+    pub fn new(pages: usize) -> io::Result<TaskRings> {
+        let cpus = online_cpus();
+        let mut rings = Vec::with_capacity(cpus.len());
+        for &cpu in &cpus {
+            let mut attr = Attr::new(TYPE_SOFTWARE, SW_DUMMY);
+            // User mode only: anyone may watch their own thread so.
+            attr.flags |= EXCLUDE_KERNEL | EXCLUDE_HV;
+            watermark(&mut attr, pages);
+            rings.push(Ring::map(open(&attr, 0, cpu as i32)?, pages)?);
+        }
+        if rings.is_empty() {
+            return Err(io::Error::other("no processor online"));
+        }
+        Ok(TaskRings {
+            rings,
+            cpus,
+            events: Vec::new(),
+        })
+    }
+
+    pub fn cpus(&self) -> usize {
+        self.cpus.len()
+    }
+
+    /// Events open.
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Opens `attrs` on thread `tid` once per processor, into the rings,
+    /// and enables them (those with `ENABLE_ON_EXEC` wait for an exec).
+    /// All or none: returns how many were opened.
+    pub fn attach(&mut self, tid: u32, attrs: &[Attr]) -> io::Result<usize> {
+        let mut opened = Vec::with_capacity(attrs.len() * self.rings.len());
+        for (ring, &cpu) in self.rings.iter().zip(&self.cpus) {
+            for attr in attrs {
+                let fd = open(attr, tid as i32, cpu as i32)?;
+                let done =
+                    unsafe { libc::ioctl(fd.as_raw_fd(), IOC_SET_OUTPUT, ring.fd().as_raw_fd()) };
+                if done != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                opened.push((fd, attr.flags & ENABLE_ON_EXEC == 0));
+            }
+        }
+        let n = opened.len();
+        for (fd, now) in opened {
+            if now {
+                unsafe { libc::ioctl(fd.as_raw_fd(), IOC_ENABLE, 0) };
+            }
+            self.events.push(fd);
+        }
+        Ok(n)
+    }
+
+    /// The rings' descriptors, to poll: readable when a ring has data.
+    pub fn fds(&self) -> impl Iterator<Item = i32> + '_ {
+        self.rings.iter().map(|r| r.fd().as_raw_fd())
+    }
+
+    /// Every record written since the last call, ring by ring (in order
+    /// within a ring, not across them).
+    pub fn drain(&mut self, mut each: impl FnMut(Record<'_>)) {
+        for ring in &mut self.rings {
+            ring.drain(&mut each);
+        }
+    }
+}
+
+/// Starts `command` held just before it runs its program: `ready` gets its
+/// PID first, on a thread of its own, to open events on it that see the
+/// program from its first step (`ENABLE_ON_EXEC`). Then it goes on.
+pub fn spawn_held(
+    command: &mut std::process::Command,
+    ready: impl FnOnce(u32) + Send,
+) -> io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let (pid_r, pid_w) = pipe()?;
+    let (go_r, go_w) = pipe()?;
+    let (pid_w_raw, go_r_raw) = (pid_w.as_raw_fd(), go_r.as_raw_fd());
+    // Between fork and exec only calls that cannot deadlock are safe: no
+    // allocating, no locks. The pipes close themselves at the exec.
+    unsafe {
+        command.pre_exec(move || {
+            let pid = libc::getpid();
+            libc::write(pid_w_raw, (&raw const pid).cast(), 4);
+            let mut go = 0u8;
+            while libc::read(go_r_raw, (&raw mut go).cast(), 1) < 0
+                && *libc::__errno_location() == libc::EINTR
+            {}
+            Ok(())
+        });
+    }
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut buf = [0u8; 4];
+            let n = unsafe { libc::read(pid_r.as_raw_fd(), buf.as_mut_ptr().cast(), 4) };
+            if n == 4 {
+                ready(u32::from_ne_bytes(buf));
+            }
+            // Go on; also when it never came (the fork failed).
+            unsafe { libc::write(go_w.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
+        });
+        let child = command.spawn();
+        // Its copy is closed by now (exec, or exit): the helper's read ends.
+        drop(pid_w);
+        drop(go_r);
+        child
+    })
+}
+
+fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
 /// A buffer's wakeup: when it is a quarter full (or the reader's poll
 /// times out, every 100 ms).
 pub fn watermark(attr: &mut Attr, pages: usize) {
@@ -717,6 +860,57 @@ mod tests {
         });
         assert!(samples > 10, "only {samples} samples in 50 ms at 10 kHz");
         assert_eq!(samples, mine);
+    }
+
+    /// Per-processor rings fed by a program's inherited events, end to end,
+    /// on what anyone may watch of their own: its user-mode time, from its
+    /// first step (it is held before its exec), and that of the shell it
+    /// starts.
+    #[test]
+    fn follows_a_held_program_and_what_it_starts() {
+        let mut rings = match TaskRings::new(16) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("perf_event_open refused here ({e}), skipping");
+                return;
+            }
+        };
+        let mut attr = Attr::new(TYPE_SOFTWARE, SW_CPU_CLOCK);
+        attr.sample = 200_000;
+        attr.sample_type = SAMPLE_TID | SAMPLE_TIME;
+        attr.flags |= INHERIT | ENABLE_ON_EXEC | EXCLUDE_KERNEL | EXCLUDE_HV;
+        // A busy loop, then another in a subshell (a process of its own).
+        let lap = "i=0; while [ $i -lt 40000 ]; do i=$((i+1)); done";
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", &format!("{lap}; ({lap}); :")]);
+        let mut opened = None;
+        let mut child = spawn_held(&mut command, |pid| {
+            opened = Some(rings.attach(pid, &[attr]));
+        })
+        .expect("started");
+        let opened = opened.expect("held for its events");
+        let pid = child.id();
+        child.wait().unwrap();
+        match opened {
+            Ok(n) => assert_eq!(n, rings.cpus()),
+            Err(e) => {
+                eprintln!("perf_event_open refused on the program ({e}), skipping");
+                return;
+            }
+        }
+        let mut pids = std::collections::HashSet::new();
+        let mut first = None;
+        rings.drain(|r| {
+            if let Record::Sample(body) = r
+                && let Some(s) = Sample::parse(body, attr.sample_type)
+            {
+                pids.insert(s.pid);
+                first = Some(first.map_or(s.time, |t: u64| t.min(s.time)));
+            }
+        });
+        assert!(pids.contains(&pid), "the program itself: {pids:?}");
+        assert!(pids.len() >= 2, "and the subshell it started: {pids:?}");
+        assert!(first.is_some());
     }
 
     #[test]
