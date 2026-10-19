@@ -176,8 +176,9 @@ pub fn prompt(name: &str, arguments: &Map<String, Value>) -> Option<GetPromptRes
         "diagnose_slowness" => "My PC feels slow right now. Use Anabolic's tools to find out \
             why: start with get_system_overview and look at what it lists under attention. Then \
             follow the resource that is short: get_cpu (with trace_seconds 5 to see who runs on \
-            each core), get_memory, get_disks (trace_seconds 5 shows the files), get_gpus. Name \
-            the processes responsible with get_process. Tell me what you found and what I could \
+            each core), get_memory, get_disks (trace_seconds 5 shows the files), get_gpus. A CPU \
+            or GPU near its critical temperature (get_sensors) slows itself down. Name the \
+            processes responsible with get_process. Tell me what you found and what I could \
             do; do not change anything before I agree."
             .to_string(),
         "why_not_responding" => format!(
@@ -196,7 +197,7 @@ pub fn prompt(name: &str, arguments: &Map<String, Value>) -> Option<GetPromptRes
             "{} stutters. Use get_stutters (watch_seconds 15 while I play) for frame times, 1 % \
              lows and the stutters with what happened at the time, and the drivers with the \
              longest DPC/ISR times. Check get_system_overview and get_cpu (trace_seconds 5) for \
-             what else runs. Do not open the game's process (no inspection tools on it): \
+             what else runs, and get_sensors for a CPU or GPU running hot. Do not open the game's process (no inspection tools on it): \
              anti-cheat software can take that badly. Tell me the likely cause.",
             if arg("game").is_empty() {
                 "My game".to_string()

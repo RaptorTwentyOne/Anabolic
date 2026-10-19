@@ -60,7 +60,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 | Page | |
 |---|---|
 | **Processes** | A tree, a flat list or grouped by app, with CPU, memory, disk, network, GPU, handles, user and command line. End, end tree, suspend, priority, cores, efficiency mode. Details show threads with their call stacks, modules with their signatures and hashes, handles in words, network connections, the services a process hosts and the chain of processes that started it, including parents that already exited. |
-| **Performance** | CPU with who ran on each core, memory and its modules, each physical disk with the processes and files it serves, network adapters, GPUs, process I/O, and every monitor on a map of the desktop. |
+| **Performance** | CPU with who ran on each core, memory and its modules, each physical disk with its partitions and the processes and files it serves, network adapters, GPUs, process I/O, temperatures and fans, and every monitor on a map of the desktop. Windows lets only drivers read the processor's own temperature sensors, so there Anabolic shows the firmware's thermal zones, the GPU's temperature and the disks'. |
 | **History** | Every 10 seconds, the machine's totals and the processes that led, kept for 7 days by default: a day strip, an hour graph and a range picker answer "what happened at 14:32". |
 | **Rules** | Per program, in the manner of Process Lasso: priority, cores and efficiency mode applied to every new process, plus memory, CPU and handle alerts. A rule can mark a program as a game. |
 | **Services** | Every service with its state, startup type, account and the process it runs in, with that process' CPU and memory; start, stop (asking about dependents), restart, pause, startup type. |
@@ -102,12 +102,12 @@ differently, the pages say how:
 | Page | On Linux |
 |---|---|
 | **Processes** | The kernel's threads (kworkers, kswapd, the interrupt threads) are counted under one *Kernel* row, PID 2, as Windows counts its own under System; its details list them one by one. Handles are open files. A program's package stands where Windows shows its company, and its file is checked against the package's record. Dumps are core files that gdb reads. |
-| **Performance** | Who ran on each core, interrupt load and the processes behind each disk come from perf events. Intel and AMD GPUs through the kernel's DRM accounting; NVIDIA through NVML, asked only while the GPU is awake, so a laptop's sleeping one stays asleep. Monitors from EDID and the desktop's own layout (KDE, GNOME). |
+| **Performance** | Who ran on each core, interrupt load and the processes behind each disk come from perf events. Intel and AMD GPUs through the kernel's DRM accounting; NVIDIA through NVML, asked only while the GPU is awake, so a laptop's sleeping one stays asleep. Every temperature, fan and power sensor the kernel's hardware monitors know, per core included; a sensor on a sleeping device is left out rather than woken. Partitions, with what LUKS and LVM hold, from udev. Monitors from EDID and the desktop's own layout (KDE, GNOME). |
 | **Services** | systemd's: the system's and your user's. Start, stop, restart, and enabled, disabled or masked; there is no pausing. |
 | **Startup** | Autostart entries and systemd user units, turned off the way the desktop does it: a system-wide entry is hidden by a copy in your own folder. Nothing is deleted. |
 | **Stutters** | Interrupt and softirq time per handler, in the manner of LatencyMon. Linux reports no frame times to anyone outside a game, so frame times and 1 % lows are Windows only. |
 | **Network** | TCP traffic per program and per connection; Linux counts no UDP traffic per program. Its firewalls filter by address, port and user, not by program, so blocking a program is Windows only, as is the list of DNS lookups. |
-| **Activity** | Every file, program and connection a process touches. There is no registry. |
+| **Activity** | Every file, program and connection a process touches. There is no registry; instead, a program or process can be recorded with its system calls, as strace shows them, with a count, the failures and the time spent per call. They come from the kernel's tracepoints: the process is never stopped or read. |
 
 Around them: the notification area icon is a StatusNotifierItem (KDE has
 it; GNOME needs the AppIndicator extension), the hotkey goes through the
@@ -211,11 +211,11 @@ that is off is refused and says where to turn it on:
 
 | Kind | Tools |
 |---|---|
-| Read what the PC is doing (on by default) | overview, CPU, memory, disks, GPUs, monitors, hardware, stutters, history, processes and their tree, one process in full (who started it, what it hosts, its connections), why a process will not end, leaks, connections, open ports, network usage, DNS lookups, services, startup programs |
+| Read what the PC is doing (on by default) | overview, CPU, memory, disks and their partitions, GPUs, temperatures and fans, monitors, hardware, stutters, history, processes and their tree, one process in full (who started it, what it hosts, its connections), why a process will not end, leaks, connections, open ports, network usage, DNS lookups, services, startup programs |
 | Turn kernel traces on for a while | who runs on each core, which files each disk serves, traffic per connection, frame times |
 | Look inside a process | handles, modules, thread stacks, wait chains |
 | Write memory dumps | small or full dumps (never of lsass, or on Linux of the keyrings) |
-| Record what processes do | Process Monitor style recordings, of a process, a name or the whole machine |
+| Record what processes do | Process Monitor style recordings, of a process, a name or the whole machine; on Linux, a process' system calls too |
 | End processes | end a process or a tree |
 | Suspend, resume and reprioritise | suspend, resume, priority, cores, efficiency mode |
 | Control services | start, stop, restart, pause, startup type |
