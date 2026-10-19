@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 #[cfg_attr(windows, path = "windows/services.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/services.rs")]
 mod imp;
+pub use imp::exit_text;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
@@ -51,6 +52,8 @@ impl State {
 pub enum StartType {
     /// Drivers only: loaded by the boot loader or the kernel.
     Boot,
+    /// Windows: drivers the kernel loads. systemd: a static unit, which
+    /// has no switch and starts when another unit needs it.
     System,
     Automatic,
     /// Started a couple of minutes after the others, to free up sign-in.
@@ -61,6 +64,7 @@ pub enum StartType {
 
 impl StartType {
     /// What a service can be set to.
+    #[cfg(windows)]
     pub const CHOICES: [StartType; 4] = [
         StartType::Automatic,
         StartType::AutomaticDelayed,
@@ -68,6 +72,12 @@ impl StartType {
         StartType::Disabled,
     ];
 
+    /// What a service can be set to: systemd has no delayed start.
+    #[cfg(target_os = "linux")]
+    pub const CHOICES: [StartType; 3] =
+        [StartType::Automatic, StartType::Manual, StartType::Disabled];
+
+    #[cfg(windows)]
     pub fn label(self) -> &'static str {
         match self {
             StartType::Boot => "Boot",
@@ -76,6 +86,21 @@ impl StartType {
             StartType::AutomaticDelayed => "Automatic (delayed)",
             StartType::Manual => "Manual",
             StartType::Disabled => "Disabled",
+        }
+    }
+
+    /// systemd's own words: enabled units start at boot (or sign-in),
+    /// disabled ones when asked or needed, masked ones never, static ones
+    /// when another unit needs them.
+    #[cfg(target_os = "linux")]
+    pub fn label(self) -> &'static str {
+        match self {
+            StartType::Boot => "Boot",
+            StartType::System => "Static",
+            StartType::Automatic => "Enabled",
+            StartType::AutomaticDelayed => "Enabled (delayed)",
+            StartType::Manual => "Disabled",
+            StartType::Disabled => "Masked",
         }
     }
 }

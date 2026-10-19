@@ -1,6 +1,8 @@
 //! The Startup page: what starts with Windows (the Run keys, the Startup
-//! folders, tasks at sign-in or boot), whether it is on, and whether it is
-//! running now and what it costs. On and off as Task Manager does it.
+//! folders, tasks at sign-in or boot) or with the Linux session (autostart
+//! entries, systemd user units, Plasma's scripts), whether it is on, and
+//! whether it is running now and what it costs. On and off as the system's
+//! own settings do it.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -20,7 +22,7 @@ use crate::{fmt, panes, theme, widgets};
 pub struct StartupPage {
     pub list: Option<Arc<StartupList>>,
     pub view: TableView,
-    /// Also list Windows' own tasks.
+    /// Also list the system's own entries (Windows' own tasks).
     pub windows: bool,
     /// By `location` and `name`, which together name an entry.
     pub selected: Option<(String, String)>,
@@ -63,6 +65,53 @@ fn running<'a>(
     }
     map
 }
+
+/// What turning an entry off does, by platform and kind.
+#[cfg(windows)]
+fn switch_note(i: &StartupItem) -> &'static str {
+    if i.source.is_task() {
+        "A scheduled task: turning it off disables the task, as Task Scheduler would."
+    } else {
+        "Turning it off leaves the entry in place, switched off the way Task Manager does it; \
+         turning it on again restores it."
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn switch_note(i: &StartupItem) -> &'static str {
+    if i.source.is_task() && i.source.machine_wide() {
+        "A systemd unit enabled for every user: turning it off masks it for you alone \
+         (systemctl --user mask); turning it on again unmasks it."
+    } else if i.source.is_task() {
+        "A systemd unit: turning it off disables it, as systemctl --user disable would."
+    } else if i.source.machine_wide() {
+        "Turning it off leaves the system's entry in place and hides it for you with a copy \
+         of your own, as the desktop's settings do; turning it on again removes the copy."
+    } else {
+        "Turning it off leaves the entry in place, marked hidden, as the desktop's settings do; \
+         turning it on again restores it."
+    }
+}
+
+const READING: &str = if cfg!(windows) {
+    "Reading what starts with Windows…"
+} else {
+    "Reading what starts with the session…"
+};
+
+/// The switch for the system's own entries, and what it covers.
+const OWN: (&str, &str) = if cfg!(windows) {
+    (
+        "Windows' own tasks",
+        "Tasks under \\Microsoft\\ in Task Scheduler that run at sign-in or boot.",
+    )
+} else {
+    (
+        "The system's own",
+        "Entries the system's packages put in place for every user: the desktop's own \
+         parts, sound, keyrings.",
+    )
+};
 
 fn status(i: &StartupItem) -> (&'static str, egui::Color32) {
     if i.missing {
@@ -137,18 +186,7 @@ fn pane(ui: &mut Ui, i: &StartupItem, procs: &[&ProcessInfo], busy: bool, out: &
             ui.spinner();
         }
     });
-    if i.source.is_task() {
-        panes::weak(
-            ui,
-            "A scheduled task: turning it off disables the task, as Task Scheduler would.",
-        );
-    } else {
-        panes::weak(
-            ui,
-            "Turning it off leaves the entry in place, switched off the way Task Manager \
-             does it; turning it on again restores it.",
-        );
-    }
+    panes::weak(ui, switch_note(i));
 
     panes::section(ui, "Entry");
     panes::facts(ui, ("startup-facts", &i.location, &i.name), |ui| {
@@ -208,7 +246,7 @@ pub fn show(
         ui.add_space(20.0);
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(RichText::new("Reading what starts with Windows…").color(theme::TEXT_WEAK));
+            ui.label(RichText::new(READING).color(theme::TEXT_WEAK));
         });
         return;
     };
@@ -266,10 +304,7 @@ pub fn show(
             ui.ctx().request_repaint();
         }
         ui.add_space(6.0);
-        ui.checkbox(&mut page.windows, "Windows' own tasks")
-            .on_hover_text(
-                "Tasks under \\Microsoft\\ in Task Scheduler that run at sign-in or boot.",
-            );
+        ui.checkbox(&mut page.windows, OWN.0).on_hover_text(OWN.1);
         ui.add_space(6.0);
         ui.label(
             RichText::new(format!(
@@ -280,7 +315,8 @@ pub fn show(
             .small()
             .color(theme::TEXT_WEAK),
         );
-        if !elevated {
+        // Linux switches every entry for this user alone: no rights needed.
+        if !elevated && cfg!(windows) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new("Entries for all users need administrator")

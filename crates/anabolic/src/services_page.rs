@@ -1,6 +1,7 @@
-//! The Services page: every Windows service, its state, how it starts, and
-//! the process it runs in with what that process costs. Start, stop,
-//! restart and the startup type from the row's menu or the side pane.
+//! The Services page: every service (Windows' services, or systemd's units
+//! on Linux, the user's own included), its state, how it starts, and the
+//! process it runs in with what that process costs. Start, stop, restart
+//! and the startup type from the row's menu or the side pane.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -66,6 +67,7 @@ impl ServicesPage {
 }
 
 /// The executable a service's command line starts.
+#[cfg(windows)]
 pub fn executable(binary: &str) -> Option<String> {
     let binary = binary.trim();
     if let Some(rest) = binary.strip_prefix('"') {
@@ -77,17 +79,25 @@ pub fn executable(binary: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
+/// The executable a service's command line starts: its first word (systemd
+/// runs commands without a shell, so a path has no spaces unquoted).
+#[cfg(target_os = "linux")]
+pub fn executable(binary: &str) -> Option<String> {
+    let binary = binary.trim();
+    let path = match binary.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None => binary.split_ascii_whitespace().next()?,
+    };
+    path.starts_with('/').then(|| path.to_string())
+}
+
 fn status_text(s: &Service) -> (String, Color32, Option<String>) {
     match s.state {
         // 1077: never started since boot, not a failure.
         State::Stopped if s.exit_code != 0 && s.exit_code != 1077 => (
             "Stopped (failed)".into(),
             theme::BAD,
-            Some(format!(
-                "It last stopped with error {}: {}",
-                s.exit_code,
-                windows_error(s.exit_code)
-            )),
+            Some(failure(s.exit_code)),
         ),
         State::Stopped => ("Stopped".into(), theme::TEXT_DIM, None),
         State::Running => ("Running".into(), theme::TEXT, None),
@@ -97,22 +107,49 @@ fn status_text(s: &Service) -> (String, Color32, Option<String>) {
 }
 
 #[cfg(windows)]
-fn windows_error(code: u32) -> String {
-    windows::core::Error::from(windows::Win32::Foundation::WIN32_ERROR(code).to_hresult())
-        .message()
-        .trim()
-        .to_string()
+fn failure(code: u32) -> String {
+    format!(
+        "It last stopped with error {code}: {}",
+        anabolic_core::services::exit_text(code)
+    )
 }
 
-/// The status a systemd service's main process exited with.
 #[cfg(target_os = "linux")]
-fn windows_error(code: u32) -> String {
-    format!("exit status {code}")
+fn failure(code: u32) -> String {
+    format!("It failed: {}.", anabolic_core::services::exit_text(code))
 }
+
+/// Started by something else as well: an event on Windows (a trigger),
+/// a socket, timer, path or D-Bus name on Linux (on demand).
+const STARTED_BY_OTHERS: &str = if cfg!(windows) {
+    "trigger"
+} else {
+    "on demand"
+};
+
+const TRIGGERED: &str = if cfg!(windows) {
+    "Windows also starts it on an event (a device, the network, a policy)."
+} else {
+    "Also started when something needs it: a socket, a timer, a device or a D-Bus name."
+};
+
+/// The account a service runs under.
+const ACCOUNT: &str = if cfg!(windows) {
+    "Log on as"
+} else {
+    "Runs as"
+};
+
+/// Who may start and stop services.
+const RIGHTS: &str = if cfg!(windows) {
+    "Starting and stopping most services needs administrator"
+} else {
+    "System services ask for an administrator's password; your own (user) do not"
+};
 
 fn startup_text(s: &Service) -> String {
     match &s.config {
-        Some(c) if c.triggered => format!("{} (trigger)", c.start.label()),
+        Some(c) if c.triggered => format!("{} ({STARTED_BY_OTHERS})", c.start.label()),
         Some(c) => c.start.label().to_string(),
         None => String::new(),
     }
@@ -304,17 +341,10 @@ fn pane(
         if let Some(c) = &s.config
             && c.triggered
         {
-            panes::fact(
-                ui,
-                "",
-                RichText::new(
-                    "Windows also starts it on an event (a device, the network, a policy).",
-                )
-                .color(theme::TEXT_WEAK),
-            );
+            panes::fact(ui, "", RichText::new(TRIGGERED).color(theme::TEXT_WEAK));
         }
         if let Some(c) = &s.config {
-            panes::fact(ui, "Log on as", c.account.clone());
+            panes::fact(ui, ACCOUNT, c.account.clone());
             panes::fact(ui, "Runs", RichText::new(&c.binary).small());
             if !c.dependencies.is_empty() {
                 panes::fact(ui, "Needs", c.dependencies.join(", "));
@@ -493,11 +523,7 @@ pub fn show(
         );
         if !elevated {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    RichText::new("Starting and stopping most services needs administrator")
-                        .small()
-                        .color(theme::TEXT_DIM),
-                );
+                ui.label(RichText::new(RIGHTS).small().color(theme::TEXT_DIM));
                 ui.label(widgets::icon(theme::icon::LOCK, 11.0).color(theme::TEXT_DIM));
             });
         }
@@ -540,7 +566,7 @@ pub fn show(
                     ("PID", true),
                     ("CPU %", true),
                     ("Memory", true),
-                    ("Log on as", false),
+                    (ACCOUNT, false),
                     ("Description", false),
                 ]
                 .into_iter()
@@ -644,6 +670,7 @@ mod tests {
     use super::executable;
 
     #[test]
+    #[cfg(windows)]
     fn finds_the_program_of_a_command_line() {
         assert_eq!(
             executable(r"C:\WINDOWS\system32\svchost.exe -k netsvcs -p").as_deref(),
@@ -652,6 +679,20 @@ mod tests {
         assert_eq!(
             executable(r#""C:\Program Files\App\app svc.exe" --run"#).as_deref(),
             Some(r"C:\Program Files\App\app svc.exe")
+        );
+        assert_eq!(executable("   "), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn finds_the_program_of_a_command_line() {
+        assert_eq!(
+            executable("/usr/bin/sshd -D").as_deref(),
+            Some("/usr/bin/sshd")
+        );
+        assert_eq!(
+            executable(r#""/opt/my app/svc" --run"#).as_deref(),
+            Some("/opt/my app/svc")
         );
         assert_eq!(executable("   "), None);
     }

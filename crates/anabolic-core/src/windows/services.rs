@@ -170,6 +170,14 @@ fn read_config(scm: &Handle, name: &str) -> Option<Config> {
     })
 }
 
+/// What a stopped service's `exit_code` (a Win32 error) means.
+pub fn exit_text(code: u32) -> String {
+    windows::core::Error::from(windows::Win32::Foundation::WIN32_ERROR(code).to_hresult())
+        .message()
+        .trim()
+        .to_string()
+}
+
 /// Every Win32 service with its state; configurations come from `configs`,
 /// read for the services it does not know yet.
 pub(super) fn list(configs: &mut HashMap<Arc<str>, Option<Arc<Config>>>) -> ServiceList {

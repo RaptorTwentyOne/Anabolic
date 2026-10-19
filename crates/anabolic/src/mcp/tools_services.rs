@@ -1,5 +1,6 @@
-//! Tools about Windows services and the programs that start with Windows,
-//! read the way the Services and Startup pages read them.
+//! Tools about services (Windows' or systemd's) and the programs that
+//! start with Windows or the Linux session, read the way the Services and
+//! Startup pages read them.
 
 use std::collections::HashMap;
 
@@ -26,9 +27,43 @@ pub struct ServiceListArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ServiceName {
-    /// The service's name (as in `sc query`), not its display name.
+    #[cfg_attr(
+        windows,
+        doc = "The service's name (as in `sc query`), not its display name."
+    )]
+    #[cfg_attr(
+        target_os = "linux",
+        doc = "The unit's name (sshd.service; \"(user)\" after it for the user's own), not \
+               its description."
+    )]
     pub name: String,
 }
+
+/// The key that says an entry is the system's own.
+const PART_OF_SYSTEM: &str = if cfg!(windows) {
+    "part_of_windows"
+} else {
+    "part_of_the_system"
+};
+
+const LIST_SERVICES: &str = if cfg!(windows) {
+    "Windows services: name, display name, state, startup type, the process each runs in (and \
+     whether that process hosts others). Filter by text and state."
+} else {
+    "systemd services, the system's and the user's own (marked \"(user)\"): unit name, \
+     description, state, startup type (enabled, disabled, masked, static), the process each \
+     runs in. Filter by text and state."
+};
+
+const LIST_STARTUP: &str = if cfg!(windows) {
+    "Programs that start with Windows: Run keys, Startup folders and tasks at sign-in or boot, \
+     with their command, publisher, whether each is on, whether its file is missing, and what \
+     it costs now if it runs."
+} else {
+    "Programs that start with the session: autostart entries, systemd user units and Plasma's \
+     scripts, with their command, whether each is on, whether its program is missing, and what \
+     it costs now if it runs."
+};
 
 fn service_row(s: &Service, process: Option<&str>) -> Value {
     json!({
@@ -47,9 +82,7 @@ fn service_row(s: &Service, process: Option<&str>) -> Value {
 #[tool_router(router = service_tools, vis = "pub(super)")]
 impl AnabolicMcp {
     #[tool(
-        description = "Windows services: name, display name, state, startup type, the process \
-                       each runs in (and whether that process hosts others). Filter by text and \
-                       state.",
+        description = LIST_SERVICES,
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_services(
@@ -139,9 +172,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Programs that start with Windows: Run keys, Startup folders and tasks at \
-                       sign-in or boot, with their command, publisher, whether each is on, \
-                       whether its file is missing, and what it costs now if it runs.",
+        description = LIST_STARTUP,
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_startup_items(&self) -> Result<CallToolResult, ErrorData> {
@@ -164,7 +195,7 @@ impl AnabolicMcp {
                     .iter()
                     .filter(|p| file.as_deref() == Some(&*p.name.to_lowercase()))
                     .collect();
-                json!({
+                let mut row = json!({
                     "name": i.name,
                     "where": i.source.label(),
                     "location": i.location,
@@ -173,12 +204,13 @@ impl AnabolicMcp {
                     "enabled": i.enabled,
                     "publisher": i.publisher,
                     "description": i.description,
-                    "part_of_windows": i.system,
                     "file_missing": i.missing,
                     "running_now": running.len(),
                     "cpu_percent_now": super::json::pct(running.iter().map(|p| p.cpu).sum()),
                     "private_bytes_now": running.iter().map(|p| p.private_bytes).sum::<u64>(),
-                })
+                });
+                row[PART_OF_SYSTEM] = json!(i.system);
+                row
             })
             .collect();
         ok(json!({ "items": items, "errors": list.errors }))
