@@ -51,7 +51,7 @@ BEGIN
   BEGIN
     BLOCK "040904b0"
     BEGIN
-      VALUE "FileDescription", "Anabolic - Task Manager on steroids\0"
+      VALUE "FileDescription", "Anabolic - performance monitoring and diagnostics\0"
       VALUE "ProductName", "Anabolic\0"
       VALUE "FileVersion", "{version}\0"
       VALUE "ProductVersion", "{version}\0"

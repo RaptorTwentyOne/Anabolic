@@ -5,14 +5,15 @@
 <h3 align="center">Task Manager on steroids</h3>
 
 <p align="center">
-  A Windows task manager that stays responsive when the machine does not,<br>
-  and answers <em>who is doing this, and why</em>, not only <em>how much</em>.
+  An open-source performance monitoring and diagnostics tool for Windows and Linux, built in Rust.<br>
+  It stays responsive when the machine does not, and answers <em>who is doing this, and why</em>,<br>
+  not only <em>how much</em>.
 </p>
 
 <p align="center">
   <a href="https://github.com/RaptorTwentyOne/Anabolic/actions/workflows/ci.yml"><img src="https://github.com/RaptorTwentyOne/Anabolic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/RaptorTwentyOne/Anabolic/releases"><img src="https://img.shields.io/github/v/release/RaptorTwentyOne/Anabolic?include_prereleases&sort=semver" alt="Release"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20x64-0078D4" alt="Windows 10 | 11 x64">
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%C2%B7%20Linux-0078D4" alt="Windows 10 | 11 · Linux">
   <img src="https://img.shields.io/badge/rust-1.95%2B-orange" alt="Rust 1.95+">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT OR Apache-2.0"></a>
 </p>
@@ -45,6 +46,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 ## Contents
 
 - [What it does](#what-it-does)
+- [On Linux](#on-linux)
 - [Getting started](#getting-started)
 - [Keyboard](#keyboard)
 - [AI assistants (MCP)](#ai-assistants-mcp)
@@ -88,14 +90,40 @@ And across the pages:
   running, recording the history and applying rules; alerts become
   notifications.
 - **Several monitors**: called up during a full-screen game, the window opens
-  on another monitor.
+  on another monitor (Windows: on Linux the compositor places windows).
+
+## On Linux
+
+The same pages, read from Linux's own accounting: `/proc` and `/sys`, the
+kernel's perf events and netlink interfaces, fanotify, and systemd and the
+desktop over D-Bus. No kernel module, no eBPF program. Where Linux works
+differently, the pages say how:
+
+| Page | On Linux |
+|---|---|
+| **Processes** | The kernel's threads (kworkers, kswapd, the interrupt threads) are counted under one *Kernel* row, PID 2, as Windows counts its own under System; its details list them one by one. Handles are open files. A program's package stands where Windows shows its company, and its file is checked against the package's record. Dumps are core files that gdb reads. |
+| **Performance** | Who ran on each core, interrupt load and the processes behind each disk come from perf events. Intel and AMD GPUs through the kernel's DRM accounting; NVIDIA through NVML, asked only while the GPU is awake, so a laptop's sleeping one stays asleep. Monitors from EDID and the desktop's own layout (KDE, GNOME). |
+| **Services** | systemd's: the system's and your user's. Start, stop, restart, and enabled, disabled or masked; there is no pausing. |
+| **Startup** | Autostart entries and systemd user units, turned off the way the desktop does it: a system-wide entry is hidden by a copy in your own folder. Nothing is deleted. |
+| **Stutters** | Interrupt and softirq time per handler, in the manner of LatencyMon. Linux reports no frame times to anyone outside a game, so frame times and 1 % lows are Windows only. |
+| **Network** | TCP traffic per program and per connection; Linux counts no UDP traffic per program. Its firewalls filter by address, port and user, not by program, so blocking a program is Windows only, as is the list of DNS lookups. |
+| **Activity** | Every file, program and connection a process touches. There is no registry. |
+
+Around them: the notification area icon is a StatusNotifierItem (KDE has
+it; GNOME needs the AppIndicator extension), the hotkey goes through the
+desktop's GlobalShortcuts portal, and game mode finds the window in front on
+KDE and on X11. The keyrings (KWallet, GNOME Keyring, ssh-agent, gpg-agent)
+take lsass' place as what is not dumped unless allowed.
 
 ## Getting started
 
-Download the zip from the
-[releases](https://github.com/RaptorTwentyOne/Anabolic/releases) page,
-unpack it anywhere and run `anabolic.exe`: a single executable with nothing to
-install. Windows 10 or 11, x64.
+Download the zip for your system from the
+[releases](https://github.com/RaptorTwentyOne/Anabolic/releases) page and
+unpack it anywhere: a single executable with nothing to install.
+
+### Windows
+
+Windows 10 or 11, x64. Run `anabolic.exe`.
 
 On an administrator account Windows asks for elevation as it starts, and with
 it Anabolic sees everything: kernel traces, every process' details, disk
@@ -106,14 +134,34 @@ what is missing and why; Settings has **Restart as admin**.
 > Releases are not code-signed yet, so Windows SmartScreen may warn on first
 > run. Choose **More info** → **Run anyway**, or build it yourself.
 
+### Linux
+
+x64, a C library from 2022 or later (glibc 2.35: any current distribution),
+and a Wayland or X11 desktop with OpenGL.
+
+```
+./anabolic --install   # once, optional: the application menu and the taskbar icon
+./anabolic
+```
+
+Anabolic runs as you. Without more it sees your own processes in full and
+others' in part. **Grant full access** (top right, or in Settings) gives the
+executable the capabilities it needs, once: pkexec asks for your password and
+runs `setcap` on it. The window stays yours, on your desktop session; only
+those rights come with it. As anyone who can run the file has them too, it
+is made yours alone (mode 700) first. Kernel traces, other users' processes'
+files and threads, ending them, and closing connections need it.
+
 ### Updates
 
 Anabolic keeps itself up to date. Soon after it starts, and then once a day,
 it asks GitHub whether a newer release is out. A new release is downloaded,
 checked against the SHA-256 checksum GitHub lists for it, and put in place of
-the old `anabolic.exe`; it runs from the next start, or at once from the bar
-that says it is installed. In Settings → Updates it can ask first instead, or
-not check at all. Copies built from source are left to their source.
+the old executable; it runs from the next start, or at once from the bar that
+says it is installed. In Settings → Updates it can ask first instead, or not
+check at all. Copies built from source are left to their source. On Linux the
+download goes through curl, and the new file has to be granted full access
+again: the rights belong to the file they were given to.
 
 ### Bringing it up from anywhere
 
@@ -122,12 +170,17 @@ Settings offers other keys, or none. With *Keep running in the notification
 area when closed* on, closing the window leaves Anabolic running, so the key
 works all day. Windows' Task Manager and Ctrl+Shift+Esc are left as they are.
 
+On Linux the desktop asks once whether Anabolic may have the key. KDE gives
+Ctrl+Alt+Esc to *Kill a window*: choose another key in Settings, or free that
+one in KDE's shortcut settings.
+
 ### Command line
 
 | Option | |
 |---|---|
 | `--tray` | Start in the notification area, without a window. |
 | `--new` | Start another instance instead of bringing the running one to the front. |
+| `--install`, `--uninstall` | Linux: add Anabolic to the application menu (a .desktop file and the icon in `~/.local/share`), or take it away. |
 
 ## Keyboard
 
@@ -161,18 +214,19 @@ that is off is refused and says where to turn it on:
 | Read what the PC is doing (on by default) | overview, CPU, memory, disks, GPUs, monitors, hardware, stutters, history, processes and their tree, one process in full (who started it, what it hosts, its connections), why a process will not end, leaks, connections, open ports, network usage, DNS lookups, services, startup programs |
 | Turn kernel traces on for a while | who runs on each core, which files each disk serves, traffic per connection, frame times |
 | Look inside a process | handles, modules, thread stacks, wait chains |
-| Write memory dumps | small or full dumps (never of lsass) |
+| Write memory dumps | small or full dumps (never of lsass, or on Linux of the keyrings) |
 | Record what processes do | Process Monitor style recordings, of a process, a name or the whole machine |
 | End processes | end a process or a tree |
 | Suspend, resume and reprioritise | suspend, resume, priority, cores, efficiency mode |
 | Control services | start, stop, restart, pause, startup type |
-| Close connections, block programs | close a TCP connection, Windows Firewall block and unblock |
+| Close connections, block programs | close a TCP connection; Windows Firewall block and unblock (Windows) |
 | Turn startup programs on and off | the way Task Manager does |
 
 Tools that open a process (inspection and dumps), and actions on a game or an
 anti-cheat program, refuse the first call with the risks in words: the
 assistant has to tell you and call again with `force=true` only if you agree.
-Windows' critical processes and Anabolic itself are never acted on.
+The system's critical processes (Windows' own; on Linux init, the kernel and the
+session's compositor) and Anabolic itself are never acted on.
 
 The server also offers resources (`anabolic://overview`,
 `anabolic://process/{pid}` and others) and prompts for common questions
@@ -191,6 +245,10 @@ The process that holds Windows' sign-in secrets (lsass) is not dumped unless
 credential-stealing tools take, so antivirus software stops any program that
 reads it and may quarantine Anabolic. MCP clients can never dump it.
 
+On Linux the keyrings (KWallet, GNOME Keyring, ssh-agent, gpg-agent) hold the
+session's passwords and keys unlocked, and are not dumped unless *Allow dumps
+of the keyrings* is on.
+
 How an anti-cheat reacts to any program is up to its vendor; Anabolic makes
 no promise on their behalf.
 
@@ -202,32 +260,38 @@ nothing about this PC beyond what any download does (its address, and
 `Anabolic/<version>` as the program asking). Settings → Updates turns it off.
 
 Looking a file up on VirusTotal or an address on ipinfo.io opens your
-browser, and only when you ask. Remote addresses get their names from
-Windows' DNS.
+browser, and only when you ask. Remote addresses get their names from the
+system's DNS resolver.
 
 Everything it keeps stays on this computer:
 
-- `%APPDATA%\Anabolic`: settings.
-- `%LOCALAPPDATA%\Anabolic`: the history (process names and command lines,
-  which can include whatever a program was started with), memory dumps and
-  exports you ask for, and `stalls.log`, the moments Anabolic's own window
-  fell behind. Turn the history off or shorten it in Settings.
+- `%APPDATA%\Anabolic` on Windows: settings.
+- `%LOCALAPPDATA%\Anabolic` on Windows, `~/.local/share/anabolic` on Linux
+  (settings there too): the history (process names and command lines, which
+  can include whatever a program was started with), memory dumps and exports
+  you ask for, and `stalls.log`, the moments Anabolic's own window fell
+  behind. Turn the history off or shorten it in Settings.
 
 ## Building from source
 
-Rust 1.95 or newer with the MSVC toolchain:
+Rust 1.95 or newer; on Windows with the MSVC toolchain. On Linux no
+development packages are needed: Wayland, X11, OpenGL and the rest are
+loaded as the program starts.
 
 ```
 cargo build --release
 ```
 
-The result is `target\release\anabolic.exe`, a single executable with its
-fonts and icons embedded. `cargo test` runs the tests; the few that need
-administrator rights skip themselves without them.
+The result is `target\release\anabolic.exe` or `target/release/anabolic`, a
+single executable with its fonts and icons embedded. `cargo test` runs the
+tests; the few that need administrator rights (on Linux, full access) skip
+themselves without them.
 
 The workspace has two crates: `crates/anabolic-core` reads and controls the
 system (process scans, kernel traces, handles, services, the history) and has
 no interface; `crates/anabolic` is the egui application and the MCP server.
+Each core module says what it means on every system; what reads it lives
+beside it, in `windows/` and `linux/`.
 
 ## License
 

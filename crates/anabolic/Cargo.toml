@@ -1,6 +1,6 @@
 [package]
 name = "anabolic"
-description = "Task Manager on steroids"
+description = "Performance monitoring and diagnostics for Windows and Linux: Task Manager on steroids"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
