@@ -970,7 +970,12 @@ impl App {
     fn update_alert(&mut self) {
         let m = &self.snapshot.system.memory;
         let ram = m.used() as f64 * 100.0 / m.total.max(1) as f64;
-        let commit = m.commit as f64 * 100.0 / m.commit_limit.max(1) as f64;
+        // Without an enforced limit (Linux, as usual) commit is no pressure.
+        let commit = if m.commit_limit > 0 {
+            m.commit as f64 * 100.0 / m.commit_limit as f64
+        } else {
+            0.0
+        };
         let threshold = self.settings.memory_alert_pct as f64;
         let peak = ram.max(commit);
         // A little hysteresis so the banner does not flicker around the line.
@@ -989,11 +994,9 @@ impl App {
         } else {
             ("Commit", commit, |p| p.private_bytes)
         };
-        let live = self
-            .snapshot
-            .processes
-            .iter()
-            .filter(|p| p.state != ProcState::Exited && !p.is_pseudo() && p.pid != 4);
+        let live = self.snapshot.processes.iter().filter(|p| {
+            p.state != ProcState::Exited && !p.is_pseudo() && !crate::platform::system_pid(p.pid)
+        });
         let mut apps: HashMap<String, (Arc<str>, u64, usize)> = HashMap::new();
         let mut process: Option<(ProcKey, Arc<str>, u64)> = None;
         for p in live {

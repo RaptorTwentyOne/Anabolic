@@ -305,6 +305,8 @@ pub struct MemoryStats {
     pub total: u64,
     pub available: u64,
     pub commit: u64,
+    /// 0 when no limit is enforced: Linux overcommits unless told not to
+    /// (vm.overcommit_memory = 2).
     pub commit_limit: u64,
     pub commit_peak: u64,
     pub paged_pool: u64,

@@ -796,7 +796,12 @@ fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCm
     );
     big_graph(
         ui,
-        Graph::new(Some(m.commit_limit.max(1) as f32)).series(&h.commit, theme::COMMIT, true),
+        // Without a limit, against the most it reached.
+        Graph::new(Some(m.commit_limit.max(m.commit_peak).max(1) as f32)).series(
+            &h.commit,
+            theme::COMMIT,
+            true,
+        ),
         90.0,
         &h.commit,
         snap,
@@ -804,11 +809,16 @@ fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCm
     );
     ui.add_space(10.0);
 
-    let compressed = snap
-        .processes
-        .iter()
-        .find(|p| p.state != ProcState::Exited && &*p.name == "Memory Compression")
-        .map_or(0, |p| p.working_set);
+    // Windows: what its Memory Compression process holds. Linux: what is in
+    // swap (zram counts as swap).
+    let compressed = if cfg!(windows) {
+        snap.processes
+            .iter()
+            .find(|p| p.state != ProcState::Exited && &*p.name == "Memory Compression")
+            .map_or(0, |p| p.working_set)
+    } else {
+        snap.system.page_files.iter().map(|f| f.used).sum()
+    };
     let cached = m.lists.map_or(m.system_cache, |l| l.standby + l.modified);
     stats(
         ui,
@@ -820,13 +830,45 @@ fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCm
             ("Available", fmt::bytes(m.available)),
             (
                 "Committed",
-                format!("{} / {}", fmt::bytes(m.commit), fmt::bytes(m.commit_limit)),
+                if m.commit_limit > 0 {
+                    format!("{} / {}", fmt::bytes(m.commit), fmt::bytes(m.commit_limit))
+                } else {
+                    format!("{} (no limit enforced)", fmt::bytes(m.commit))
+                },
             ),
             ("Cached", fmt::bytes(cached)),
-            ("Compressed", fmt::bytes(compressed)),
-            ("Paged pool", fmt::bytes(m.paged_pool)),
-            ("Non-paged pool", fmt::bytes(m.nonpaged_pool)),
-            ("Peak commit", fmt::bytes(m.commit_peak)),
+            (
+                if cfg!(windows) {
+                    "Compressed"
+                } else {
+                    "In swap"
+                },
+                fmt::bytes(compressed),
+            ),
+            (
+                if cfg!(windows) {
+                    "Paged pool"
+                } else {
+                    "Kernel, reclaimable"
+                },
+                fmt::bytes(m.paged_pool),
+            ),
+            (
+                if cfg!(windows) {
+                    "Non-paged pool"
+                } else {
+                    "Kernel, fixed"
+                },
+                fmt::bytes(m.nonpaged_pool),
+            ),
+            (
+                if cfg!(windows) {
+                    "Peak commit"
+                } else {
+                    "Peak commit (this session)"
+                },
+                fmt::bytes(m.commit_peak),
+            ),
         ],
     );
     top(

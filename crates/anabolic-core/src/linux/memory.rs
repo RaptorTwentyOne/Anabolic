@@ -36,9 +36,14 @@ impl MemorySampler {
             total,
             available: kb("MemAvailable"),
             commit,
-            // What can be backed: memory and swap. (CommitLimit is only
-            // enforced with overcommit off, and then counts half the RAM.)
-            commit_limit: total + kb("SwapTotal"),
+            // Enforced only with overcommit off; otherwise programs may
+            // reserve more than there is, and nothing fails until pages
+            // are actually used (then the OOM killer steps in).
+            commit_limit: if strict_overcommit() {
+                kb("CommitLimit")
+            } else {
+                0
+            },
             commit_peak: self.peak,
             // The kernel's own memory: what it can give back when asked,
             // and what it cannot.
@@ -53,6 +58,11 @@ impl MemorySampler {
             }),
         }
     }
+}
+
+/// vm.overcommit_memory = 2: reservations beyond CommitLimit fail.
+fn strict_overcommit() -> bool {
+    std::fs::read_to_string("/proc/sys/vm/overcommit_memory").is_ok_and(|v| v.trim() == "2")
 }
 
 #[cfg(test)]

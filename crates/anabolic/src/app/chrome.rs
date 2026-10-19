@@ -460,7 +460,11 @@ impl App {
                 ui,
                 160.0,
                 "Commit",
-                format!("{} / {}", fmt::bytes(m.commit), fmt::bytes(m.commit_limit)),
+                if m.commit_limit > 0 {
+                    format!("{} / {}", fmt::bytes(m.commit), fmt::bytes(m.commit_limit))
+                } else {
+                    fmt::bytes(m.commit)
+                },
             );
             if snap.info_level == InfoLevel::Full {
                 pair(
