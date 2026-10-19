@@ -67,6 +67,19 @@ pub enum Wait {
     Socket,
     Smb,
     Unknown,
+    /// Linux: a lock on a file (flock, fcntl), held by another process.
+    FileLock,
+    /// Linux: a pipe, for the program at its other end.
+    Pipe,
+    /// Linux: a local socket, for the program at its other end.
+    LocalSocket,
+    /// Linux: a lock or condition inside the process (a futex): which
+    /// thread will wake it the kernel does not say.
+    Futex,
+    /// Linux: inside the kernel, uninterruptibly (state D).
+    Kernel,
+    /// Linux: stopped by a signal until it is continued.
+    Stopped,
 }
 
 impl Wait {
@@ -83,6 +96,12 @@ impl Wait {
             Wait::Socket => "network I/O",
             Wait::Smb => "a network file share (SMB)",
             Wait::Unknown => "something Windows cannot name",
+            Wait::FileLock => "a file lock",
+            Wait::Pipe => "a pipe",
+            Wait::LocalSocket => "a local socket",
+            Wait::Futex => "a lock inside the process (futex)",
+            Wait::Kernel => "the kernel: a device or file system that has not answered",
+            Wait::Stopped => "a signal to continue: it is stopped",
         }
     }
 }

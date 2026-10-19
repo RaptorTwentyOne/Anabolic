@@ -1,8 +1,9 @@
 //! The Network page: everything on the network, machine-wide. Who receives
 //! and sends how much, every connection with its state and its other end's
 //! name, the ports open for others to connect to and to whom, and where the
-//! traffic goes. Traffic comes from the kernel network trace, connections
-//! and listening ports from Windows' socket tables; no process is opened.
+//! traffic goes. Traffic comes from the kernel's network accounting (a
+//! trace on Windows, TCP's counters on Linux), connections and listening
+//! ports from the system's socket tables; no process is opened.
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -384,6 +385,14 @@ pub fn show(
     }
 }
 
+#[cfg(windows)]
+const TOTALS_NOTE: &str =
+    "Totals since Anabolic started watching. Click a program for its connections.";
+/// Linux counts TCP's own byte counters: UDP has none.
+#[cfg(target_os = "linux")]
+const TOTALS_NOTE: &str = "Totals since Anabolic started watching, TCP only (Linux counts no \
+                           UDP traffic per program). Click a program for its connections.";
+
 #[allow(clippy::too_many_arguments)]
 fn programs_tab(
     ui: &mut Ui,
@@ -434,13 +443,7 @@ fn programs_tab(
         if view.filter_box(ui, "Filter: program, PID, destination", rows.len(), total) {
             ui.ctx().request_repaint();
         }
-        ui.label(
-            RichText::new(
-                "Totals since Anabolic started watching. Click a program for its connections.",
-            )
-            .small()
-            .color(theme::TEXT_WEAK),
-        );
+        ui.label(RichText::new(TOTALS_NOTE).small().color(theme::TEXT_WEAK));
     });
 
     // The chosen program's connections, under the list.
@@ -621,6 +624,11 @@ fn programs_tab(
 }
 
 fn block_item(ui: &mut Ui, name: &Arc<str>, path: &str, blocked: &[String], out: &mut Vec<UiCmd>) {
+    // Linux firewalls filter by address, port and user, not by program:
+    // there is nothing to block a program with.
+    if cfg!(not(windows)) {
+        return;
+    }
     if blocked.iter().any(|b| b.eq_ignore_ascii_case(path)) {
         item(
             ui,
@@ -1236,6 +1244,19 @@ fn destinations_tab(
 
 fn lookups_tab(ui: &mut Ui, page: &mut NetworkPage, snap: &Snapshot, out: &mut Vec<UiCmd>) {
     use anabolic_core::nettrace::DnsLookup;
+    // Each Linux program asks its own resolver library (or systemd-resolved,
+    // which keeps who asked to itself): nothing records it system-wide.
+    if cfg!(target_os = "linux") {
+        ui.label(
+            RichText::new(
+                "Linux keeps no record of the names programs look up: each program asks \
+                 through its own resolver library, and systemd-resolved tells no one who asked. \
+                 Connections are named by reverse lookup instead.",
+            )
+            .color(theme::TEXT_WEAK),
+        );
+        return;
+    }
     let log = snap.system.dns_lookups.clone();
     let view = &mut page.lookups;
     let answer = |l: &DnsLookup| {

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use super::*;
 
 /// Which process holds each socket (by inode): finding out reads the name
-/// of every open file of every process, so it is done at most once a
-/// second, and only when a socket nobody is known to hold turns up.
+/// of every open file of every process, so it is done only when a socket
+/// nobody is known to hold turns up, and not more often than the caller
+/// allows.
 struct Owners {
     by_inode: HashMap<u64, u32>,
     scanned: Option<Instant>,
@@ -47,17 +48,14 @@ fn scan_owners() -> HashMap<u64, u32> {
     out
 }
 
-/// The owners of these sockets, rescanning when one is unknown.
-fn owners(inodes: &[u64]) -> HashMap<u64, u32> {
+/// The owners of these sockets, rescanning when one is unknown and the
+/// last scan is older than `rescan_after`.
+pub(crate) fn owners(inodes: &[u64], rescan_after: Duration) -> HashMap<u64, u32> {
     let mut owners = OWNERS.lock().unwrap_or_else(|e| e.into_inner());
     let unknown = inodes
         .iter()
         .any(|i| *i != 0 && !owners.by_inode.contains_key(i));
-    if unknown
-        && owners
-            .scanned
-            .is_none_or(|t| t.elapsed() > Duration::from_secs(1))
-    {
+    if unknown && owners.scanned.is_none_or(|t| t.elapsed() > rescan_after) {
         owners.by_inode = scan_owners();
         owners.scanned = Some(Instant::now());
     }
@@ -147,7 +145,7 @@ pub fn sockets() -> (Vec<Socket>, Option<String>) {
         }
     }
     let inodes: Vec<u64> = rows.iter().map(|(_, (_, _, _, inode))| *inode).collect();
-    let owners = owners(&inodes);
+    let owners = owners(&inodes, Duration::from_secs(1));
     let all = rows
         .into_iter()
         .map(|(proto, (local, remote, state, inode))| {
@@ -213,7 +211,7 @@ pub(crate) fn names_by_inode() -> HashMap<u64, String> {
     out
 }
 
-/// Drops one TCP connection of `pid` (IPv4) at once, as the kernel's socket
+/// Drops one TCP connection of `pid` at once, as the kernel's socket
 /// diagnostics interface allows: the program sees it reset. Needs
 /// cap_net_admin.
 pub fn close_tcp(
@@ -232,88 +230,20 @@ pub fn close_tcp(
                 && (s.pid == pid || s.pid == 0)
         })
         .ok_or("the connection is gone")?;
-    let IpAddr::V4(local) = socket.local else {
-        return Err("not an IPv4 connection".into());
-    };
-    destroy(local, local_port, remote, remote_port)
-}
-
-/// SOCK_DESTROY over NETLINK_SOCK_DIAG for one IPv4 TCP connection.
-fn destroy(
-    local: Ipv4Addr,
-    local_port: u16,
-    remote: Ipv4Addr,
-    remote_port: u16,
-) -> Result<(), String> {
-    const NETLINK_SOCK_DIAG: i32 = 4;
-    const SOCK_DESTROY: u16 = 21;
-    const NLM_F_REQUEST: u16 = 1;
-    const NLM_F_ACK: u16 = 4;
-    let fd = unsafe {
-        libc::socket(
-            libc::AF_NETLINK,
-            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
-            NETLINK_SOCK_DIAG,
-        )
-    };
-    if fd < 0 {
-        return Err(crate::util::error_text(&std::io::Error::last_os_error()));
-    }
-    let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-    // nlmsghdr (16) + inet_diag_req_v2 (8 + inet_diag_sockid 48) = 72.
-    let mut msg = [0u8; 72];
-    msg[0..4].copy_from_slice(&72u32.to_ne_bytes());
-    msg[4..6].copy_from_slice(&SOCK_DESTROY.to_ne_bytes());
-    msg[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_ACK).to_ne_bytes());
-    msg[8..12].copy_from_slice(&1u32.to_ne_bytes());
-    let req = &mut msg[16..];
-    req[0] = libc::AF_INET as u8;
-    req[1] = libc::IPPROTO_TCP as u8;
-    // Every state.
-    req[4..8].copy_from_slice(&u32::MAX.to_ne_bytes());
-    let id = &mut req[8..];
-    id[0..2].copy_from_slice(&local_port.to_be_bytes());
-    id[2..4].copy_from_slice(&remote_port.to_be_bytes());
-    id[4..8].copy_from_slice(&local.octets());
-    id[20..24].copy_from_slice(&remote.octets());
-    // No cookie: match by address.
-    id[40..48].copy_from_slice(&[0xFF; 8]);
-    let sent = unsafe {
-        libc::send(
-            std::os::fd::AsRawFd::as_raw_fd(&fd),
-            msg.as_ptr().cast(),
-            msg.len(),
-            0,
-        )
-    };
-    if sent < 0 {
-        return Err(crate::util::error_text(&std::io::Error::last_os_error()));
-    }
-    let mut reply = [0u8; 256];
-    let got = unsafe {
-        libc::recv(
-            std::os::fd::AsRawFd::as_raw_fd(&fd),
-            reply.as_mut_ptr().cast(),
-            reply.len(),
-            0,
-        )
-    };
-    if got < 20 {
-        return Err("the kernel did not answer".into());
-    }
-    // NLMSG_ERROR carries the result: 0, or a negated errno.
-    let error = i32::from_ne_bytes(reply[16..20].try_into().unwrap());
-    match -error {
-        0 => Ok(()),
-        libc::EPERM => Err("closing another program's connection needs cap_net_admin".into()),
-        libc::EOPNOTSUPP => {
-            Err("this kernel cannot close connections (CONFIG_INET_DIAG_DESTROY)".into())
+    crate::netlink::destroy(
+        (socket.local, local_port),
+        (IpAddr::V4(remote), remote_port),
+    )
+    .map_err(|e| match e.raw_os_error() {
+        Some(libc::EPERM) | Some(libc::EACCES) => {
+            "closing another program's connection needs cap_net_admin".into()
         }
-        libc::ENOENT => Err("the connection is gone".into()),
-        e => Err(crate::util::error_text(&std::io::Error::from_raw_os_error(
-            e,
-        ))),
-    }
+        Some(libc::EOPNOTSUPP) => {
+            "this kernel cannot close connections (CONFIG_INET_DIAG_DESTROY)".into()
+        }
+        Some(libc::ENOENT) => "the connection is gone".into(),
+        _ => crate::util::error_text(&e),
+    })
 }
 
 #[cfg(test)]

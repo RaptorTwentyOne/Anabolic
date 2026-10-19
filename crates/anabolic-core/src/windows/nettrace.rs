@@ -14,6 +14,9 @@ use crate::etw::{self, Session};
 
 use super::*;
 
+/// A kernel trace session: administrators only.
+pub const NEEDS_ELEVATION: bool = true;
+
 const KERNEL_NETWORK: GUID = GUID::from_u128(0x7dd42a49_5329_4832_8dfd_43d979153a88);
 const KEYWORD_IPV4: u64 = 0x10;
 const KEYWORD_IPV6: u64 = 0x20;

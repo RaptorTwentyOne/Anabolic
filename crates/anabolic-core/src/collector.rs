@@ -284,7 +284,9 @@ impl State {
         interval_ms: Arc<AtomicU64>,
     ) -> Self {
         let Samplers { cpu, gpu, history } = samplers;
-        let (net_trace, net_trace_error) = if !crate::hardening::may_trace() {
+        let elevation_missing =
+            crate::nettrace::NEEDS_ELEVATION && !crate::hardening::is_elevated();
+        let (net_trace, net_trace_error) = if elevation_missing {
             (None, Some("needs administrator rights".to_string()))
         } else {
             match NetTracer::start() {

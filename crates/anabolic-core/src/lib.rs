@@ -71,15 +71,18 @@ pub mod ntapi;
 #[path = "windows/winfile.rs"]
 pub mod winfile;
 
-// Linux only: reading /proc, the kernel's tracing (perf events), ELF
-// files, other processes' threads and memory (ptrace), the desktop's
-// programs and icons, and the package manager's records.
+// Linux only: reading /proc, the kernel's tracing (perf events) and netlink
+// interfaces, ELF files, other processes' threads and memory (ptrace), the
+// desktop's programs and icons, and the package manager's records.
 #[cfg(target_os = "linux")]
 #[path = "linux/apps.rs"]
 mod apps;
 #[cfg(target_os = "linux")]
 #[path = "linux/elf.rs"]
 mod elf;
+#[cfg(target_os = "linux")]
+#[path = "linux/netlink.rs"]
+mod netlink;
 #[cfg(target_os = "linux")]
 #[path = "linux/packages.rs"]
 pub mod packages;

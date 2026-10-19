@@ -1,8 +1,8 @@
 //! Tools about the network: every connection with its program and the
 //! other end's name, the ports open for others to reach, who sends and
-//! receives how much and where to, and the DNS lookups programs made. From
-//! Windows' socket tables and the kernel network trace; no process is
-//! opened.
+//! receives how much and where to, and the DNS lookups programs made
+//! (Windows). From the system's socket tables and its network accounting;
+//! no process is opened.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -19,8 +19,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Trace;
-use super::handler::{AnabolicMcp, blocking, ok, progress};
+use super::handler::{AnabolicMcp, blocking, fail, ok, progress};
 use crate::settings::McpKind;
+
+#[cfg(windows)]
+const DNS_LOOKUPS: &str = "DNS lookups programs made (from the DNS client's events): when, which \
+                           program, the name asked, the addresses answered and any error. The \
+                           latest first. Lookups are seen while the network trace runs: give \
+                           trace_seconds to watch for a while.";
+/// Linux keeps no record of them: the tool says so.
+#[cfg(target_os = "linux")]
+const DNS_LOOKUPS: &str = "DNS lookups programs made. Not available on Linux: nothing records \
+                           the names programs look up system-wide.";
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
@@ -300,10 +310,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "DNS lookups programs made (from the DNS client's events): when, which \
-                       program, the name asked, the addresses answered and any error. The latest \
-                       first. Lookups are seen while the network trace runs: give trace_seconds \
-                       to watch for a while.",
+        description = DNS_LOOKUPS,
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_dns_lookups(
@@ -313,6 +320,12 @@ impl AnabolicMcp {
     ) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
             return refused;
+        }
+        if cfg!(target_os = "linux") {
+            return fail(
+                "Linux keeps no record of the names programs look up: each program asks through \
+                 its own resolver library, and systemd-resolved tells no one who asked.",
+            );
         }
         let secs = args.trace_seconds.unwrap_or(0).min(30);
         let (_, snap) = self.network_traced(secs, &context).await;

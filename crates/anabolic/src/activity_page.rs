@@ -2,8 +2,9 @@
 //! style. Start a program and record it from its first step, record a
 //! running one, or record the whole computer and narrow it down afterwards
 //! with the filters: every file opened, read, written, renamed or deleted,
-//! every registry key and value, every connection and every program
-//! started, in order. From a kernel trace: nothing is injected or opened.
+//! every registry key and value (Windows), every connection and every
+//! program started, in order. From what the kernel reports: nothing is
+//! injected or opened.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -23,12 +24,42 @@ use crate::proc_table::{UiCmd, item};
 use crate::table::TableView;
 use crate::{fmt, panes, theme, widgets};
 
-const GROUPS: [(Group, &str); 4] = [
+#[cfg(windows)]
+const GROUPS: &[(Group, &str)] = &[
     (Group::Process, "Processes"),
     (Group::File, "Files"),
     (Group::Registry, "Registry"),
     (Group::Network, "Network"),
 ];
+/// Linux has no registry.
+#[cfg(target_os = "linux")]
+const GROUPS: &[(Group, &str)] = &[
+    (Group::Process, "Processes"),
+    (Group::File, "Files"),
+    (Group::Network, "Network"),
+];
+
+/// Linux reports what was done, not what was refused.
+#[cfg(target_os = "linux")]
+const FAILURES_TIP: &str = "Steps that did not succeed. Linux reports file steps only when they \
+                            succeed: what fails here is programs ending with an error";
+
+/// What recording sees, for the card that starts it.
+#[cfg(windows)]
+const RECORD_INTRO: &str = "Start it here and every step it takes is listed from the first: the \
+                            files it opens, reads, writes, renames and deletes, the registry keys \
+                            and values it reads and changes, the connections it makes and the \
+                            programs it starts. It runs as you, not as administrator.";
+#[cfg(target_os = "linux")]
+const RECORD_INTRO: &str = "Start it here and every step it takes is listed from the first: the \
+                            files it opens, reads, writes, renames and deletes, the connections \
+                            it makes and the programs it starts. It runs as you, without \
+                            Anabolic's rights.";
+
+#[cfg(windows)]
+const PROGRAM_HINT: &str = r"C:\Path\To\setup.exe";
+#[cfg(target_os = "linux")]
+const PROGRAM_HINT: &str = "/path/to/program";
 
 /// Steps kept; older ones roll off. Recording the whole computer makes
 /// 3,000 to 13,000 a second here, about 135 bytes each.
@@ -954,21 +985,16 @@ fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
     card(ui, |ui| {
         ui.label(widgets::strong("Record a program", theme::SUBTITLE));
         ui.label(
-            RichText::new(
-                "Start it here and every step it takes is listed from the first: the files \
-                 it opens, reads, writes, renames and deletes, the registry keys and values \
-                 it reads and changes, the connections it makes and the programs it starts. \
-                 It runs as you, not as administrator.",
-            )
-            .size(theme::META)
-            .color(theme::TEXT_WEAK),
+            RichText::new(RECORD_INTRO)
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
         );
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Program");
             ui.add(
                 TextEdit::singleline(&mut page.program)
-                    .hint_text(r"C:\Path\To\setup.exe")
+                    .hint_text(PROGRAM_HINT)
                     .desired_width(420.0),
             );
             if ui
@@ -1144,6 +1170,7 @@ pub fn show(
     relaunching: bool,
     out: &mut Vec<UiCmd>,
 ) {
+    #[cfg(windows)]
     if !elevated {
         ui.horizontal(|ui| {
             ui.label(widgets::icon(theme::icon::LOCK, 13.0).color(theme::ELEVATED_TEXT));
@@ -1161,6 +1188,27 @@ pub fn show(
             }
         });
         return;
+    }
+    // Processes and connections are recorded by anyone; files need the
+    // right to watch every file system.
+    #[cfg(target_os = "linux")]
+    if !elevated {
+        ui.horizontal(|ui| {
+            ui.label(widgets::icon(theme::icon::LOCK, 13.0).color(theme::ELEVATED_TEXT));
+            ui.label(
+                RichText::new(
+                    "Without full access only programs started and connections are recorded: \
+                     watching files needs cap_sys_admin.",
+                )
+                .color(theme::ELEVATED_TEXT),
+            );
+            if ui
+                .add_enabled(!relaunching, egui::Button::new("Grant full access"))
+                .clicked()
+            {
+                out.push(UiCmd::RelaunchElevated);
+            }
+        });
     }
     if let Some(rx) = &page.exporting
         && let Ok(done) = rx.try_recv()
@@ -1275,7 +1323,7 @@ pub fn show(
         .response
         .on_hover_text("The processes with the most steps; show only one, or hide it");
         ui.add_space(6.0);
-        for (g, label) in GROUPS {
+        for &(g, label) in GROUPS {
             let i = group_index(g);
             let text = RichText::new(label).color(if page.groups[i] {
                 group_color(g)
@@ -1295,9 +1343,10 @@ pub fn show(
             .checkbox(&mut page.only_changes, "Only changes")
             .on_hover_text("Creating, writing, renaming and deleting; setting and deleting keys and values; starting programs")
             .changed();
-        changed |= ui
-            .checkbox(&mut page.only_failures, "Only failures")
-            .changed();
+        let failures = ui.checkbox(&mut page.only_failures, "Only failures");
+        #[cfg(target_os = "linux")]
+        let failures = failures.on_hover_text(FAILURES_TIP);
+        changed |= failures.changed();
         if page.recording() {
             ui.add_space(6.0);
             ui.checkbox(&mut page.keep_shown, "Keep only what's shown")

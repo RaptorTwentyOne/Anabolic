@@ -1,4 +1,31 @@
-//! Recording what processes do, on Linux.
+//! Recording what processes do on Linux, Process Monitor style, from what
+//! the kernel reports to any program allowed to listen:
+//!
+//! - files: fanotify, marked on every mounted file system. Each event names
+//!   the process, the folder and the file. Watching needs cap_sys_admin,
+//!   and naming the folders cap_dac_read_search. Linux reports what was
+//!   done, not what was refused: an open that failed is not seen.
+//! - processes: the kernel's process events (fork, exec, exit), else a look
+//!   at the process list ten times a second.
+//! - connections: the socket table four times a second: connections made,
+//!   accepted and closed, and the bytes each carried (TCP).
+//!
+//! The registry kinds do not occur on Linux.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::CString;
+use std::net::IpAddr;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
+
+use crossbeam_channel::{Receiver, Sender, unbounded};
+
+use crate::netlink::{self, DiagSocket, ProcEvent, ProcEvents};
+use crate::nettrace::Proto;
+use crate::procfs;
 
 use super::*;
 
@@ -55,56 +82,1240 @@ pub fn status_word(status: u32) -> Option<&'static str> {
     })
 }
 
-/// Records what a set of processes does.
+/// Reads and writes of one file by one process, sends and receives on one
+/// connection, merge into one row while they keep coming within this.
+const MERGE: Duration = Duration::from_millis(1000);
+/// How often the socket table is read.
+const NET_EVERY: Duration = Duration::from_millis(250);
+/// How often the process list is read, without process events.
+const PROCS_EVERY: Duration = Duration::from_millis(100);
+const FLUSH_EVERY: Duration = Duration::from_millis(100);
+
+/// Who to record from the start.
+enum Target {
+    /// Every process but Anabolic itself.
+    Everything,
+    Attach(Vec<u32>),
+    Launch {
+        program: String,
+        args: String,
+        dir: Option<String>,
+    },
+}
+
+/// What the UI reads, swapped out on `take`.
+#[derive(Default)]
+struct Shared {
+    out: Vec<ActivityEvent>,
+    summary: ActivitySummary,
+    tracked: Vec<u32>,
+    state: Option<RecorderState>,
+}
+
+/// Records what a set of processes does; recording stops on drop.
 pub struct ActivityRecorder {
-    _private: (),
+    worker: Option<thread::JoinHandle<()>>,
+    shared: Arc<Mutex<Shared>>,
+    control: Sender<u32>,
+    stop: Arc<AtomicBool>,
 }
 
 impl ActivityRecorder {
-    pub fn attach(_pid: u32) -> Result<Self, String> {
-        Err("not available on Linux yet".into())
+    /// Records a running process, and what it starts from now on.
+    pub fn attach(pid: u32) -> Result<Self, String> {
+        Self::start(Target::Attach(vec![pid]))
     }
 
+    /// Records every process of the machine but Anabolic itself: what is
+    /// wanted is found by filtering after.
     pub fn everything() -> Result<Self, String> {
-        Err("not available on Linux yet".into())
+        Self::start(Target::Everything)
     }
 
-    pub fn attach_all(_pids: &[u32]) -> Result<Self, String> {
-        Err("not available on Linux yet".into())
+    /// Records several running processes (a program and its children).
+    pub fn attach_all(pids: &[u32]) -> Result<Self, String> {
+        Self::start(Target::Attach(pids.to_vec()))
     }
 
+    /// Starts a program and records it from its first step. It runs as the
+    /// user, with none of Anabolic's rights. Returns at once: `state` says
+    /// when the program started, or why not.
     pub fn launch(program: &str, args: &str, dir: Option<&str>) -> Result<Self, String> {
-        Self::launch_with(program, args, dir, LaunchHow::Hidden)
+        Self::launch_with(program, args, dir, LaunchHow::Normal { show: 1 })
     }
 
+    /// As `launch`; on Linux every program starts without a terminal, so
+    /// `how` changes nothing.
     pub fn launch_with(
-        _program: &str,
-        _args: &str,
-        _dir: Option<&str>,
+        program: &str,
+        args: &str,
+        dir: Option<&str>,
         _how: LaunchHow,
     ) -> Result<Self, String> {
-        Err("not available on Linux yet".into())
+        Self::start(Target::Launch {
+            program: program.to_string(),
+            args: args.to_string(),
+            dir: dir.map(str::to_string),
+        })
     }
 
+    fn start(target: Target) -> Result<Self, String> {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let (control, control_rx) = unbounded();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let (shared, stop) = (shared.clone(), stop.clone());
+            thread::Builder::new()
+                .name("anabolic-activity".into())
+                .spawn(move || Recorder::new(target, shared, control_rx, stop).run())
+                .map_err(|e| e.to_string())?
+        };
+        Ok(Self {
+            worker: Some(worker),
+            shared,
+            control,
+            stop,
+        })
+    }
+
+    /// The events since the last call, in order.
     pub fn take(&mut self) -> Vec<ActivityEvent> {
-        Vec::new()
+        self.shared
+            .lock()
+            .map(|mut s| std::mem::take(&mut s.out))
+            .unwrap_or_default()
     }
 
     pub fn summary(&self) -> ActivitySummary {
-        ActivitySummary::default()
+        self.shared
+            .lock()
+            .map(|s| s.summary.clone())
+            .unwrap_or_default()
     }
 
+    /// The processes being recorded.
     pub fn tracked(&self) -> Vec<u32> {
-        Vec::new()
+        self.shared
+            .lock()
+            .map(|s| s.tracked.clone())
+            .unwrap_or_default()
     }
 
     pub fn state(&self) -> RecorderState {
-        RecorderState::Failed("not available on Linux yet".into())
+        self.shared
+            .lock()
+            .ok()
+            .and_then(|s| s.state.clone())
+            .unwrap_or(RecorderState::Starting)
     }
 
-    pub fn track(&self, _pid: u32) {}
+    /// Records this process too (one the program started before).
+    pub fn track(&self, pid: u32) {
+        let _ = self.control.send(pid);
+    }
 
-    pub fn stop(self) -> Vec<ActivityEvent> {
-        Vec::new()
+    /// Stops recording; the last events can still be taken.
+    pub fn stop(mut self) -> Vec<ActivityEvent> {
+        self.halt();
+        self.take()
+    }
+
+    fn halt(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for ActivityRecorder {
+    fn drop(&mut self) {
+        self.halt();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Files: fanotify.
+
+const FAN_ACCESS: u64 = 0x1;
+const FAN_MODIFY: u64 = 0x2;
+const FAN_CLOSE_WRITE: u64 = 0x8;
+const FAN_OPEN: u64 = 0x20;
+const FAN_CREATE: u64 = 0x100;
+const FAN_DELETE: u64 = 0x200;
+const FAN_Q_OVERFLOW: u64 = 0x4000;
+const FAN_RENAME: u64 = 0x1000_0000;
+const FAN_ONDIR: u64 = 0x4000_0000;
+const FAN_CLOEXEC: u32 = 0x1;
+const FAN_NONBLOCK: u32 = 0x2;
+const FAN_REPORT_DIR_FID: u32 = 0x400;
+const FAN_REPORT_NAME: u32 = 0x800;
+const FAN_MARK_ADD: u32 = 0x1;
+const FAN_MARK_FILESYSTEM: u32 = 0x100;
+const INFO_DFID_NAME: u8 = 2;
+const INFO_DFID: u8 = 3;
+const INFO_OLD_DFID_NAME: u8 = 10;
+const INFO_NEW_DFID_NAME: u8 = 12;
+
+/// File systems with nothing a program keeps (the kernel's own views).
+const PSEUDO: [&str; 22] = [
+    "proc",
+    "sysfs",
+    "cgroup",
+    "cgroup2",
+    "devpts",
+    "devtmpfs",
+    "securityfs",
+    "debugfs",
+    "tracefs",
+    "bpf",
+    "pstore",
+    "mqueue",
+    "hugetlbfs",
+    "configfs",
+    "fusectl",
+    "efivarfs",
+    "autofs",
+    "binfmt_misc",
+    "nsfs",
+    "rpc_pipefs",
+    "selinuxfs",
+    "ramfs",
+];
+
+/// One file event, named.
+struct FileEvent {
+    pid: u32,
+    mask: u64,
+    path: Arc<str>,
+    /// A rename's new name.
+    to: Option<Arc<str>>,
+}
+
+/// A fanotify group marked on every file system.
+struct Files {
+    fd: OwnedFd,
+    /// A folder of each file system (by fsid), to open its handles from.
+    mounts: HashMap<[i32; 2], OwnedFd>,
+    /// Folder handles already named.
+    dirs: HashMap<Vec<u8>, Arc<str>>,
+    overflows: u32,
+}
+
+impl Files {
+    fn open() -> Result<Self, String> {
+        let flags = FAN_CLOEXEC | FAN_NONBLOCK | FAN_REPORT_DIR_FID | FAN_REPORT_NAME;
+        let fd = unsafe { libc::fanotify_init(flags, (libc::O_RDONLY | libc::O_LARGEFILE) as u32) };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            return Err(match e.raw_os_error() {
+                Some(libc::EPERM) => "watching files needs cap_sys_admin".into(),
+                _ => format!("fanotify: {}", crate::util::error_text(&e)),
+            });
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let mask = FAN_OPEN
+            | FAN_ACCESS
+            | FAN_MODIFY
+            | FAN_CLOSE_WRITE
+            | FAN_CREATE
+            | FAN_DELETE
+            | FAN_RENAME
+            | FAN_ONDIR;
+        let mut mounts = HashMap::new();
+        let table = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        for line in table.lines() {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let Some(dash) = fields.iter().position(|f| *f == "-") else {
+                continue;
+            };
+            let (Some(mount), Some(kind)) = (fields.get(4), fields.get(dash + 1)) else {
+                continue;
+            };
+            if PSEUDO.contains(kind) || kind.starts_with("fuse") {
+                continue;
+            }
+            let mount = unescape(mount);
+            let Ok(path) = CString::new(mount.as_str()) else {
+                continue;
+            };
+            let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+            if unsafe { libc::statfs(path.as_ptr(), &mut st) } != 0 {
+                continue;
+            }
+            // SAFETY: fsid_t is two ints.
+            let fsid: [i32; 2] = unsafe { std::mem::transmute(st.f_fsid) };
+            if mounts.contains_key(&fsid) {
+                continue;
+            }
+            let marked = unsafe {
+                libc::fanotify_mark(
+                    fd.as_raw_fd(),
+                    FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
+                    mask,
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                )
+            };
+            if marked != 0 {
+                continue;
+            }
+            let dir = unsafe {
+                libc::open(
+                    path.as_ptr(),
+                    libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                )
+            };
+            if dir >= 0 {
+                mounts.insert(fsid, unsafe { OwnedFd::from_raw_fd(dir) });
+            }
+        }
+        if mounts.is_empty() {
+            return Err("no file system could be watched".into());
+        }
+        Ok(Self {
+            fd,
+            mounts,
+            dirs: HashMap::new(),
+            overflows: 0,
+        })
+    }
+
+    /// The path of a folder handle: opened by handle (cap_dac_read_search)
+    /// and named by the kernel.
+    fn folder(&mut self, fsid: [i32; 2], handle: &[u8]) -> Arc<str> {
+        let mut key = Vec::with_capacity(8 + handle.len());
+        key.extend_from_slice(&fsid[0].to_ne_bytes());
+        key.extend_from_slice(&fsid[1].to_ne_bytes());
+        key.extend_from_slice(handle);
+        if let Some(path) = self.dirs.get(&key) {
+            return path.clone();
+        }
+        let name: Arc<str> = match self.mounts.get(&fsid) {
+            Some(mount) => {
+                let mut buf = handle.to_vec();
+                let fd = unsafe {
+                    libc::syscall(
+                        libc::SYS_open_by_handle_at,
+                        mount.as_raw_fd(),
+                        buf.as_mut_ptr(),
+                        libc::O_PATH | libc::O_CLOEXEC,
+                    )
+                };
+                if fd < 0 {
+                    match std::io::Error::last_os_error().raw_os_error() {
+                        Some(libc::ESTALE) => "(a folder since deleted)".into(),
+                        _ => "(a folder Anabolic may not name)".into(),
+                    }
+                } else {
+                    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+                    std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+                        .map(|p| Arc::from(p.to_string_lossy().as_ref()))
+                        .unwrap_or_else(|_| "(a folder)".into())
+                }
+            }
+            None => "(a folder)".into(),
+        };
+        if self.dirs.len() > 100_000 {
+            self.dirs.clear();
+        }
+        self.dirs.insert(key, name.clone());
+        name
+    }
+
+    /// Every event waiting now. Returns how many the kernel delivered.
+    fn read(&mut self, out: &mut Vec<FileEvent>) -> u64 {
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut seen = 0;
+        loop {
+            let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            let mut at = 0;
+            let n = n as usize;
+            while at + 24 <= n {
+                let len = u32::from_ne_bytes(buf[at..at + 4].try_into().unwrap()) as usize;
+                if len < 24 || at + len > n {
+                    break;
+                }
+                seen += 1;
+                let event = &buf[at..at + len];
+                at += len;
+                let meta_len = u16::from_ne_bytes([event[6], event[7]]) as usize;
+                let mask = u64::from_ne_bytes(event[8..16].try_into().unwrap());
+                let pid = i32::from_ne_bytes(event[20..24].try_into().unwrap()) as u32;
+                if mask & FAN_Q_OVERFLOW != 0 {
+                    self.overflows += 1;
+                    continue;
+                }
+                let (mut path, mut to) = (None, None);
+                let mut info = meta_len;
+                while info + 4 <= event.len() {
+                    let kind = event[info];
+                    let info_len = u16::from_ne_bytes([event[info + 2], event[info + 3]]) as usize;
+                    if info_len < 4 || info + info_len > event.len() {
+                        break;
+                    }
+                    let record = &event[info..info + info_len];
+                    info += info_len;
+                    if ![
+                        INFO_DFID_NAME,
+                        INFO_DFID,
+                        INFO_OLD_DFID_NAME,
+                        INFO_NEW_DFID_NAME,
+                    ]
+                    .contains(&kind)
+                        || record.len() < 20
+                    {
+                        continue;
+                    }
+                    let fsid = [
+                        i32::from_ne_bytes(record[4..8].try_into().unwrap()),
+                        i32::from_ne_bytes(record[8..12].try_into().unwrap()),
+                    ];
+                    let handle_bytes =
+                        u32::from_ne_bytes(record[12..16].try_into().unwrap()) as usize;
+                    let Some(handle) = record.get(12..20 + handle_bytes) else {
+                        continue;
+                    };
+                    let name = record[20 + handle_bytes..]
+                        .split(|&b| b == 0)
+                        .next()
+                        .map(String::from_utf8_lossy)
+                        .unwrap_or_default();
+                    let folder = self.folder(fsid, handle);
+                    let full: Arc<str> = if name.is_empty() || name == "." {
+                        folder
+                    } else if folder.ends_with('/') {
+                        format!("{folder}{name}").into()
+                    } else {
+                        format!("{folder}/{name}").into()
+                    };
+                    if kind == INFO_NEW_DFID_NAME {
+                        to = Some(full);
+                    } else {
+                        path = Some(full);
+                    }
+                }
+                if let Some(path) = path {
+                    out.push(FileEvent {
+                        pid,
+                        mask,
+                        path,
+                        to,
+                    });
+                }
+            }
+        }
+        seen
+    }
+}
+
+/// The mount table's escapes: "\040" for a space.
+fn unescape(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && let Some(code) = text
+                .get(i + 1..i + 4)
+                .and_then(|o| u8::from_str_radix(o, 8).ok())
+        {
+            out.push(code);
+            i += 4;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A shared library the loader opens: what Windows calls loading an image.
+fn shared_object(path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    file.ends_with(".so") || file.contains(".so.")
+}
+
+// ---------------------------------------------------------------------------
+// The recorder.
+
+struct Slot {
+    ev: ActivityEvent,
+    /// Still growing (merging) until then.
+    open_until: Option<Instant>,
+}
+
+/// A connection being watched.
+#[derive(Clone, Copy)]
+struct Conn {
+    pid: u32,
+    remote: (IpAddr, u16),
+    local_port: u16,
+    sent: u64,
+    received: u64,
+}
+
+struct Recorder {
+    shared: Arc<Mutex<Shared>>,
+    control: Receiver<u32>,
+    stop: Arc<AtomicBool>,
+    target: Option<Target>,
+    everything: bool,
+    own: u32,
+    tracked: HashSet<u32>,
+    files: Option<Files>,
+    events: Option<ProcEvents>,
+    /// Without process events: the processes at the last look.
+    procs: HashSet<u32>,
+    /// What each process runs, for its exit.
+    images: HashMap<u32, Arc<str>>,
+    queue: VecDeque<Slot>,
+    /// Seq of `queue[0]`.
+    base: u64,
+    next_seq: u64,
+    /// Open merging rows: (pid, kind, path) -> seq.
+    runs: HashMap<(u32, ActivityKind, Arc<str>), u64>,
+    conns: HashMap<u64, Conn>,
+    conns_primed: bool,
+    summary: ActivitySummary,
+    written: HashSet<Arc<str>>,
+    endpoints: HashSet<(IpAddr, u16)>,
+    paths: HashSet<Arc<str>>,
+    lost_events: u32,
+}
+
+impl Recorder {
+    fn new(
+        target: Target,
+        shared: Arc<Mutex<Shared>>,
+        control: Receiver<u32>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            shared,
+            control,
+            stop,
+            everything: matches!(target, Target::Everything),
+            target: Some(target),
+            own: std::process::id(),
+            tracked: HashSet::new(),
+            files: None,
+            events: None,
+            procs: HashSet::new(),
+            images: HashMap::new(),
+            queue: VecDeque::new(),
+            base: 0,
+            next_seq: 0,
+            runs: HashMap::new(),
+            conns: HashMap::new(),
+            conns_primed: false,
+            summary: ActivitySummary::default(),
+            written: HashSet::new(),
+            endpoints: HashSet::new(),
+            paths: HashSet::new(),
+            lost_events: 0,
+        }
+    }
+
+    fn set_state(&self, state: RecorderState) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.state = Some(state);
+        }
+    }
+
+    /// Whether this process' steps are recorded.
+    fn wants(&self, pid: u32) -> bool {
+        if self.everything {
+            pid != self.own && pid != 0
+        } else {
+            self.tracked.contains(&pid)
+        }
+    }
+
+    /// The shared copy of a path.
+    fn intern(&mut self, path: &str) -> Arc<str> {
+        if let Some(p) = self.paths.get(path) {
+            return p.clone();
+        }
+        if self.paths.len() >= 500_000 {
+            self.paths.clear();
+        }
+        let p: Arc<str> = path.into();
+        self.paths.insert(p.clone());
+        p
+    }
+
+    /// Adds a step at the end of the timeline. Reads, writes, sends and
+    /// receives go into the open row of the same kind on the same thing,
+    /// while there is one; for the whole machine, so do repeats of any
+    /// other step.
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &mut self,
+        pid: u32,
+        kind: ActivityKind,
+        path: Arc<str>,
+        detail: String,
+        status: Option<u32>,
+        bytes: u64,
+    ) {
+        let now = Instant::now();
+        let merges = matches!(
+            kind,
+            ActivityKind::FileRead
+                | ActivityKind::FileWrite
+                | ActivityKind::NetSend
+                | ActivityKind::NetReceive
+        ) || self.everything;
+        let key = (pid, kind, path.clone());
+        if merges
+            && let Some(&seq) = self.runs.get(&key)
+            && let Some(slot) = seq
+                .checked_sub(self.base)
+                .and_then(|i| self.queue.get_mut(i as usize))
+            && slot.open_until.is_some_and(|until| until > now)
+            && slot.ev.detail == detail
+            && slot.ev.status == status
+        {
+            slot.ev.count += 1;
+            slot.ev.bytes += bytes;
+            return;
+        }
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.queue.push_back(Slot {
+            ev: ActivityEvent {
+                seq,
+                at: SystemTime::now(),
+                pid,
+                tid: 0,
+                kind,
+                path,
+                detail,
+                status,
+                count: 1,
+                bytes,
+            },
+            open_until: merges.then_some(now + MERGE),
+        });
+        if merges {
+            self.runs.insert(key, seq);
+        }
+    }
+
+    /// Hands finished steps over, in order. `all`: the recording ended.
+    fn flush(&mut self, all: bool) {
+        let now = Instant::now();
+        let mut out = Vec::new();
+        while let Some(front) = self.queue.front() {
+            if !all && front.open_until.is_some_and(|until| until > now) {
+                break;
+            }
+            let slot = self.queue.pop_front().expect("front");
+            self.base += 1;
+            // The whole machine: the reader keeps what it has room for.
+            if self.everything || self.summary.kept < MAX_EVENTS {
+                self.summary.kept += 1;
+                out.push(slot.ev);
+            } else {
+                self.summary.dropped += 1;
+            }
+        }
+        let base = self.base;
+        self.runs.retain(|_, seq| *seq >= base);
+        self.summary.lost = self.lost_events + self.files.as_ref().map_or(0, |f| f.overflows);
+        if let Ok(mut s) = self.shared.lock() {
+            s.out.append(&mut out);
+            s.summary = self.summary.clone();
+            let mut tracked: Vec<u32> = self.tracked.iter().copied().collect();
+            tracked.sort_unstable();
+            s.tracked = tracked;
+        }
+    }
+
+    // Processes.
+
+    /// A process started a program: the parent's step when the parent is
+    /// recorded (and the child is recorded from now on), else the process'
+    /// own first step when it is recorded itself (a launched program).
+    fn started(&mut self, pid: u32) {
+        let Some(stat) = procfs::stat(pid) else {
+            return;
+        };
+        let image: Arc<str> = procfs::exe(pid).unwrap_or(stat.comm).into();
+        self.images.insert(pid, image.clone());
+        let line = procfs::cmdline(pid).unwrap_or_default();
+        let detail = format!("PID {pid}  \u{b7}  {line}");
+        if self.wants(stat.ppid) {
+            if !self.everything {
+                self.tracked.insert(pid);
+            }
+            self.summary.processes_started += 1;
+            self.push(
+                stat.ppid,
+                ActivityKind::ProcessStart,
+                image,
+                detail,
+                None,
+                0,
+            );
+        } else if self.tracked.contains(&pid) {
+            self.push(pid, ActivityKind::ProcessStart, image, detail, None, 0);
+        }
+    }
+
+    /// `status` as wait(2) gives it, when known: the exit code, or 128 and
+    /// the signal that ended it, as a shell says.
+    fn ended(&mut self, pid: u32, status: Option<u32>) {
+        if !self.wants(pid) {
+            self.images.remove(&pid);
+            return;
+        }
+        let image = self
+            .images
+            .remove(&pid)
+            .unwrap_or_else(|| format!("PID {pid}").into());
+        let code = status.map(|s| match s & 0x7f {
+            0 => (s >> 8) & 0xff,
+            signal => 128 + signal,
+        });
+        self.push(
+            pid,
+            ActivityKind::ProcessExit,
+            image,
+            String::new(),
+            code,
+            0,
+        );
+    }
+
+    fn on_process_event(&mut self, event: ProcEvent) {
+        match event {
+            // A child that has not started a program of its own yet: its
+            // steps are its parent's program's.
+            ProcEvent::Fork { parent, pid, tid } if pid == tid => {
+                if self.wants(parent) && !self.everything {
+                    self.tracked.insert(pid);
+                }
+                if let Some(image) = self.images.get(&parent).cloned() {
+                    self.images.insert(pid, image);
+                }
+            }
+            ProcEvent::Exec { pid } => self.started(pid),
+            ProcEvent::Exit { pid, tid, status } if pid == tid => self.ended(pid, Some(status)),
+            _ => {}
+        }
+    }
+
+    /// Without process events: what started and ended since the last look.
+    fn poll_processes(&mut self) {
+        let now: HashSet<u32> = procfs::pids().into_iter().collect();
+        let mut new: Vec<u32> = now.difference(&self.procs).copied().collect();
+        new.sort_unstable();
+        for pid in new {
+            self.started(pid);
+        }
+        let gone: Vec<u32> = self.procs.difference(&now).copied().collect();
+        for pid in gone {
+            self.ended(pid, None);
+        }
+        self.procs = now;
+    }
+
+    // Files.
+
+    fn on_file(&mut self, e: FileEvent) {
+        if !self.wants(e.pid) {
+            return;
+        }
+        let dir = e.mask & FAN_ONDIR != 0;
+        let path = self.intern(&e.path);
+        let ok = Some(0);
+        if e.mask & FAN_CREATE != 0 {
+            self.summary.files_created += 1;
+            let detail = if dir { "folder" } else { "" };
+            self.push(
+                e.pid,
+                ActivityKind::FileCreate,
+                path.clone(),
+                detail.into(),
+                ok,
+                0,
+            );
+        }
+        if e.mask & FAN_RENAME != 0 {
+            let to = e.to.as_deref().unwrap_or("");
+            self.push(
+                e.pid,
+                ActivityKind::FileRename,
+                path.clone(),
+                format!("to {to}"),
+                ok,
+                0,
+            );
+        }
+        if e.mask & FAN_DELETE != 0 {
+            self.summary.files_deleted += 1;
+            self.push(
+                e.pid,
+                ActivityKind::FileDelete,
+                path.clone(),
+                String::new(),
+                ok,
+                0,
+            );
+        }
+        if e.mask & FAN_OPEN != 0 && !dir {
+            if shared_object(&path) {
+                self.summary.images_loaded += 1;
+                self.push(
+                    e.pid,
+                    ActivityKind::ImageLoad,
+                    path.clone(),
+                    String::new(),
+                    None,
+                    0,
+                );
+            } else {
+                self.push(
+                    e.pid,
+                    ActivityKind::FileOpen,
+                    path.clone(),
+                    String::new(),
+                    ok,
+                    0,
+                );
+            }
+        }
+        if e.mask & FAN_ACCESS != 0 {
+            let kind = if dir {
+                ActivityKind::FileListDir
+            } else {
+                ActivityKind::FileRead
+            };
+            self.push(e.pid, kind, path.clone(), String::new(), ok, 0);
+        }
+        if e.mask & FAN_MODIFY != 0 {
+            if self.written.insert(path.clone()) {
+                self.summary.files_written += 1;
+            }
+            self.push(
+                e.pid,
+                ActivityKind::FileWrite,
+                path.clone(),
+                String::new(),
+                ok,
+                0,
+            );
+        }
+        // Closed after writing: the run of writes is over.
+        if e.mask & FAN_CLOSE_WRITE != 0
+            && let Some(&seq) = self.runs.get(&(e.pid, ActivityKind::FileWrite, path))
+            && let Some(slot) = seq
+                .checked_sub(self.base)
+                .and_then(|i| self.queue.get_mut(i as usize))
+        {
+            slot.open_until = None;
+        }
+    }
+
+    // Connections.
+
+    /// The sockets each recorded process holds, by inode.
+    fn socket_owners(&self, sockets: &[DiagSocket]) -> HashMap<u64, u32> {
+        if self.everything {
+            let inodes: Vec<u64> = sockets.iter().map(|s| s.inode).collect();
+            return crate::sockets::owners(&inodes, Duration::from_secs(2));
+        }
+        let mut out = HashMap::new();
+        for &pid in &self.tracked {
+            let Ok(dir) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+                continue;
+            };
+            for e in dir.flatten() {
+                if let Some(inode) = std::fs::read_link(e.path()).ok().and_then(|t| {
+                    t.to_str()?
+                        .strip_prefix("socket:[")?
+                        .strip_suffix(']')?
+                        .parse::<u64>()
+                        .ok()
+                }) {
+                    out.insert(inode, pid);
+                }
+            }
+        }
+        out
+    }
+
+    fn poll_connections(&mut self) {
+        const ESTABLISHED: u8 = 1;
+        const SYN_SENT: u8 = 2;
+        const SYN_RECV: u8 = 3;
+        const LISTEN: u8 = 10;
+        let sockets = netlink::dump(Proto::Tcp).unwrap_or_default();
+        let listening: HashSet<u16> = sockets
+            .iter()
+            .filter(|s| s.state == LISTEN)
+            .map(|s| s.local.1)
+            .collect();
+        let live: Vec<&DiagSocket> = sockets
+            .iter()
+            .filter(|s| s.inode != 0 && s.state != LISTEN)
+            .collect();
+        let owners = self.socket_owners(&sockets);
+        let mut seen = HashSet::with_capacity(live.len());
+        for s in live {
+            let Some(&pid) = owners.get(&s.inode) else {
+                continue;
+            };
+            if !self.wants(pid) {
+                continue;
+            }
+            seen.insert(s.cookie);
+            let (sent, received) = (s.sent.unwrap_or(0), s.received.unwrap_or(0));
+            let endpoint: Arc<str> = match s.remote.0 {
+                IpAddr::V6(v6) => format!("[{v6}]:{}", s.remote.1),
+                v4 => format!("{v4}:{}", s.remote.1),
+            }
+            .into();
+            let detail = format!("TCP, local port {}", s.local.1);
+            let before = match self.conns.get(&s.cookie) {
+                Some(c) => *c,
+                None => {
+                    let new = Conn {
+                        pid,
+                        remote: s.remote,
+                        local_port: s.local.1,
+                        sent: 0,
+                        received: 0,
+                    };
+                    if !self.conns_primed {
+                        // Open before recording began: only its traffic
+                        // from now on counts.
+                        self.conns.insert(
+                            s.cookie,
+                            Conn {
+                                sent,
+                                received,
+                                ..new
+                            },
+                        );
+                        continue;
+                    }
+                    if matches!(s.state, ESTABLISHED | SYN_SENT | SYN_RECV) {
+                        let kind = if listening.contains(&s.local.1) {
+                            ActivityKind::NetAccept
+                        } else {
+                            ActivityKind::NetConnect
+                        };
+                        if self.endpoints.insert(s.remote) {
+                            self.summary.endpoints += 1;
+                        }
+                        self.push(pid, kind, endpoint.clone(), detail.clone(), None, 0);
+                    }
+                    new
+                }
+            };
+            let (tx, rx) = (
+                sent.saturating_sub(before.sent),
+                received.saturating_sub(before.received),
+            );
+            if tx > 0 {
+                self.summary.sent += tx;
+                self.push(
+                    pid,
+                    ActivityKind::NetSend,
+                    endpoint.clone(),
+                    detail.clone(),
+                    None,
+                    tx,
+                );
+            }
+            if rx > 0 {
+                self.summary.received += rx;
+                self.push(pid, ActivityKind::NetReceive, endpoint, detail, None, rx);
+            }
+            self.conns.insert(
+                s.cookie,
+                Conn {
+                    sent,
+                    received,
+                    ..before
+                },
+            );
+        }
+        if self.conns_primed {
+            let gone: Vec<u64> = self
+                .conns
+                .keys()
+                .filter(|c| !seen.contains(c))
+                .copied()
+                .collect();
+            for cookie in gone {
+                let c = self.conns.remove(&cookie).expect("listed");
+                let endpoint: Arc<str> = match c.remote.0 {
+                    IpAddr::V6(v6) => format!("[{v6}]:{}", c.remote.1),
+                    v4 => format!("{v4}:{}", c.remote.1),
+                }
+                .into();
+                self.push(
+                    c.pid,
+                    ActivityKind::NetDisconnect,
+                    endpoint,
+                    format!("TCP, local port {}", c.local_port),
+                    None,
+                    0,
+                );
+            }
+        } else {
+            self.conns.retain(|c, _| seen.contains(c));
+        }
+        self.conns_primed = true;
+    }
+
+    // The thread.
+
+    /// Starts the program to record: as the user (Anabolic's capabilities
+    /// do not pass to a program it starts), with no terminal. It is
+    /// recorded from the moment it exists; the steps it takes meanwhile
+    /// wait in the kernel's queues and are read right after.
+    fn launch(&mut self, program: &str, args: &str, dir: Option<&str>) -> Result<(), String> {
+        let mut command = std::process::Command::new(program);
+        command
+            .args(split_args(args))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some(dir) = dir.filter(|d| !d.is_empty()) {
+            command.current_dir(dir);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("{program} could not start: {e}"))?;
+        self.tracked.insert(child.id());
+        // Collected when it ends, so it does not linger as a zombie.
+        let _ = thread::Builder::new()
+            .name("anabolic-launched".into())
+            .spawn(move || child.wait());
+        Ok(())
+    }
+
+    fn run(mut self) {
+        let mut problems = Vec::new();
+        match Files::open() {
+            Ok(files) => self.files = Some(files),
+            Err(e) => problems.push(format!("file activity is not recorded: {e}")),
+        }
+        self.events = ProcEvents::open().ok();
+        if self.events.is_none() {
+            self.procs = procfs::pids().into_iter().collect();
+        }
+        let target = self.target.take();
+        if let Some(Target::Attach(pids)) = &target {
+            self.tracked.extend(pids);
+            for &pid in pids {
+                if let Some(image) = procfs::exe(pid) {
+                    self.images.insert(pid, image.into());
+                }
+            }
+        }
+        // The connections open now: what recorded processes do with them
+        // from now on counts; a launched program's are all new.
+        self.poll_connections();
+        if let Some(Target::Launch { program, args, dir }) = &target
+            && let Err(e) = self.launch(program, args, dir.as_deref())
+        {
+            self.set_state(RecorderState::Failed(e));
+            self.flush(true);
+            return;
+        }
+        self.set_state(if problems.is_empty() {
+            RecorderState::Recording
+        } else {
+            RecorderState::Failed(capitalized(&problems.join("; ")))
+        });
+        let (mut last_net, mut last_procs, mut last_flush) =
+            (Instant::now(), Instant::now(), Instant::now());
+        let mut files = Vec::new();
+        let mut events = Vec::new();
+        loop {
+            let stopping = self.stop.load(Ordering::Relaxed);
+            while let Ok(pid) = self.control.try_recv() {
+                self.tracked.insert(pid);
+            }
+            let mut waits = Vec::with_capacity(2);
+            if let Some(f) = &self.files {
+                waits.push(libc::pollfd {
+                    fd: f.fd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+            if let Some(e) = &self.events {
+                waits.push(libc::pollfd {
+                    fd: e.fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+            if !stopping {
+                unsafe { libc::poll(waits.as_mut_ptr(), waits.len() as libc::nfds_t, 50) };
+            }
+            // Processes first: a child's own steps must find it tracked.
+            if let Some(source) = &self.events {
+                events.clear();
+                if source.drain(&mut events) {
+                    self.lost_events += 1;
+                }
+                self.summary.seen += events.len() as u64;
+                for event in std::mem::take(&mut events) {
+                    self.on_process_event(event);
+                }
+            } else if last_procs.elapsed() >= PROCS_EVERY {
+                last_procs = Instant::now();
+                self.poll_processes();
+            }
+            if let Some(source) = &mut self.files {
+                files.clear();
+                self.summary.seen += source.read(&mut files);
+                for event in std::mem::take(&mut files) {
+                    self.on_file(event);
+                }
+            }
+            if last_net.elapsed() >= NET_EVERY || stopping {
+                last_net = Instant::now();
+                self.poll_connections();
+            }
+            if stopping {
+                self.flush(true);
+                return;
+            }
+            if last_flush.elapsed() >= FLUSH_EVERY {
+                last_flush = Instant::now();
+                self.flush(false);
+            }
+        }
+    }
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// A command line's arguments, split as a shell would split them: by
+/// spaces, with "double" and 'single' quotes and backslashes.
+fn split_args(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut chars = line.chars();
+    let (mut single, mut double) = (false, false);
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !double => {
+                single = !single;
+                started = true;
+            }
+            '"' if !single => {
+                double = !double;
+                started = true;
+            }
+            '\\' if !single => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                    started = true;
+                }
+            }
+            c if c.is_whitespace() && !single && !double => {
+                if started {
+                    out.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            c => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(current);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_a_command_line() {
+        assert_eq!(
+            split_args(r#"-a "two words" 'single \x' back\ slash"#),
+            vec!["-a", "two words", r"single \x", "back slash"]
+        );
+        assert!(split_args("   ").is_empty());
+        assert_eq!(split_args(r#""""#), vec![""]);
+    }
+
+    #[test]
+    fn knows_a_shared_library() {
+        assert!(shared_object("/usr/lib/libc.so.6"));
+        assert!(shared_object("/usr/lib/libfoo.so"));
+        assert!(!shared_object("/home/me/notes.solution"));
+    }
+
+    /// A program launched for recording: its start, its connection to a
+    /// listener here and its end are recorded (its files too, when
+    /// fanotify is allowed).
+    #[test]
+    fn records_a_launched_program() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut s, &mut buf);
+            buf.len()
+        });
+        // bash's /dev/tcp: a connection without curl or nc.
+        let script = format!(
+            "exec 3<>/dev/tcp/127.0.0.1/{port}; printf hello >&3; sleep 0.6; exec 3>&-; \
+             cat /etc/hostname > /dev/null"
+        );
+        let mut recorder =
+            ActivityRecorder::launch("bash", &format!("-c '{script}'"), None).unwrap();
+        let mut events = Vec::new();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            events.extend(recorder.take());
+            if events.iter().any(|e| e.kind == ActivityKind::ProcessExit) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        events.extend(recorder.stop());
+        assert_eq!(accept.join().unwrap(), 5);
+        let kinds: Vec<ActivityKind> = events.iter().map(|e| e.kind).collect();
+        assert!(kinds.contains(&ActivityKind::ProcessExit), "{kinds:?}");
+        let connect = events
+            .iter()
+            .find(|e| e.kind == ActivityKind::NetConnect)
+            .expect("the connection is recorded");
+        assert_eq!(&*connect.path, format!("127.0.0.1:{port}"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == ActivityKind::NetSend && e.bytes >= 5),
+            "{events:?}"
+        );
+        assert!(kinds.contains(&ActivityKind::NetDisconnect), "{kinds:?}");
     }
 }

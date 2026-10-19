@@ -3,6 +3,23 @@
 
 use super::*;
 
+#[cfg(windows)]
+const ANALYZE_TIP: &str = "Asks Windows what each of its threads is waiting for, across \
+                           processes (opens its threads for reading).";
+#[cfg(target_os = "linux")]
+const ANALYZE_TIP: &str = "Reads where each of its threads waits in the kernel and follows it \
+                           across processes: file locks, pipes, local sockets, children. \
+                           Without full access only your own processes can be followed.";
+
+#[cfg(windows)]
+const NOTHING_TO_FOLLOW: &str =
+    "No thread is waiting on anything Windows can follow: if it is slow, it is busy, not stuck.";
+#[cfg(target_os = "linux")]
+const NOTHING_TO_FOLLOW: &str = "No thread is waiting on anything that leads somewhere (a lock \
+                                 another program holds, a pipe, a child): its threads run, poll \
+                                 for events or wait on locks of their own. If it is slow, it is \
+                                 busy, not stuck.";
+
 pub(super) fn waits_tab(
     ui: &mut Ui,
     p: &ProcessInfo,
@@ -24,7 +41,9 @@ pub(super) fn waits_tab(
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if hung.is_empty() {
+            // A Wayland compositor tells no one which windows stopped
+            // answering: Linux has nothing to say either way.
+            if hung.is_empty() && cfg!(windows) {
                 ui.label(RichText::new("None of its windows is hung right now.").color(theme::TEXT_WEAK));
             }
             for h in &hung {
@@ -72,10 +91,7 @@ pub(super) fn waits_tab(
                     }
                 } else if ui
                     .button(if report.is_some() { "Analyze again" } else { "Analyze wait chain" })
-                    .on_hover_text(
-                        "Asks Windows what each of its threads is waiting for, across processes \
-                         (opens its threads for reading).",
-                    )
+                    .on_hover_text(ANALYZE_TIP)
                     .clicked()
                 {
                     out.push(UiCmd::ConfirmWaitChain(p.key));
@@ -124,13 +140,7 @@ pub(super) fn waits_tab(
             }
             ui.add_space(8.0);
             if r.chains.is_empty() {
-                ui.label(
-                    RichText::new(
-                        "No thread is waiting on anything Windows can follow: \
-                         if it is slow, it is busy, not stuck.",
-                    )
-                    .color(theme::TEXT_WEAK),
-                );
+                ui.label(RichText::new(NOTHING_TO_FOLLOW).color(theme::TEXT_WEAK));
             }
             let hung_tids: Vec<u32> = hung.iter().map(|h| h.tid).collect();
             for (i, chain) in r.chains.iter().enumerate() {

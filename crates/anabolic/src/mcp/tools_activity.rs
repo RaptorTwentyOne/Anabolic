@@ -1,7 +1,8 @@
 //! Recording what processes do, Process Monitor style, for an MCP client:
-//! every file, registry key, connection and program a process (or the
-//! whole machine) touches for some seconds, from a kernel trace. Nothing is
-//! opened. One recording at a time: kernel sessions are few.
+//! every file, registry key (Windows), connection and program a process (or
+//! the whole machine) touches for some seconds, from what the kernel
+//! reports. Nothing is opened. One recording at a time: kernel sessions are
+//! few.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,16 +129,26 @@ impl Drop for Busy<'_> {
     }
 }
 
+#[cfg(windows)]
+const RECORD_ACTIVITY: &str = "Records what a process (with the processes under it), every \
+    process of a name, or the whole machine does for some seconds, step by step like Process \
+    Monitor: programs started, DLLs loaded, files opened, read, written, renamed and deleted, \
+    registry keys and values, connections, each with its result. From a kernel trace: nothing \
+    is opened or injected. Reports progress every second; returns the counts and the steps kept \
+    (filter them with kinds, filter, only_failures, only_changes).";
+#[cfg(target_os = "linux")]
+const RECORD_ACTIVITY: &str = "Records what a process (with the processes under it), every \
+    process of a name, or the whole machine does for some seconds, step by step like Process \
+    Monitor: programs started and how they ended, shared libraries loaded, files opened, read, \
+    written, renamed and deleted (only when Anabolic has full access; Linux reports what was \
+    done, not what failed), TCP connections with the bytes they carried. Nothing is opened or \
+    injected. Reports progress every second; returns the counts and the steps kept (filter them \
+    with kinds, filter, only_failures, only_changes).";
+
 #[tool_router(router = activity_tools, vis = "pub(super)")]
 impl AnabolicMcp {
     #[tool(
-        description = "Records what a process (with the processes under it), every process of a \
-                       name, or the whole machine does for some seconds, step by step like \
-                       Process Monitor: programs started, DLLs loaded, files opened, read, \
-                       written, renamed and deleted, registry keys and values, connections, each \
-                       with its result. From a kernel trace: nothing is opened or injected. \
-                       Reports progress every second; returns the counts and the steps kept \
-                       (filter them with kinds, filter, only_failures, only_changes).",
+        description = RECORD_ACTIVITY,
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn record_activity(

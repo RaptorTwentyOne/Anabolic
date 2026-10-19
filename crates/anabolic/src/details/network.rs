@@ -32,6 +32,13 @@ pub(super) fn network_tab(
         );
         return;
     }
+    if cfg!(target_os = "linux") {
+        ui.label(
+            RichText::new("TCP traffic only: Linux counts no UDP traffic per program.")
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
+        );
+    }
     let Some(sel) = snap.selected.as_ref().filter(|s| s.key == p.key) else {
         ui.label(RichText::new("Collecting…").color(theme::TEXT_WEAK));
         return;
