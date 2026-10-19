@@ -8,6 +8,7 @@
 //! The details' thread list shows them each.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::model::{DiskCounters, InfoLevel, IoCounters};
 use crate::procfs::{self, Stat};
@@ -33,12 +34,33 @@ struct Known {
     /// Its I/O counters or open files could not be read: not tried again.
     io_denied: bool,
     fds_denied: bool,
+    /// What was read the last time it ran.
+    slow: Option<Slow>,
 }
+
+/// The costlier reads (memory, I/O, open files), kept while a process does
+/// not run: none of them can change much without it running, and most
+/// processes sleep through most refreshes.
+#[derive(Clone)]
+struct Slow {
+    /// CPU time, faults, state and threads when it was read.
+    ran: (u64, u64, u64, u64, u8, u32),
+    /// Refreshes since it was read.
+    age: u32,
+    status: Option<Arc<str>>,
+    io: Option<IoCounters>,
+    disk: Option<DiskCounters>,
+    fds: u32,
+}
+
+/// Read again at least this often, for what changes while a process
+/// sleeps (memory reclaimed or swapped out).
+const REREAD_EVERY: u32 = 10;
 
 /// One process as read this refresh.
 struct Raw {
     stat: Stat,
-    status: Option<String>,
+    status: Option<Arc<str>>,
     io: Option<IoCounters>,
     disk: Option<DiskCounters>,
     fds: u32,
@@ -126,36 +148,32 @@ impl ProcessScanner {
                     self.known.get_mut(&pid).unwrap()
                 }
             };
-            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok();
-            let (io, disk) = if known.io_denied {
-                (None, None)
-            } else {
-                match read_io(pid) {
-                    Ok(counters) => counters,
-                    Err(denied) => {
-                        known.io_denied = denied;
-                        (None, None)
-                    }
+            let ran = (
+                stat.utime,
+                stat.stime,
+                stat.minflt,
+                stat.majflt,
+                stat.state,
+                stat.num_threads,
+            );
+            let fresh = match &mut known.slow {
+                Some(slow) if slow.ran == ran && slow.age < REREAD_EVERY => {
+                    slow.age += 1;
+                    slow.clone()
+                }
+                _ => {
+                    let slow = read_slow(pid, ran, known);
+                    known.slow = Some(slow.clone());
+                    slow
                 }
             };
-            all_io &= io.is_some() || stat.state == b'Z';
-            let fds = if known.fds_denied {
-                0
-            } else {
-                match std::fs::read_dir(format!("/proc/{pid}/fd")) {
-                    Ok(dir) => dir.count() as u32,
-                    Err(e) => {
-                        known.fds_denied = e.kind() == std::io::ErrorKind::PermissionDenied;
-                        0
-                    }
-                }
-            };
+            all_io &= fresh.io.is_some() || stat.state == b'Z';
             self.entries.push(Raw {
                 stat,
-                status,
-                io,
-                disk,
-                fds,
+                status: fresh.status,
+                io: fresh.io,
+                disk: fresh.disk,
+                fds: fresh.fds,
             });
         }
         if kernel_seen {
@@ -175,6 +193,54 @@ impl ProcessScanner {
     }
 }
 
+/// Memory, I/O counters and open files, read now.
+fn read_slow(pid: u32, ran: (u64, u64, u64, u64, u8, u32), known: &mut Known) -> Slow {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .map(Arc::from);
+    let (io, disk) = if known.io_denied {
+        (None, None)
+    } else {
+        match read_io(pid) {
+            Ok(counters) => counters,
+            Err(denied) => {
+                known.io_denied = denied;
+                (None, None)
+            }
+        }
+    };
+    let fds = if known.fds_denied {
+        0
+    } else {
+        match open_files(pid) {
+            Ok(n) => n,
+            Err(e) => {
+                known.fds_denied = e.kind() == std::io::ErrorKind::PermissionDenied;
+                0
+            }
+        }
+    };
+    Slow {
+        ran,
+        age: 0,
+        status,
+        io,
+        disk,
+        fds,
+    }
+}
+
+/// How many files a process has open. Since Linux 6.2 the size of its fd
+/// directory says, in one stat; before, the entries are counted.
+fn open_files(pid: u32) -> std::io::Result<u32> {
+    let path = format!("/proc/{pid}/fd");
+    let size = std::fs::metadata(&path)?.len();
+    if size > 0 {
+        return Ok(size as u32);
+    }
+    Ok(std::fs::read_dir(&path)?.count() as u32)
+}
+
 /// The facts read once: owner, session.
 fn known(pid: u32, stat: &Stat) -> Known {
     let session = std::fs::read_to_string(format!("/proc/{pid}/sessionid"))
@@ -188,6 +254,7 @@ fn known(pid: u32, stat: &Stat) -> Known {
         session,
         io_denied: false,
         fds_denied: false,
+        slow: None,
     }
 }
 
