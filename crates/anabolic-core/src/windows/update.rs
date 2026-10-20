@@ -38,6 +38,12 @@ pub(super) fn make_runnable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A rename refused because another program has the file open (sharing or
+/// lock violation), or for the moment (access denied): worth another try.
+pub(super) fn busy(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
 /// Starts `exe` with `--after <this process>` and `args`: it waits for
 /// this one to exit before it takes over as the session's Anabolic.
 pub(super) fn relaunch(exe: &Path, args: &[String]) -> Result<(), String> {
@@ -334,6 +340,34 @@ mod tests {
         }
         clean_up(&exe);
         assert!(!exe.with_extension("exe.old").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file held for a moment, as SmartScreen or a virus scanner holds a
+    /// program it reads, is waited out.
+    #[test]
+    fn waits_out_a_file_held_for_a_moment() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("anabolic-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (from, to) = (dir.join("anabolic.exe"), dir.join("anabolic.exe.old"));
+        std::fs::write(&from, b"x").unwrap();
+        // Shared for reading only: nobody may move it while it is open.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&from)
+            .unwrap();
+        let e = std::fs::rename(&from, &to).unwrap_err();
+        assert!(busy(&e), "{e}");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(held);
+        });
+        rename_patiently(&from, &to).unwrap();
+        release.join().unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"x");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

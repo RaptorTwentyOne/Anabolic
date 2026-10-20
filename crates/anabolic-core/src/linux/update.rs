@@ -23,6 +23,11 @@ pub(super) fn make_runnable(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
+/// An open file never keeps a rename from happening on Linux.
+pub(super) fn busy(_: &std::io::Error) -> bool {
+    false
+}
+
 pub(super) fn relaunch(exe: &Path, args: &[String]) -> Result<(), String> {
     Command::new(exe)
         .arg("--after")

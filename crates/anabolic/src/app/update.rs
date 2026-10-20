@@ -16,6 +16,19 @@ const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 /// After a failed check (offline, say).
 const RETRY: Duration = Duration::from_secs(60 * 60);
 
+/// When Install automatically tries again after its `failures`th failed
+/// install: most failures pass (a download that broke off, a release just
+/// out and not yet everywhere), so after a minute, five and thirty; then
+/// the next day's check.
+fn install_retry(failures: u32) -> Option<Duration> {
+    match failures {
+        1 => Some(Duration::from_secs(60)),
+        2 => Some(Duration::from_secs(5 * 60)),
+        3 => Some(Duration::from_secs(30 * 60)),
+        _ => None,
+    }
+}
+
 pub(super) struct UpdateState {
     /// None for a copy built from source: it is updated from its source.
     updater: Option<Updater>,
@@ -29,6 +42,10 @@ pub(super) struct UpdateState {
     /// Downloading it: bytes so far, of how many (0 before it starts).
     progress: Option<(u64, u64)>,
     install_error: Option<String>,
+    /// Failed installs in a row, and when Install automatically tries
+    /// again.
+    failures: u32,
+    retry_at: Option<Instant>,
     /// Installed: it runs from the next start.
     installed: Option<Release>,
     /// "Update and restart": restart once installed.
@@ -71,6 +88,8 @@ impl UpdateState {
             available: None,
             progress: None,
             install_error: None,
+            failures: 0,
+            retry_at: None,
             installed: None,
             restart_when_installed: false,
             restarting: false,
@@ -96,8 +115,25 @@ impl UpdateState {
     fn install(&mut self, release: Release) {
         if let Some(updater) = &self.updater {
             self.install_error = None;
+            self.retry_at = None;
             self.progress = Some((0, 0));
             updater.install(release);
+        }
+    }
+
+    /// "could not be installed: why", with when it is tried again first: the
+    /// reason can be long (a path), and the bar cuts what does not fit.
+    fn failed_text(&self, e: &str, auto: bool) -> String {
+        match self.retry_at {
+            Some(at) if auto => {
+                let minutes = at
+                    .saturating_duration_since(Instant::now())
+                    .as_secs()
+                    .div_ceil(60)
+                    .max(1);
+                format!("could not be installed (trying again in {minutes} min): {e}")
+            }
+            _ => format!("could not be installed: {e}"),
         }
     }
 
@@ -141,6 +177,8 @@ impl App {
                             }
                             // A day later: try the install again.
                             u.install_error = None;
+                            u.failures = 0;
+                            u.retry_at = None;
                             u.available = Some(release);
                         }
                         Ok(None) => u.check_error = None,
@@ -153,6 +191,7 @@ impl App {
                 Event::Progress(done, total) => u.progress = Some((done, total)),
                 Event::Installed(release) => {
                     u.progress = None;
+                    u.failures = 0;
                     u.available = None;
                     u.dismissed = false;
                     if self.hidden
@@ -174,6 +213,8 @@ impl App {
                     u.restart_when_installed = false;
                     u.dismissed = false;
                     u.install_error = Some(e);
+                    u.failures += 1;
+                    u.retry_at = install_retry(u.failures).map(|d| Instant::now() + d);
                     u.available = Some(release);
                 }
                 Event::Restarting => {
@@ -191,9 +232,10 @@ impl App {
         }
         let u = &mut self.update;
         let auto = self.settings.updates == Updates::Install;
+        let retry = u.retry_at.is_some_and(|at| Instant::now() >= at);
         if auto
             && u.progress.is_none()
-            && u.install_error.is_none()
+            && (u.install_error.is_none() || retry)
             && let Some(release) = u.available.clone()
         {
             u.install(release);
@@ -212,6 +254,7 @@ impl App {
     pub(super) fn update_bar(&mut self, ui: &mut egui::Ui) {
         let mut open_page = None;
         let mut dismiss = false;
+        let auto = self.settings.updates == Updates::Install;
         let u = &mut self.update;
         let release = u.installed.as_ref().or(u.available.as_ref()).cloned();
         let Some(release) = release else { return };
@@ -264,7 +307,7 @@ impl App {
                 } else if let Some(e) = &u.install_error {
                     (
                         theme::ELEVATED_TEXT,
-                        format!("Anabolic {} could not be installed: {e}", release.version),
+                        format!("Anabolic {} {}", release.version, u.failed_text(e, auto)),
                     )
                 } else {
                     (theme::TEXT, format!("Anabolic {} is out.", release.version))
@@ -317,6 +360,7 @@ impl App {
                     });
             },
         );
+        let auto = self.settings.updates == Updates::Install;
         let u = &mut self.update;
         let (state, about) = if u.restarting {
             ("Restarting…".to_string(), String::new())
@@ -336,7 +380,7 @@ impl App {
                 format!("Anabolic {} is out", r.version),
                 u.install_error
                     .as_ref()
-                    .map_or_else(String::new, |e| format!("It could not be installed: {e}")),
+                    .map_or_else(String::new, |e| format!("It {}", u.failed_text(e, auto))),
             )
         } else if u.checking {
             ("Checking…".to_string(), String::new())

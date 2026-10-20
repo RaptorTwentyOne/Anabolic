@@ -158,7 +158,9 @@ Anabolic keeps itself up to date. Soon after it starts, and then once a day,
 it asks GitHub whether a newer release is out. A new release is downloaded,
 checked against the SHA-256 checksum GitHub lists for it, and put in place of
 the old executable; it runs from the next start, or at once from the bar that
-says it is installed. In Settings → Updates it can ask first instead, or not
+says it is installed. An install that fails (a download that broke off, a
+virus scanner holding the file) is tried again after a minute, five and
+thirty. In Settings → Updates it can ask first instead, or not
 check at all. Copies built from source are left to their source. On Linux the
 download goes through curl, and the new file has to be granted full access
 again: the rights belong to the file they were given to.

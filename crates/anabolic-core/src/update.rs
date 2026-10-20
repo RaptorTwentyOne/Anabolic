@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use serde::Deserialize;
@@ -316,16 +317,34 @@ fn replace(exe: &Path, data: &[u8]) -> Result<(), String> {
     }
     // An earlier update's leftover, if the last start could not delete it.
     let _ = std::fs::remove_file(&old);
-    if let Err(e) = std::fs::rename(exe, &old) {
+    if let Err(e) = rename_patiently(exe, &old) {
         let _ = std::fs::remove_file(&staged);
         return Err(refused(e));
     }
-    if let Err(e) = std::fs::rename(&staged, exe) {
+    if let Err(e) = rename_patiently(&staged, exe) {
         let _ = std::fs::rename(&old, exe);
         let _ = std::fs::remove_file(&staged);
         return Err(refused(e));
     }
     Ok(())
+}
+
+/// How long a rename waits for a file someone else holds.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// A rename that waits out a program holding the file for a moment: on
+/// Windows, SmartScreen or a virus scanner reading a program that was just
+/// started or written keeps it from being moved until it is done.
+fn rename_patiently(from: &Path, to: &Path) -> std::io::Result<()> {
+    let started = Instant::now();
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if imp::busy(&e) && started.elapsed() < PATIENCE => {
+                thread::sleep(Duration::from_millis(200));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// Writes the file and waits for it to be on the disk.
