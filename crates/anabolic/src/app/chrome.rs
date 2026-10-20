@@ -21,15 +21,18 @@ impl App {
         let mut cycle_view = false;
         let mut step: Option<bool> = None;
         ctx.input_mut(|i| {
-            // Back and forward, as in a browser. In a text field Alt and the
-            // arrows move by words.
-            if i.pointer.button_pressed(egui::PointerButton::Extra1)
-                || (!typing && i.consume_key(Modifiers::ALT, Key::ArrowLeft))
+            // Back and forward, as in a browser; not under an open menu or
+            // list, which would stay open over another page. In a text
+            // field Alt and the arrows move by words.
+            if !popup_open
+                && (i.pointer.button_pressed(egui::PointerButton::Extra1)
+                    || (!typing && i.consume_key(Modifiers::ALT, Key::ArrowLeft)))
             {
                 step = Some(false);
             }
-            if i.pointer.button_pressed(egui::PointerButton::Extra2)
-                || (!typing && i.consume_key(Modifiers::ALT, Key::ArrowRight))
+            if !popup_open
+                && (i.pointer.button_pressed(egui::PointerButton::Extra2)
+                    || (!typing && i.consume_key(Modifiers::ALT, Key::ArrowRight)))
             {
                 step = Some(true);
             }

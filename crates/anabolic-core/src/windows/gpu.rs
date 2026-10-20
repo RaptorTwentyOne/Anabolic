@@ -1,29 +1,37 @@
 //! GPU engine utilisation and video memory from the kernel graphics
-//! statistics interface (D3DKMT), the same source Task Manager reads; and
-//! the temperature and fan speed the driver reports through it.
+//! statistics interface (D3DKMT), the same source Task Manager reads; the
+//! temperature and fan speed the driver reports through it; and, for
+//! NVIDIA's, the power draw and temperature limits from NVML.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use windows::Wdk::Graphics::Direct3D::{
-    D3DKMT_ADAPTER_PERFDATA, D3DKMT_ADAPTER_PERFDATACAPS, D3DKMT_ADAPTERINFO, D3DKMT_CLOSEADAPTER,
-    D3DKMT_ENUMADAPTERS2, D3DKMT_NODEMETADATA, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS,
+    D3DKMT_ADAPTER_PERFDATA, D3DKMT_ADAPTER_PERFDATACAPS, D3DKMT_ADAPTERADDRESS,
+    D3DKMT_ADAPTERINFO, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2,
+    D3DKMT_NODEMETADATA, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS,
     D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
     D3DKMT_QUERYSTATISTICS_PROCESS_NODE, D3DKMT_QUERYSTATISTICS_SEGMENT,
     D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo,
-    D3DKMTQueryStatistics, KMTQAITYPE_ADAPTERPERFDATA, KMTQAITYPE_ADAPTERPERFDATA_CAPS,
-    KMTQAITYPE_NODEMETADATA, KMTQUERYADAPTERINFOTYPE,
+    D3DKMTQueryStatistics, KMTQAITYPE_ADAPTERADDRESS, KMTQAITYPE_ADAPTERPERFDATA,
+    KMTQAITYPE_ADAPTERPERFDATA_CAPS, KMTQAITYPE_ADAPTERTYPE, KMTQAITYPE_NODEMETADATA,
+    KMTQUERYADAPTERINFOTYPE,
 };
 use windows::Win32::Foundation::{HANDLE, LUID};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
 };
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
 use windows::Win32::System::ProcessStatus::K32EnumProcesses;
 use windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_INFORMATION};
+use windows::core::{PCSTR, s, w};
 
 use crate::model::ProcKey;
 use crate::sensors::{Sensor, SensorKind};
@@ -67,6 +75,16 @@ fn deci_celsius(value: u32) -> Option<f32> {
     (value > 0 && value < 2000).then(|| value as f32 / 10.0)
 }
 
+/// How often the driver is asked for temperatures, fans and power: often
+/// enough to follow a load, not on every tick.
+const SENSORS_EVERY: Duration = Duration::from_secs(2);
+
+/// D3DKMT_ADAPTERTYPE's HybridDiscrete bit: a laptop's discrete GPU, which
+/// sleeps while the integrated one draws.
+const HYBRID_DISCRETE: u32 = 1 << 4;
+
+const NVIDIA: u32 = 0x10DE;
+
 struct Node {
     name: Arc<str>,
     prev: i64,
@@ -86,6 +104,15 @@ struct Adapter {
     max: Option<f32>,
     /// It has a fan the driver reports (stopped or not).
     fan: bool,
+    /// A laptop's discrete GPU: asked for its sensors only while it works.
+    hybrid: bool,
+    nvidia: bool,
+    /// To find it in NVML.
+    pci: PciIdentity,
+    /// Its NVML device (a handle as an address), once found.
+    nvml: Option<usize>,
+    readings: Vec<Sensor>,
+    read_at: Option<Instant>,
 }
 
 /// Engine names on this adapter, deduplicated ("Copy", "Copy 2").
@@ -198,12 +225,32 @@ impl GpuSampler {
                             KMTQAITYPE_ADAPTERPERFDATA_CAPS,
                         )
                         .unwrap_or_default();
+                        let kind = adapter_info::<D3DKMT_ADAPTERTYPE>(
+                            info.hAdapter,
+                            KMTQAITYPE_ADAPTERTYPE,
+                        )
+                        .map_or(0, |t| unsafe { t.Anonymous.Value });
+                        let address = adapter_info::<D3DKMT_ADAPTERADDRESS>(
+                            info.hAdapter,
+                            KMTQAITYPE_ADAPTERADDRESS,
+                        );
                         adapters.push(Adapter {
                             luid,
                             handle: info.hAdapter,
                             warning: deci_celsius(caps.TemperatureWarning),
                             max: deci_celsius(caps.TemperatureMax),
                             fan: caps.MaxFanRPM > 0,
+                            hybrid: kind & HYBRID_DISCRETE != 0,
+                            nvidia: physical.0 == NVIDIA,
+                            pci: PciIdentity {
+                                device: physical.1 << 16 | physical.0,
+                                subsystem: physical.2,
+                                // Unknown is all ones.
+                                bus: address.map(|a| a.BusNumber).filter(|&b| b < 256),
+                            },
+                            nvml: None,
+                            readings: Vec::new(),
+                            read_at: None,
                             name: Arc::from(name.as_str()),
                             nodes: node_names(info.hAdapter, stats.NodeCount)
                                 .into_iter()
@@ -251,18 +298,13 @@ impl GpuSampler {
         self.adapters
             .iter_mut()
             .map(|a| {
-                let sensors = sensors(a);
                 let mut out = AdapterGpuStats {
                     name: a.name.clone(),
                     dedicated_total: a.dedicated_total,
                     shared_total: a.shared_total,
-                    temperature: sensors
-                        .iter()
-                        .find(|s| s.kind == SensorKind::Temperature)
-                        .map(|s| s.value),
-                    sensors,
                     ..Default::default()
                 };
+                let mut worked = false;
                 for (id, node) in a.nodes.iter_mut().enumerate() {
                     let running = query(
                         D3DKMT_QUERYSTATISTICS_NODE,
@@ -277,6 +319,7 @@ impl GpuSampler {
                             .clamp(0.0, 100.0) as f32,
                         _ => 0.0,
                     };
+                    worked |= elapsed.is_some() && running > node.prev;
                     node.prev = running;
                     out.usage = out.usage.max(usage);
                     out.engines.push(EngineStats {
@@ -300,6 +343,22 @@ impl GpuSampler {
                         }
                     }
                 }
+                // A laptop's discrete GPU sleeps while unused: it is asked
+                // only while it works, so a reading never wakes it, and
+                // asleep it reports none.
+                if a.hybrid && !worked {
+                    a.readings.clear();
+                    a.read_at = None;
+                } else if a.read_at.is_none_or(|t| now - t >= SENSORS_EVERY) {
+                    a.readings = sensors(a);
+                    a.read_at = Some(now);
+                }
+                out.temperature = a
+                    .readings
+                    .iter()
+                    .find(|s| s.kind == SensorKind::Temperature)
+                    .map(|s| s.value);
+                out.sensors = a.readings.clone();
                 out
             })
             .collect()
@@ -328,12 +387,20 @@ fn close_adapter(handle: u32) {
 }
 
 /// The temperature and fan speed the driver reports (Task Manager's "GPU
-/// temperature"); integrated GPUs report none.
-fn sensors(a: &Adapter) -> Vec<Sensor> {
+/// temperature"), where it reports them; for an NVIDIA GPU also its power
+/// draw, and where it slows down and shuts off, as NVML has them.
+fn sensors(a: &mut Adapter) -> Vec<Sensor> {
     let Some(perf) = adapter_info::<D3DKMT_ADAPTER_PERFDATA>(a.handle, KMTQAITYPE_ADAPTERPERFDATA)
     else {
         return Vec::new();
     };
+    let nvml = if a.nvidia { nvml() } else { None };
+    if let Some(nvml) = nvml
+        && a.nvml.is_none()
+    {
+        a.nvml = nvml.device_at(a.pci);
+    }
+    let device = nvml.zip(a.nvml);
     let sensor = |label: &str, kind, value, high, critical| Sensor {
         device: a.name.clone(),
         label: Arc::from(label),
@@ -344,12 +411,19 @@ fn sensors(a: &Adapter) -> Vec<Sensor> {
     };
     let mut out = Vec::new();
     if let Some(t) = deci_celsius(perf.Temperature) {
+        let (high, critical) = match device {
+            Some((nvml, d)) => (
+                nvml.threshold(d, NVML_TEMPERATURE_THRESHOLD_SLOWDOWN),
+                nvml.threshold(d, NVML_TEMPERATURE_THRESHOLD_SHUTDOWN),
+            ),
+            None => (a.warning, a.max),
+        };
         out.push(sensor(
             "Temperature",
             SensorKind::Temperature,
             t,
-            a.warning,
-            a.max,
+            high,
+            critical,
         ));
     }
     if a.fan || perf.FanRPM > 0 {
@@ -361,7 +435,138 @@ fn sensors(a: &Adapter) -> Vec<Sensor> {
             None,
         ));
     }
+    if let Some((nvml, d)) = device
+        && let Some(watts) = nvml.power(d)
+    {
+        out.push(sensor("Power", SensorKind::Power, watts, None, None));
+    }
     out
+}
+
+// NVML, NVIDIA's management library: nvml.dll comes with the driver.
+// Started on a thread of its own the first time an NVIDIA GPU is asked
+// (it takes a while), and never asked about one asleep: that would wake
+// it.
+
+const NVML_TEMPERATURE_THRESHOLD_SHUTDOWN: u32 = 0;
+const NVML_TEMPERATURE_THRESHOLD_SLOWDOWN: u32 = 1;
+
+#[repr(C)]
+struct NvmlPciInfo {
+    _bus_id_legacy: [u8; 16],
+    _domain: u32,
+    bus: u32,
+    _device: u32,
+    /// Device id in the high half, vendor id in the low one.
+    pci_device_id: u32,
+    pci_sub_system_id: u32,
+    _bus_id: [u8; 32],
+}
+
+/// Which PCI device an adapter is: its ids as NVML puts them, and its bus
+/// where the kernel reports it (not for every adapter).
+#[derive(Clone, Copy)]
+struct PciIdentity {
+    device: u32,
+    subsystem: u32,
+    bus: Option<u32>,
+}
+
+type CountFn = unsafe extern "C" fn(*mut u32) -> u32;
+type ByIndexFn = unsafe extern "C" fn(u32, *mut *mut c_void) -> u32;
+type PciFn = unsafe extern "C" fn(*mut c_void, *mut NvmlPciInfo) -> u32;
+type PowerFn = unsafe extern "C" fn(*mut c_void, *mut u32) -> u32;
+type ThresholdFn = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> u32;
+
+struct Nvml {
+    count: CountFn,
+    by_index: ByIndexFn,
+    pci: PciFn,
+    power: Option<PowerFn>,
+    threshold: Option<ThresholdFn>,
+}
+
+impl Nvml {
+    /// The device with these PCI ids (and on this bus, when it is known:
+    /// two cards of one model have the same ids).
+    fn device_at(&self, pci: PciIdentity) -> Option<usize> {
+        let mut count = 0;
+        if unsafe { (self.count)(&mut count) } != 0 {
+            return None;
+        }
+        (0..count).find_map(|i| unsafe {
+            let mut device = std::ptr::null_mut();
+            let mut info: NvmlPciInfo = std::mem::zeroed();
+            ((self.by_index)(i, &mut device) == 0
+                && (self.pci)(device, &mut info) == 0
+                && info.pci_device_id == pci.device
+                && info.pci_sub_system_id == pci.subsystem
+                && pci.bus.is_none_or(|bus| bus == info.bus))
+            .then_some(device as usize)
+        })
+    }
+
+    /// Watts the board draws.
+    fn power(&self, device: usize) -> Option<f32> {
+        let mut milliwatts = 0;
+        (unsafe { self.power?(device as *mut c_void, &mut milliwatts) } == 0)
+            .then_some(milliwatts as f32 / 1000.0)
+    }
+
+    fn threshold(&self, device: usize, which: u32) -> Option<f32> {
+        let mut celsius = 0;
+        (unsafe { self.threshold?(device as *mut c_void, which, &mut celsius) } == 0 && celsius > 0)
+            .then_some(celsius as f32)
+    }
+}
+
+/// NVML once started; None while it starts, or where there is none.
+fn nvml() -> Option<&'static Nvml> {
+    static NVML: OnceLock<Option<Nvml>> = OnceLock::new();
+    static START: Once = Once::new();
+    if let Some(nvml) = NVML.get() {
+        return nvml.as_ref();
+    }
+    START.call_once(|| {
+        let _ = thread::Builder::new()
+            .name("anabolic-nvml".into())
+            .spawn(|| {
+                NVML.get_or_init(|| unsafe { load_nvml() });
+            });
+    });
+    None
+}
+
+/// From System32 only, where the driver puts it: never a nvml.dll found
+/// elsewhere on the search path.
+unsafe fn load_nvml() -> Option<Nvml> {
+    unsafe {
+        let library = LoadLibraryExW(w!("nvml.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+        let symbol = |name: PCSTR| GetProcAddress(library, name);
+        let init = std::mem::transmute::<
+            unsafe extern "system" fn() -> isize,
+            unsafe extern "C" fn() -> u32,
+        >(symbol(s!("nvmlInit_v2"))?);
+        if init() != 0 {
+            return None;
+        }
+        Some(Nvml {
+            count: std::mem::transmute::<unsafe extern "system" fn() -> isize, CountFn>(symbol(
+                s!("nvmlDeviceGetCount_v2"),
+            )?),
+            by_index: std::mem::transmute::<unsafe extern "system" fn() -> isize, ByIndexFn>(
+                symbol(s!("nvmlDeviceGetHandleByIndex_v2"))?,
+            ),
+            pci: std::mem::transmute::<unsafe extern "system" fn() -> isize, PciFn>(symbol(s!(
+                "nvmlDeviceGetPciInfo_v3"
+            ))?),
+            power: symbol(s!("nvmlDeviceGetPowerUsage"))
+                .map(|f| std::mem::transmute::<unsafe extern "system" fn() -> isize, PowerFn>(f)),
+            threshold: symbol(s!("nvmlDeviceGetTemperatureThreshold")).map(|f| {
+                std::mem::transmute::<unsafe extern "system" fn() -> isize, ThresholdFn>(f)
+            }),
+        })
+    }
 }
 
 struct Tracked {
@@ -519,6 +724,36 @@ mod tests {
                 a.engines.iter().map(|e| &*e.name).collect::<Vec<_>>(),
                 a.temperature
             );
+        }
+    }
+
+    /// The sensors are read every two seconds, and NVML starts on a thread
+    /// of its own: an NVIDIA GPU has its power within a few readings.
+    #[test]
+    fn reads_sensors_in_turn() {
+        let mut sampler = GpuSampler::new();
+        let first = sampler.sample();
+        // Not again before their time.
+        let again = sampler.sample();
+        for (a, b) in first.iter().zip(&again) {
+            assert_eq!(a.sensors.len(), b.sensors.len());
+        }
+        for _ in 0..3 {
+            std::thread::sleep(SENSORS_EVERY);
+            sampler.sample();
+        }
+        for a in sampler.sample() {
+            for s in &a.sensors {
+                println!(
+                    "{} / {}: {:.1} {} (high {:?}, critical {:?})",
+                    s.device,
+                    s.label,
+                    s.value,
+                    s.kind.unit(),
+                    s.high,
+                    s.critical
+                );
+            }
         }
     }
 }

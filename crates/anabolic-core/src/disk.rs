@@ -121,6 +121,11 @@ pub struct DiskStats {
     pub response_ms: f32,
     pub queue: u32,
     pub temperature: Option<i16>,
+    /// Where the drive warns that it is hot, and where it is in danger, as
+    /// it reports them (Windows; Linux has them from the drive's hardware
+    /// monitor).
+    pub temperature_warning: Option<i16>,
+    pub temperature_critical: Option<i16>,
 }
 
 /// GPT partition types, by GUID as `GUID::from_u128` reads it.

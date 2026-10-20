@@ -5,7 +5,8 @@
 //!   modules, network adapters, the mainboard's or laptop's fans.
 //! - Windows gives the processor's own sensors only to drivers, and
 //!   Anabolic installs none: what it can read are the firmware's (ACPI)
-//!   thermal zones.
+//!   thermal zones, where it has any, and the processor's power from its
+//!   energy meters.
 //!
 //! GPUs and disks report through their own drivers on both, and their
 //! samplers read them (`gpu`, `disk`); `merge` puts everything in one list.
@@ -135,8 +136,8 @@ pub(crate) fn merge(read: &[Sensor], gpus: &[AdapterGpuStats], disks: &[DiskStat
                 label: Arc::from("Drive"),
                 kind: SensorKind::Temperature,
                 value: t as f32,
-                high: None,
-                critical: None,
+                high: d.temperature_warning.map(f32::from),
+                critical: d.temperature_critical.map(f32::from),
             });
         }
     }
@@ -144,7 +145,8 @@ pub(crate) fn merge(read: &[Sensor], gpus: &[AdapterGpuStats], disks: &[DiskStat
 }
 
 /// Reads the sensors every few seconds on a thread of its own, so a slow
-/// one never holds up the collector.
+/// one never holds up the collector; it ends when there is nothing to read
+/// (a desktop without thermal zones or energy meters).
 pub(crate) fn spawn(out: Arc<ArcSwap<Vec<Sensor>>>) {
     let _ = thread::Builder::new()
         .name("anabolic-sensors".into())
@@ -153,6 +155,9 @@ pub(crate) fn spawn(out: Arc<ArcSwap<Vec<Sensor>>>) {
             let mut sampler = SensorSampler::new();
             loop {
                 out.store(Arc::new(sampler.sample()));
+                if sampler.idle() {
+                    return;
+                }
                 thread::sleep(EVERY);
             }
         });

@@ -14,6 +14,16 @@ pub(crate) fn value_text(value: u64) -> String {
     }
 }
 
+/// The number as the filter matches it: without the "0x", which every
+/// handle on Windows has (a filter of "x" would keep them all).
+pub(crate) fn value_filter_text(value: u64) -> String {
+    if cfg!(windows) {
+        format!("{value:X}")
+    } else {
+        value.to_string()
+    }
+}
+
 /// What a handle may do: Windows' access mask, or on Linux whether the
 /// file is open for reading, writing or both.
 pub(crate) fn access_text(access: u32) -> String {

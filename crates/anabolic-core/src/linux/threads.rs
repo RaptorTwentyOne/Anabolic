@@ -276,11 +276,11 @@ fn walk(
     let mut bytes = vec![0u8; SCAN_BYTES.min((stack.end - rsp) as usize)];
     let len = read_memory(pid, rsp, &mut bytes);
     let mut found = vec![rip];
-    for word in bytes[..len].chunks_exact(8) {
+    for word in bytes[..len].as_chunks::<8>().0 {
         if found.len() >= MAX_FRAMES {
             break;
         }
-        let value = u64::from_ne_bytes(word.try_into().unwrap());
+        let value = u64::from_ne_bytes(*word);
         if value > 7 && code(value) && after_call(pid, value) {
             found.push(value);
         }

@@ -485,7 +485,9 @@ impl AnabolicMcp {
                        processor's package and cores, GPUs, disks, memory modules, network \
                        adapters, thermal zones, fans), each with the hardware's high and \
                        critical marks and how close it is to them. On Windows only drivers may \
-                       read the processor's own sensors; the firmware's thermal zones stand in.",
+                       read the processor's own temperature: the firmware's thermal zones stand \
+                       in where it has any (many desktops have none), and the processor's power \
+                       comes from its energy meter.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_sensors(&self) -> Result<CallToolResult, ErrorData> {

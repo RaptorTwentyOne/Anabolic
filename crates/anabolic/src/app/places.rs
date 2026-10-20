@@ -73,6 +73,16 @@ impl Places {
         Some(place)
     }
 
+    /// The last step showed nothing new: the place it led to is dropped,
+    /// and the one it left is not kept twice.
+    fn unstep(&mut self, forward: bool) {
+        if forward {
+            self.back.pop();
+        } else {
+            self.forward.pop();
+        }
+    }
+
     /// Arrived where a step led (or as near as could be): not a step itself.
     fn arrived(&mut self, here: Place) {
         self.here = Some(here);
@@ -103,20 +113,37 @@ impl App {
         self.places.note(now);
     }
 
-    /// One step back, or forward.
+    /// One step back, or forward. A place that shows as the one left (the
+    /// Activity page's start cards while a recording runs) is passed over:
+    /// a step always shows something else.
     pub(super) fn step(&mut self, forward: bool) {
         let left = self.place();
-        let Some(place) = self.places.step(forward, left) else {
-            return;
-        };
+        while let Some(place) = self.places.step(forward, left.clone()) {
+            self.show(place);
+            if self.place() != left {
+                break;
+            }
+            self.places.unstep(forward);
+        }
+        let here = self.place();
+        self.places.arrived(here);
+    }
+
+    fn show(&mut self, place: Place) {
         self.settings.tab = place.tab;
         // Each page keeps its own state but where it was left.
         match place.tab {
             Tab::Performance => self.perf_view = place.perf_view,
             Tab::Processes => {
-                // A process that has gone since is not looked for.
+                // Selected again as it was left. A process that has gone
+                // since is not looked for, and the filter and the folded
+                // parents stay as they are now: following a link changes
+                // those, stepping back does not.
                 match place.selected {
-                    Some(key) if self.snapshot.find(key).is_some() => self.go_to(key),
+                    Some(key) if self.snapshot.find(key).is_some() => {
+                        self.select(Some(key));
+                        self.table.scroll_to_selected = true;
+                    }
                     Some(_) => {}
                     None => self.select(None),
                 }
@@ -126,8 +153,6 @@ impl App {
             Tab::Activity => self.activity.show_start(place.activity_start),
             _ => {}
         }
-        let here = self.place();
-        self.places.arrived(here);
     }
 }
 
@@ -214,6 +239,25 @@ mod tests {
         // Nothing before the first place.
         places.arrived(back.clone());
         assert!(places.step(false, back).is_none());
+    }
+
+    #[test]
+    fn a_step_that_shows_nothing_new_is_dropped() {
+        let start = Place {
+            activity_start: true,
+            ..at(Tab::Activity)
+        };
+        let mut places = Places::default();
+        places.note(at(Tab::Processes));
+        places.note(start);
+        places.note(at(Tab::Activity));
+        // Back to the start cards, which a running recording keeps away.
+        assert!(places.step(false, at(Tab::Activity)).is_some());
+        places.unstep(false);
+        // The next step back goes on from there, and forward keeps nothing
+        // twice.
+        assert!(places.step(false, at(Tab::Activity)).unwrap() == at(Tab::Processes));
+        assert_eq!(places.forward.len(), 1);
     }
 
     #[test]

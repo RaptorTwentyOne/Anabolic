@@ -66,7 +66,6 @@ pub(super) fn reverse(ip: IpAddr) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::resolver::*;
 
     #[test]

@@ -2,11 +2,13 @@
 //! manager's counters (IOCTL_DISK_PERFORMANCE), plus identity, partitions
 //! and volumes. None of the frequent queries sends I/O to the device, so a
 //! sleeping disk stays asleep; the temperature query does, so it is
-//! SSD-only and infrequent, and the partition table is read only when
-//! volumes come or go.
+//! SSD-only and infrequent. A disk's partition table is read again only
+//! when its volumes change, a volume without a letter is asked about once,
+//! and neither happens while the disk sleeps.
 
 use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Storage::FileSystem::{
@@ -27,7 +29,8 @@ use windows::Win32::System::Ioctl::{
     StorageDeviceProperty, StorageDeviceSeekPenaltyProperty, StorageDeviceTemperatureProperty,
     VOLUME_DISK_EXTENTS,
 };
-use windows::core::PCWSTR;
+use windows::Win32::System::Power::GetDevicePowerState;
+use windows::core::{BOOL, PCWSTR};
 
 use crate::util::{OwnedHandle, from_wide, wide};
 
@@ -42,15 +45,26 @@ struct Disk {
     prev: Option<DISK_PERFORMANCE>,
     /// The partition table as last read, before volumes are placed on it.
     layout: Vec<Partition>,
+    /// Where its volumes started and how long they were when the table
+    /// was read: when that changes, partitions were made, removed, grown
+    /// or shrunk.
+    places: Option<Vec<(u64, u64)>>,
 }
 
 pub struct DiskSampler {
     disks: Vec<Disk>,
     volumes_at: Option<Instant>,
     temperature_at: Option<Instant>,
-    /// Where every volume starts, when the partition tables were read:
-    /// when that changes, partitions were made, removed or plugged in.
-    places: Option<Vec<(u32, u64)>>,
+    /// What the volumes without a letter or folder said, by volume name:
+    /// they are asked once (see `volume`).
+    unmounted: HashMap<String, Facts>,
+}
+
+/// Whether the disk spins, or does not sleep at all: asked without waking
+/// it. Unknown counts as awake.
+fn awake(handle: &OwnedHandle) -> bool {
+    let mut on = BOOL(1);
+    !unsafe { GetDevicePowerState(handle.raw(), &mut on) }.as_bool() || on.as_bool()
 }
 
 fn ioctl<T>(handle: &OwnedHandle, code: u32, input: Option<&[u8]>, out: &mut T) -> bool {
@@ -196,7 +210,9 @@ fn identify(handle: &OwnedHandle, number: u32) -> DiskStats {
     stats
 }
 
-fn temperature(handle: &OwnedHandle) -> Option<i16> {
+/// The drive's temperature, and where it warns and where it is in danger
+/// (each None when the drive reports none).
+fn temperature(handle: &OwnedHandle) -> Option<(i16, Option<i16>, Option<i16>)> {
     let mut buf = [0u64; 64];
     if !ioctl(
         handle,
@@ -212,23 +228,36 @@ fn temperature(handle: &OwnedHandle) -> Option<i16> {
             .read_unaligned()
     };
     let t = d.TemperatureInfo[0].Temperature;
-    (d.InfoCount > 0 && t > -50 && t < 150).then_some(t)
+    let mark = |m: i16| (m > 0 && m < 150).then_some(m);
+    (d.InfoCount > 0 && t > -50 && t < 150).then_some((
+        t,
+        mark(d.WarningTemperature),
+        mark(d.CriticalTemperature),
+    ))
 }
 
-/// A local volume, with or without a drive letter.
-struct Mounted {
-    /// (disk number, byte offset) of each piece: one unless it spans disks.
-    extents: Vec<(u32, u64)>,
-    /// Where it is reachable: "C:\", "D:\Games\".
-    paths: Vec<String>,
+/// What a volume's file system says about it.
+#[derive(Clone, Default)]
+struct Facts {
     label: String,
     file_system: String,
     total: u64,
     free: u64,
 }
 
-/// Every local volume Windows knows.
-fn mounted() -> Vec<Mounted> {
+/// A local volume, with or without a drive letter.
+struct Mounted {
+    /// (disk number, byte offset, length) of each piece: one unless it
+    /// spans disks.
+    extents: Vec<(u32, u64, u64)>,
+    /// Where it is reachable: "C:\", "D:\Games\".
+    paths: Vec<String>,
+    facts: Facts,
+}
+
+/// Every local volume Windows knows. `unmounted` keeps what the volumes
+/// without a path said; `asleep` tells a disk that is spun down.
+fn mounted(unmounted: &mut HashMap<String, Facts>, asleep: &dyn Fn(u32) -> bool) -> Vec<Mounted> {
     // A card reader without a card has to fail quietly, not ask for one.
     let mut old = THREAD_ERROR_MODE(0);
     let quiet = unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, Some(&mut old)) }.is_ok();
@@ -237,7 +266,7 @@ fn mounted() -> Vec<Mounted> {
     let mut name = [0u16; 64];
     if let Ok(find) = unsafe { FindFirstVolumeW(&mut name) } {
         loop {
-            out.extend(volume(&from_wide(&name)));
+            out.extend(volume(&from_wide(&name), unmounted, asleep));
             if unsafe { FindNextVolumeW(find, &mut name) }.is_err() {
                 break;
             }
@@ -250,8 +279,47 @@ fn mounted() -> Vec<Mounted> {
     out
 }
 
-/// One volume by its name, "\\?\Volume{GUID}\".
-fn volume(name: &str) -> Option<Mounted> {
+/// Label, file system and space, from the volume's file system.
+fn facts(root: &[u16]) -> Facts {
+    let (mut total, mut free) = (0u64, 0u64);
+    let _ = unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(root.as_ptr()),
+            None,
+            Some(&mut total),
+            Some(&mut free),
+        )
+    };
+    let mut label = [0u16; 64];
+    let mut file_system = [0u16; 32];
+    let _ = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root.as_ptr()),
+            Some(&mut label),
+            None,
+            None,
+            None,
+            Some(&mut file_system),
+        )
+    };
+    Facts {
+        label: from_wide(&label),
+        file_system: from_wide(&file_system),
+        total,
+        free,
+    }
+}
+
+/// One volume by its name, "\\?\Volume{GUID}\". Where it sits and where
+/// it is reachable cost no I/O. Its facts do for a volume without a path
+/// (an EFI or recovery partition, another system's): the first question
+/// mounts it, reading the disk, and every file system Windows has tries an
+/// unknown one. Those are asked once, and not while their disk sleeps.
+fn volume(
+    name: &str,
+    unmounted: &mut HashMap<String, Facts>,
+    asleep: &dyn Fn(u32) -> bool,
+) -> Option<Mounted> {
     let root = wide(name);
     // Only disks: optical drives spin up to answer.
     let kind = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
@@ -274,11 +342,11 @@ fn volume(name: &str) -> Option<Mounted> {
         .NumberOfDiskExtents as usize;
     let first = offset_of!(VOLUME_DISK_EXTENTS, Extents);
     let step = size_of::<DISK_EXTENT>();
-    let extents: Vec<(u32, u64)> = (0..count)
+    let extents: Vec<(u32, u64, u64)> = (0..count)
         .map_while(|i| bytes.get(first + i * step..first + (i + 1) * step))
         .map(|raw| {
             let e = unsafe { raw.as_ptr().cast::<DISK_EXTENT>().read_unaligned() };
-            (e.DiskNumber, e.StartingOffset as u64)
+            (e.DiskNumber, e.StartingOffset as u64, e.ExtentLength as u64)
         })
         .collect();
     if extents.is_empty() {
@@ -299,34 +367,21 @@ fn volume(name: &str) -> Option<Mounted> {
     } else {
         Vec::new()
     };
-    let (mut total, mut free) = (0u64, 0u64);
-    let _ = unsafe {
-        GetDiskFreeSpaceExW(
-            PCWSTR(root.as_ptr()),
-            None,
-            Some(&mut total),
-            Some(&mut free),
-        )
-    };
-    let mut label = [0u16; 64];
-    let mut file_system = [0u16; 32];
-    let _ = unsafe {
-        GetVolumeInformationW(
-            PCWSTR(root.as_ptr()),
-            Some(&mut label),
-            None,
-            None,
-            None,
-            Some(&mut file_system),
-        )
+    let facts = if !paths.is_empty() {
+        facts(&root)
+    } else if let Some(known) = unmounted.get(name) {
+        known.clone()
+    } else if extents.iter().any(|e| asleep(e.0)) {
+        Facts::default()
+    } else {
+        let read = facts(&root);
+        unmounted.insert(name.to_string(), read.clone());
+        read
     };
     Some(Mounted {
         extents,
         paths,
-        label: from_wide(&label),
-        file_system: from_wide(&file_system),
-        total,
-        free,
+        facts,
     })
 }
 
@@ -343,9 +398,9 @@ fn volumes(mounted: &[Mounted]) -> Vec<(u32, Volume)> {
                         m.extents[0].0,
                         Volume {
                             letter: p[..2].to_string(),
-                            label: m.label.clone(),
-                            total: m.total,
-                            free: m.free,
+                            label: m.facts.label.clone(),
+                            total: m.facts.total,
+                            free: m.facts.free,
                         },
                     )
                 })
@@ -449,7 +504,7 @@ fn parse_layout(bytes: &[u8]) -> (PartitionStyle, Vec<Partition>) {
 /// Fills in what Windows mounted from each of a disk's partitions.
 fn place(partitions: &mut [Partition], disk: u32, mounted: &[Mounted], system: &str) {
     for m in mounted {
-        for &(_, offset) in m.extents.iter().filter(|e| e.0 == disk) {
+        for &(_, offset, _) in m.extents.iter().filter(|e| e.0 == disk) {
             let Some(p) = partitions
                 .iter_mut()
                 .find(|p| offset >= p.offset && offset < p.offset + p.size)
@@ -466,10 +521,10 @@ fn place(partitions: &mut [Partition], disk: u32, mounted: &[Mounted], system: &
                 .mounts
                 .iter()
                 .any(|path| path.eq_ignore_ascii_case(system));
-            p.label = m.label.clone();
-            p.file_system = m.file_system.clone();
-            p.total = m.total;
-            p.free = m.free;
+            p.label = m.facts.label.clone();
+            p.file_system = m.facts.file_system.clone();
+            p.total = m.facts.total;
+            p.free = m.facts.free;
         }
     }
 }
@@ -485,6 +540,7 @@ impl DiskSampler {
                     stats,
                     prev: None,
                     layout: Vec::new(),
+                    places: None,
                 })
             })
             .collect();
@@ -492,7 +548,7 @@ impl DiskSampler {
             disks,
             volumes_at: None,
             temperature_at: None,
-            places: None,
+            unmounted: HashMap::new(),
         }
     }
 
@@ -503,15 +559,14 @@ impl DiskSampler {
             .is_none_or(|t| now - t > Duration::from_secs(30))
         {
             self.volumes_at = Some(now);
-            let mounted = mounted();
+            let disks = &self.disks;
+            let asleep = |number: u32| {
+                disks
+                    .iter()
+                    .any(|d| d.stats.number == number && !awake(&d.handle))
+            };
+            let mounted = mounted(&mut self.unmounted, &asleep);
             let vols = volumes(&mounted);
-            let mut places: Vec<(u32, u64)> = mounted
-                .iter()
-                .flat_map(|m| m.extents.iter().copied())
-                .collect();
-            places.sort_unstable();
-            let reread = self.places.as_ref() != Some(&places);
-            self.places = Some(places);
             let system = std::env::var("SystemDrive").unwrap_or("C:".into());
             for disk in &mut self.disks {
                 disk.stats.volumes = vols
@@ -519,8 +574,18 @@ impl DiskSampler {
                     .filter(|(n, _)| *n == disk.stats.number)
                     .map(|(_, v)| v.clone())
                     .collect();
-                if reread {
+                // Read again only where its volumes changed, and once it is
+                // awake: a sleeping disk is not woken for its table.
+                let mut places: Vec<(u64, u64)> = mounted
+                    .iter()
+                    .flat_map(|m| &m.extents)
+                    .filter(|e| e.0 == disk.stats.number)
+                    .map(|e| (e.1, e.2))
+                    .collect();
+                places.sort_unstable();
+                if disk.places.as_ref() != Some(&places) && awake(&disk.handle) {
                     (disk.stats.style, disk.layout) = layout(&disk.handle);
+                    disk.places = Some(places);
                 }
                 disk.stats.partitions = disk.layout.clone();
                 place(
@@ -540,7 +605,12 @@ impl DiskSampler {
 
         for disk in &mut self.disks {
             if read_temperature && disk.stats.ssd == Some(true) {
-                disk.stats.temperature = temperature(&disk.handle);
+                let read = temperature(&disk.handle);
+                disk.stats.temperature = read.map(|r| r.0);
+                (
+                    disk.stats.temperature_warning,
+                    disk.stats.temperature_critical,
+                ) = read.map_or((None, None), |r| (r.1, r.2));
             }
             let mut perf = DISK_PERFORMANCE::default();
             if !ioctl(&disk.handle, IOCTL_DISK_PERFORMANCE, None, &mut perf) {
@@ -708,12 +778,14 @@ mod tests {
         assert_eq!(partitions[1].name, "Basic data partition");
 
         let c = Mounted {
-            extents: vec![(0, (300 << 20) as u64)],
+            extents: vec![(0, (300 << 20) as u64, 100)],
             paths: vec!["C:\\".into(), "D:\\Mount\\".into()],
-            label: "Windows".into(),
-            file_system: "NTFS".into(),
-            total: 100,
-            free: 40,
+            facts: Facts {
+                label: "Windows".into(),
+                file_system: "NTFS".into(),
+                total: 100,
+                free: 40,
+            },
         };
         place(&mut partitions, 0, &[c], "c:");
         assert_eq!(partitions[1].mounts, ["C:", "D:\\Mount"]);

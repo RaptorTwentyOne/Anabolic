@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag such as v0.1.0 builds anabolic.exe and the Linux executable
-# and puts each, with the licenses and the third-party notices, on a draft
+# and puts both, with the licenses and the third-party notices, on one draft
 # release to look over before publishing.
 on:
   push:
@@ -33,10 +33,11 @@ jobs:
           Copy-Item target/release/anabolic.exe, README.md, LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-NOTICES.html $name
           Copy-Item crates/anabolic/assets/fonts/OFL.txt "$name/OFL-Aldrich.txt"
           Compress-Archive $name "$name.zip"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v7
         with:
-          draft: true
-          files: anabolic-*.zip
+          name: windows
+          path: anabolic-*.zip
+          if-no-files-found: error
 
   linux:
     # The oldest runner: the executable then needs no newer C library than
@@ -58,7 +59,28 @@ jobs:
           cp target/release/anabolic README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.html "$name"
           cp crates/anabolic/assets/fonts/OFL.txt "$name/OFL-Aldrich.txt"
           zip -r "$name.zip" "$name"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: anabolic-*.zip
+          if-no-files-found: error
+
+  # One draft, made once both zips exist. Two jobs making their own could
+  # race into two drafts, or leave a draft with one zip: published, a
+  # release without the Windows zip has every installed copy failing its
+  # update check, since the updater looks for that file.
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
-          files: anabolic-*.zip
+          fail_on_unmatched_files: true
+          files: |
+            dist/anabolic-*-windows-x64.zip
+            dist/anabolic-*-linux-x64.zip

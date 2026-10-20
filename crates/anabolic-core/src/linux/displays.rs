@@ -84,7 +84,7 @@ fn parse_edid(d: &[u8]) -> Option<Edid> {
         }
     }
     // CTA-861 extensions: more timings, and HDR's static metadata block.
-    for ext in d[128..].chunks_exact(128) {
+    for ext in d[128..].as_chunks::<128>().0 {
         if ext[0] != 0x02 {
             continue;
         }

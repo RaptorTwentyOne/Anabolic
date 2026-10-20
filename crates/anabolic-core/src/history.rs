@@ -23,6 +23,15 @@ impl Ring {
         self.len = (self.len + 1).min(self.data.len());
     }
 
+    /// A reading when there is one, else the last again: a sensor that
+    /// skips a sample keeps time with the graphs beside it. Nothing before
+    /// its first reading.
+    pub fn push_or_hold(&mut self, value: Option<f32>) {
+        if let Some(value) = value.or_else(|| self.last()) {
+            self.push(value);
+        }
+    }
+
     pub fn capacity(&self) -> usize {
         self.data.len()
     }

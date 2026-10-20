@@ -503,11 +503,15 @@ fn read_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let rgba: Vec<u8> = match info.color_type {
         png::ColorType::Rgba => pixels.to_vec(),
         png::ColorType::Rgb => pixels
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
         png::ColorType::GrayscaleAlpha => pixels
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         png::ColorType::Grayscale => pixels.iter().flat_map(|&g| [g, g, g, 255]).collect(),
@@ -600,7 +604,7 @@ mod tests {
         eprintln!("icon drawn in {:?}", started.elapsed());
         assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
         assert!(
-            icon.rgba.chunks_exact(4).any(|p| p[3] != 0),
+            icon.rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 0),
             "the icon is empty"
         );
         if let Some(firefox) = find(Some("/usr/lib/firefox/firefox"), None, "firefox", None) {

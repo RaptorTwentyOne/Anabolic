@@ -1087,9 +1087,7 @@ impl State {
             let h = &mut self.history;
             h.cpu.push(system.cpu.total);
             h.cpu_kernel.push(system.cpu.kernel);
-            if let Some(t) = system.cpu_temperature {
-                h.cpu_temperature.push(t);
-            }
+            h.cpu_temperature.push_or_hold(system.cpu_temperature);
             for (ring, core) in h.cores.iter_mut().zip(&system.cores) {
                 ring.push(core.total);
             }
@@ -1121,9 +1119,7 @@ impl State {
                     ring.push(engine.usage);
                 }
                 gh.dedicated.push(gs.dedicated_used as f32);
-                if let Some(t) = gs.temperature {
-                    gh.temperature.push(t);
-                }
+                gh.temperature.push_or_hold(gs.temperature);
             }
             self.published_history = Arc::new(self.history.clone());
         }

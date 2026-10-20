@@ -84,21 +84,50 @@ pub(super) fn summary(list: &[Sensor]) -> String {
     }
 }
 
-const NOTE: &str = if cfg!(windows) {
-    "Windows lets only drivers read the processor's own sensors, and Anabolic installs \
-     none: what stands in for them are the firmware's thermal zones, which it cools the \
-     machine by (on many desktops a fixed placeholder). GPUs and disks report their own."
-} else {
+/// Where the readings come from, and on Windows why the processor's
+/// temperature is missing: what stands in for it depends on the PC.
+#[cfg(windows)]
+fn note(list: &[Sensor]) -> String {
+    let zones = list
+        .iter()
+        .any(|s| &*s.device == anabolic_core::sensors::ZONES);
+    let power = list
+        .iter()
+        .any(|s| &*s.device == sensors::CPU && s.kind == SensorKind::Power);
+    let mut note = String::from(
+        "Windows lets only drivers read the processor's own temperature sensors, and Anabolic \
+         installs none. ",
+    );
+    note.push_str(if zones {
+        "The firmware's thermal zones stand in for them (on many desktops a fixed \
+         placeholder). "
+    } else {
+        "This PC's firmware has no thermal zones to stand in for them. "
+    });
+    if power {
+        note.push_str("The processor's power comes from its energy meter. ");
+    }
+    note.push_str("GPUs and disks report their own sensors.");
+    note
+}
+
+#[cfg(not(windows))]
+fn note(_: &[Sensor]) -> String {
     "From the kernel's hardware monitors and the firmware's thermal zones. A sensor on a \
      device that sleeps (a laptop's second GPU) is left out rather than woken."
-};
+        .into()
+}
 
 const NONE: &str = if cfg!(windows) {
-    "Nothing here reports a temperature: no thermal zones, and no GPU or disk that does."
+    "Nothing here reports a temperature, fan or power: no thermal zones or energy meters, \
+     and no GPU or disk that does."
 } else {
     "No sensor reports here. The driver for the board's sensor chip may not be loaded: \
      sensors-detect, from lm_sensors, finds it."
 };
+
+/// The width of a value column.
+const VALUE: f32 = 110.0;
 
 pub(super) fn sensors(ui: &mut Ui, snap: &Snapshot) {
     let s = &snap.system;
@@ -111,7 +140,11 @@ pub(super) fn sensors(ui: &mut Ui, snap: &Snapshot) {
             n => format!("{n} sensors"),
         },
     );
-    ui.label(RichText::new(NOTE).small().color(theme::TEXT_DIM));
+    ui.label(
+        RichText::new(note(&s.sensors))
+            .small()
+            .color(theme::TEXT_DIM),
+    );
     ui.add_space(6.0);
     if let Some(cpu) = sensors::cpu_sensor(&s.sensors)
         && !h.cpu_temperature.is_empty()
@@ -140,33 +173,34 @@ pub(super) fn sensors(ui: &mut Ui, snap: &Snapshot) {
         Some(v) if kind == SensorKind::Temperature => reading(v, kind),
         _ => "—".into(),
     };
+    // One width for every device's table, so their values line up.
+    let name = (ui.available_width() - 3.0 * VALUE).clamp(220.0, 520.0);
     for (device, list) in groups {
         section(ui, device);
-        widgets::header(
-            ui,
-            &[
-                ("Sensor", 300.0, Align::Min),
-                ("Now", 100.0, Align::Max),
-                ("High", 100.0, Align::Max),
-                ("Critical", 100.0, Align::Max),
-            ],
-        );
+        // The limits only where the device reports any: a column of
+        // dashes says nothing.
+        let limits = list.iter().any(|s| {
+            s.kind == SensorKind::Temperature && (s.high.is_some() || s.critical.is_some())
+        });
+        let mut columns = vec![("Sensor", name, Align::Min), ("Now", VALUE, Align::Max)];
+        if limits {
+            columns.extend([("High", VALUE, Align::Max), ("Critical", VALUE, Align::Max)]);
+        }
+        widgets::header(ui, &columns);
         for (i, sensor) in list.into_iter().enumerate() {
             widgets::row(ui, i, |ui| {
-                widgets::text(ui, 300.0, Align::Min, &*sensor.label);
-                widgets::text(ui, 100.0, Align::Max, reading_text(sensor));
-                widgets::text(
-                    ui,
-                    100.0,
-                    Align::Max,
-                    RichText::new(limit(sensor.high, sensor.kind)).color(theme::TEXT_WEAK),
-                );
-                widgets::text(
-                    ui,
-                    100.0,
-                    Align::Max,
-                    RichText::new(limit(sensor.critical, sensor.kind)).color(theme::TEXT_WEAK),
-                );
+                widgets::text(ui, name, Align::Min, &*sensor.label);
+                widgets::text(ui, VALUE, Align::Max, reading_text(sensor));
+                if limits {
+                    for mark in [sensor.high, sensor.critical] {
+                        widgets::text(
+                            ui,
+                            VALUE,
+                            Align::Max,
+                            RichText::new(limit(mark, sensor.kind)).color(theme::TEXT_WEAK),
+                        );
+                    }
+                }
             });
         }
     }

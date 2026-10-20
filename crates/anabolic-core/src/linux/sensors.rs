@@ -574,6 +574,12 @@ impl SensorSampler {
         }
     }
 
+    /// Never: sensor chips' drivers can load later, and are looked for
+    /// again.
+    pub fn idle(&self) -> bool {
+        false
+    }
+
     pub fn sample(&mut self) -> Vec<Sensor> {
         let now = Instant::now();
         if self.listed.is_none_or(|t| now - t > RELIST) {

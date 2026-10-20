@@ -113,7 +113,7 @@ pub fn read(path: &str) -> Option<Image> {
     let strings = section(u32_at(sym, 40) as usize);
     let entries = read_at(&file, u64_at(sym, 24), u64_at(sym, 32))?;
     let names = read_at(&file, u64_at(strings, 24), u64_at(strings, 32))?;
-    for e in entries.chunks_exact(24) {
+    for e in entries.as_chunks::<24>().0 {
         let kind = e[4] & 0xF;
         let defined = u16_at(e, 6) != 0;
         let value = u64_at(e, 8);
