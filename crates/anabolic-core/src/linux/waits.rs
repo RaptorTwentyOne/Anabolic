@@ -59,8 +59,9 @@ fn classify(state: u8, wchan: &str) -> Sleep {
             {
                 Sleep::Lock
             }
-            "pipe_wait_readable" | "pipe_read" => Sleep::PipeRead,
-            "pipe_wait_writable" | "pipe_write" => Sleep::PipeWrite,
+            // anon_pipe_* since Linux 6.15.
+            "pipe_wait_readable" | "pipe_read" | "anon_pipe_read" => Sleep::PipeRead,
+            "pipe_wait_writable" | "pipe_write" | "anon_pipe_write" => Sleep::PipeWrite,
             w if w.starts_with("unix_stream") || w.starts_with("unix_dgram") => Sleep::Socket,
             "do_wait" | "kernel_wait4" | "kernel_waitid" => Sleep::Child,
             _ => Sleep::Idle,
@@ -580,7 +581,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        settle(pid, |w| w.starts_with("pipe_"));
+        settle(pid, |w| w.contains("pipe_"));
         let report = wait_chains(key(pid), None, &mut |_, _| true).unwrap();
         drop(child.stdin.take());
         let _ = child.wait();

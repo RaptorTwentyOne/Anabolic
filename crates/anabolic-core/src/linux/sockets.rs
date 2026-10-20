@@ -268,12 +268,21 @@ mod tests {
     fn finds_own_listening_socket() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (list, error) = sockets();
-        assert!(error.is_none(), "{error:?}");
-        let mine = list
-            .iter()
-            .find(|s| s.local_port == port && s.listening())
-            .expect("own listener listed");
-        assert_eq!(mine.pid, std::process::id());
+        // Another test may have looked for owners a moment ago: the next
+        // look waits until a second has passed.
+        let started = Instant::now();
+        loop {
+            let (list, error) = sockets();
+            assert!(error.is_none(), "{error:?}");
+            let mine = list
+                .iter()
+                .find(|s| s.local_port == port && s.listening())
+                .expect("own listener listed");
+            if mine.pid != 0 || started.elapsed() > Duration::from_secs(3) {
+                assert_eq!(mine.pid, std::process::id());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
