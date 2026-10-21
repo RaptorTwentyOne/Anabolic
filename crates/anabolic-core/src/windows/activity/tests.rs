@@ -155,6 +155,48 @@ fn one_program_is_recorded_step_for_step() {
     assert!(rows.iter().all(|r| r.0 == 7 && r.4 == 1));
 }
 
+/// A process start or end: key, pid, parent, session, exit, dirbase,
+/// flags, no SID, image, command line.
+fn process(pid: u32, parent: u32, image: &str) -> Vec<u8> {
+    let mut d = vec![0u8; 8];
+    d.extend(pid.to_le_bytes());
+    d.extend(parent.to_le_bytes());
+    d.extend(1u32.to_le_bytes());
+    d.extend(0u32.to_le_bytes());
+    d.extend([0u8; 8]);
+    d.extend(0u32.to_le_bytes());
+    d.extend(0u32.to_le_bytes());
+    d.extend(image.as_bytes());
+    d.push(0);
+    d.extend(wide(image));
+    d
+}
+
+#[test]
+fn a_pid_given_to_another_process_is_not_recorded() {
+    let (mut c, shared) = consumer(false);
+    c.tracked.insert(7);
+    let t = 1_000_000;
+    c.on_process(t, 1, PROCESS_END, &process(7, 100, "game.exe"));
+    // Windows hands 7 to an unrelated program, which starts one of its own.
+    c.on_process(t + 1, 1, PROCESS_START, &process(7, 200, "rg.exe"));
+    c.on_registry(
+        t + 2,
+        7,
+        1,
+        REG_OPEN,
+        &reg(0, r"\REGISTRY\MACHINE\SOFTWARE\A"),
+    );
+    c.on_process(t + 3, 1, PROCESS_START, &process(9, 7, "child.exe"));
+    c.flush(i64::MAX, true);
+    let rows = rows(&shared);
+    assert_eq!(
+        rows,
+        [(7, ActivityKind::ProcessExit, "game.exe".into(), Some(0), 1)]
+    );
+    assert!(c.tracked.is_empty());
+}
+
 #[test]
 fn reads_a_process_start() {
     // Key, pid 0x1000, parent 0x2000, session 1, exit 259, dirbase,

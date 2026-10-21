@@ -63,6 +63,10 @@ const NAME_WAIT_MS: f64 = 3000.0;
 const FILE_NAME_WAIT_MS: f64 = 8000.0;
 /// Events are handed over at least this often (trace time).
 const FLUSH_MS: f64 = 100.0;
+/// File objects named before starting over: Windows reuses their
+/// addresses, but a long recording sees millions of files. The ones still
+/// open are named again by a rundown.
+const MAX_FILES: usize = 200_000;
 /// File rundowns cost about a second of kernel time and ~0.6 s of ours:
 /// at most this often, and only while names are wanted.
 const FILE_RUNDOWN_GAP: Duration = Duration::from_secs(5);
@@ -323,7 +327,9 @@ struct Consumer {
     next_seq: u64,
     last_flush: i64,
     summary: ActivitySummary,
-    written: HashSet<Arc<str>>,
+    /// Files written, by `path_hash`: holding the paths would keep every
+    /// one written alive after its steps have rolled off.
+    written: HashSet<u64>,
     endpoints: HashSet<(IpAddr, u16)>,
     lost: Box<dyn Fn() -> u32 + Send>,
     /// The consumer thread runs above normal priority (set on its first
@@ -637,6 +643,9 @@ impl Consumer {
                 0.0,
                 None,
             );
+            // Windows gives its PID to another process soon: that one, and
+            // all it starts, is not what is being recorded.
+            self.tracked.remove(&p.pid);
         }
     }
 
@@ -696,6 +705,9 @@ impl Consumer {
                 };
                 self.end_run(tid);
                 let path = self.intern(self.dos_path(&path));
+                if self.files.len() >= MAX_FILES {
+                    self.files.clear();
+                }
                 self.files.insert(object, path.clone());
                 let kind = if options & DELETE_ON_CLOSE != 0 {
                     self.summary.files_deleted += 1;
@@ -750,7 +762,7 @@ impl Consumer {
                         (Arc::from(""), Some(Unnamed::File(object, key)))
                     }
                 };
-                if write && !path.is_empty() && self.written.insert(path.clone()) {
+                if write && !path.is_empty() && self.written.insert(path_hash(&path)) {
                     self.summary.files_written += 1;
                 }
                 let seq = self.push(

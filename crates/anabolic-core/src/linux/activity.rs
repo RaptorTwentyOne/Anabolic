@@ -661,7 +661,9 @@ struct Recorder {
     conns: HashMap<u64, Conn>,
     conns_primed: bool,
     summary: ActivitySummary,
-    written: HashSet<Arc<str>>,
+    /// Files written, by `path_hash`: holding the paths would keep every
+    /// one written alive after its steps have rolled off.
+    written: HashSet<u64>,
     endpoints: HashSet<(IpAddr, u16)>,
     paths: HashSet<Arc<str>>,
     lost_events: u32,
@@ -1001,6 +1003,9 @@ impl Recorder {
             code,
             0,
         );
+        // Its PID goes to another process in time: that one, and all it
+        // starts, is not what is being recorded.
+        self.tracked.remove(&pid);
     }
 
     fn on_process_event(&mut self, event: ProcEvent) {
@@ -1110,7 +1115,7 @@ impl Recorder {
             self.push(e.pid, kind, path.clone(), String::new(), ok, 0);
         }
         if e.mask & FAN_MODIFY != 0 {
-            if self.written.insert(path.clone()) {
+            if self.written.insert(path_hash(&path)) {
                 self.summary.files_written += 1;
             }
             self.push(

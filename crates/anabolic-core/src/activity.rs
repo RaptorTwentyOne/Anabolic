@@ -19,6 +19,14 @@ pub use imp::*;
 /// Events kept for the UI before new ones are only counted.
 pub const MAX_EVENTS: u64 = 1_000_000;
 
+/// A path as a number, to tell paths apart without keeping them.
+fn path_hash(path: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Group {
     Process,
