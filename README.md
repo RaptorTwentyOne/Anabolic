@@ -276,6 +276,10 @@ Everything it keeps stays on this computer:
   you ask for, and `stalls.log`, the moments Anabolic's own window fell
   behind. Turn the history off or shorten it in Settings.
 
+What the MCP server's tools return goes to the program that called them,
+and on to the service it uses. The full policy is in
+[PRIVACY.md](PRIVACY.md).
+
 ## Building from source
 
 Rust 1.95 or newer; on Windows with the MSVC toolchain. On Linux no

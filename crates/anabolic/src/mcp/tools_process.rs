@@ -177,7 +177,12 @@ impl AnabolicMcp {
                        private memory, disk, network and GPU rates, threads, handles, priority, \
                        user, start time, and whether it is not responding. Filter by name or PID, \
                        order by a resource.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_processes(
         &self,
@@ -233,7 +238,12 @@ impl AnabolicMcp {
 
     #[tool(
         description = text::PROCESS,
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_process(
         &self,
@@ -333,7 +343,12 @@ impl AnabolicMcp {
         description = "The process tree: who started whom, with CPU and private memory, from a \
                        process down (or the whole machine). Parents that exited are left out; a \
                        reused PID does not make a false parent.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_process_tree(
         &self,
@@ -376,7 +391,12 @@ impl AnabolicMcp {
 
     #[tool(
         description = text::WHY_ALIVE,
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn why_process_will_not_end(
         &self,
@@ -418,7 +438,12 @@ impl AnabolicMcp {
         description = "Processes whose handles, private memory or threads keep growing in a \
                        straight line (sampled every minute for two hours, flagged after ten \
                        minutes or more): the usual sign of a leak.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_leaks(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {

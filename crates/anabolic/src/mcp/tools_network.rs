@@ -133,7 +133,12 @@ impl AnabolicMcp {
                        address and name (from what programs looked up, else reverse DNS), ports \
                        and TCP state. With trace_seconds > 0, also each connection's traffic. \
                        Filter by process or by text.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_connections(
         &self,
@@ -217,7 +222,12 @@ impl AnabolicMcp {
         description = "The ports open on this PC for others to connect to (TCP listening, UDP \
                        bound), with the program behind each and who can reach it: every network, \
                        this computer only, or one network.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_listening_ports(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -251,7 +261,12 @@ impl AnabolicMcp {
         description = "Who uses the network: each program's receive and send rates and totals, \
                        and (after trace_seconds of the network trace) where the traffic goes, by \
                        destination name, with the programs talking to each.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_network_usage(
         &self,
@@ -311,7 +326,12 @@ impl AnabolicMcp {
 
     #[tool(
         description = DNS_LOOKUPS,
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_dns_lookups(
         &self,

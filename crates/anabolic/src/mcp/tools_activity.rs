@@ -197,7 +197,12 @@ const RECORD_ACTIVITY: &str = "Records what a process (with the processes under 
 impl AnabolicMcp {
     #[tool(
         description = RECORD_ACTIVITY,
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn record_activity(
         &self,

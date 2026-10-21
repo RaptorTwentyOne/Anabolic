@@ -83,7 +83,12 @@ fn service_row(s: &Service, process: Option<&str>) -> Value {
 impl AnabolicMcp {
     #[tool(
         description = LIST_SERVICES,
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_services(
         &self,
@@ -121,7 +126,12 @@ impl AnabolicMcp {
         description = "One service in full: state, process, startup type (and whether a trigger \
                        starts it), its program and arguments, the account it runs as, its \
                        description, what it depends on and which services depend on it.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_service(
         &self,
@@ -173,7 +183,12 @@ impl AnabolicMcp {
 
     #[tool(
         description = LIST_STARTUP,
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_startup_items(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {

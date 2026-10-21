@@ -131,7 +131,12 @@ impl AnabolicMcp {
                        each one is. OPENS THE PROCESS (handles are duplicated out of it to read \
                        their names): the first call is refused with the risks; call again with \
                        force=true only if the user agreed.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_handles(
         &self,
@@ -208,7 +213,12 @@ impl AnabolicMcp {
                        addresses and sizes. OPENS THE PROCESS to read its module list: the first \
                        call is refused with the risks; call again with force=true only if the \
                        user agreed.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_modules(
         &self,
@@ -249,7 +259,12 @@ impl AnabolicMcp {
                        is stuck. OPENS THE PROCESS and SUSPENDS each thread for a few \
                        milliseconds: the first call is refused with the risks; call again with \
                        force=true only if the user agreed.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_thread_stacks(
         &self,
@@ -318,7 +333,12 @@ impl AnabolicMcp {
                        deadlocks first. The answer to \"why is it not responding\". OPENS THE \
                        PROCESS' THREADS: the first call is refused with the risks; call again with \
                        force=true only if the user agreed. Can take seconds.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_wait_chain(
         &self,
@@ -384,6 +404,7 @@ impl AnabolicMcp {
         annotations(
             read_only_hint = false,
             destructive_hint = false,
+            idempotent_hint = false,
             open_world_hint = false
         )
     )]

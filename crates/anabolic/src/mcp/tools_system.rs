@@ -254,7 +254,12 @@ impl AnabolicMcp {
                        process/thread/handle counts, uptime, the busiest processes per resource, \
                        and anything that needs attention (hung windows, processes that cannot \
                        end, memory pressure, leaks). The place to start.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_system_overview(
         &self,
@@ -349,7 +354,12 @@ impl AnabolicMcp {
                        clock), interrupt and context switch rates, the processor's name and \
                        topology. With trace_seconds > 0, also who ran on each core (threads and \
                        processes with their share), from a context switch trace.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_cpu(
         &self,
@@ -420,7 +430,12 @@ impl AnabolicMcp {
         description = "Memory: used, available, commit charge and limit, file cache, pools, the \
                        standby/modified/free lists, page files, and the processes with the most \
                        private memory.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_memory(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -442,7 +457,12 @@ impl AnabolicMcp {
                        response time, queue and temperature. With trace_seconds > 0, also which \
                        processes read and write each disk and which files, from a disk I/O \
                        trace.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_disks(
         &self,
@@ -488,7 +508,12 @@ impl AnabolicMcp {
                        read the processor's own temperature: the firmware's thermal zones stand \
                        in where it has any (many desktops have none), and the processor's power \
                        comes from its energy meter.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_sensors(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -505,7 +530,12 @@ impl AnabolicMcp {
     #[tool(
         description = "GPUs: each adapter's usage, engines (3D, copy, video...), dedicated and \
                        shared memory, temperature, and the processes using the GPU most.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_gpus(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -522,7 +552,12 @@ impl AnabolicMcp {
         description = "Monitors: each one's own name, GPU, connection, position, mode and refresh \
                        rate against the best it offers, native resolution, HDR and scaling. \
                        Points out a monitor left below its refresh rate or resolution.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_displays(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -554,7 +589,12 @@ impl AnabolicMcp {
         description = "Hardware: the processor (model, cores, caches, clocks, features, \
                        virtualisation), the board and BIOS, memory modules (size, speed and \
                        configured speed, maker, part number) and the core topology.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_hardware(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -623,7 +663,12 @@ impl AnabolicMcp {
                        driver (LatencyMon style) with the longest spikes. Watches for \
                        watch_seconds first (default 5) if the trace was not already running. No \
                        game is opened.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_stutters(
         &self,
@@ -686,7 +731,12 @@ impl AnabolicMcp {
     #[tool(
         description = "The days the history (flight recorder) holds: every 10 seconds while \
                        Anabolic runs, the machine's totals and the processes that led.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn list_history_days(&self) -> Result<CallToolResult, ErrorData> {
         if let Some(refused) = self.refuse(McpKind::Read) {
@@ -706,7 +756,12 @@ impl AnabolicMcp {
                        each with CPU, memory, commit, disk and network totals, the GPU, the \
                        processes that led, and the processes that started, exited or hung. \
                        Answers \"why was the PC slow at 14:32\".",
-        annotations(read_only_hint = true, open_world_hint = false)
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_history(
         &self,

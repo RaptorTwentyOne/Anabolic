@@ -30,7 +30,7 @@ jobs:
         run: |
           $name = "anabolic-$env:GITHUB_REF_NAME-windows-x64"
           New-Item -ItemType Directory $name | Out-Null
-          Copy-Item target/release/anabolic.exe, README.md, LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-NOTICES.html $name
+          Copy-Item target/release/anabolic.exe, README.md, PRIVACY.md, LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-NOTICES.html $name
           Copy-Item crates/anabolic/assets/fonts/OFL.txt "$name/OFL-Aldrich.txt"
           Compress-Archive $name "$name.zip"
       - uses: actions/upload-artifact@v7
@@ -56,7 +56,7 @@ jobs:
         run: |
           name="anabolic-$GITHUB_REF_NAME-linux-x64"
           mkdir "$name"
-          cp target/release/anabolic README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.html "$name"
+          cp target/release/anabolic README.md PRIVACY.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.html "$name"
           cp crates/anabolic/assets/fonts/OFL.txt "$name/OFL-Aldrich.txt"
           zip -r "$name.zip" "$name"
       - uses: actions/upload-artifact@v7

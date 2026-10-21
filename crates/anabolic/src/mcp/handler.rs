@@ -308,3 +308,95 @@ impl AnabolicMcp {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tools a client sees, each saying what it does to the machine:
+    /// all four hints, as directories ask for, and none both read-only and
+    /// destructive.
+    #[test]
+    fn every_tool_is_listed_with_all_four_hints() {
+        let router = AnabolicMcp::system_tools()
+            + AnabolicMcp::process_tools()
+            + AnabolicMcp::inspect_tools()
+            + AnabolicMcp::network_tools()
+            + AnabolicMcp::service_tools()
+            + AnabolicMcp::activity_tools()
+            + AnabolicMcp::action_tools();
+        let tools = router.list_all();
+        let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "block_program",
+                "close_connection",
+                "control_service",
+                "end_process",
+                "get_cpu",
+                "get_disks",
+                "get_displays",
+                "get_gpus",
+                "get_hardware",
+                "get_history",
+                "get_leaks",
+                "get_memory",
+                "get_network_usage",
+                "get_process",
+                "get_process_tree",
+                "get_sensors",
+                "get_service",
+                "get_stutters",
+                "get_system_overview",
+                "get_thread_stacks",
+                "get_wait_chain",
+                "list_connections",
+                "list_dns_lookups",
+                "list_handles",
+                "list_history_days",
+                "list_listening_ports",
+                "list_modules",
+                "list_processes",
+                "list_services",
+                "list_startup_items",
+                "record_activity",
+                "resume_process",
+                "set_affinity",
+                "set_efficiency_mode",
+                "set_priority",
+                "set_service_startup",
+                "set_startup_item",
+                "suspend_process",
+                "unblock_program",
+                "why_process_will_not_end",
+                "write_memory_dump",
+            ]
+        );
+        for tool in &tools {
+            let a = tool.annotations.as_ref().expect(&tool.name);
+            let hints = [
+                a.read_only_hint,
+                a.destructive_hint,
+                a.idempotent_hint,
+                a.open_world_hint,
+            ];
+            assert!(
+                hints.iter().all(Option::is_some),
+                "{}: {hints:?}",
+                tool.name
+            );
+            assert!(
+                !(a.read_only_hint == Some(true) && a.destructive_hint == Some(true)),
+                "{}",
+                tool.name
+            );
+            assert!(
+                !tool.description.as_deref().unwrap_or("").is_empty(),
+                "{}",
+                tool.name
+            );
+        }
+    }
+}

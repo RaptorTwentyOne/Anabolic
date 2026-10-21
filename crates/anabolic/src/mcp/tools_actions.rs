@@ -237,6 +237,7 @@ impl AnabolicMcp {
     #[tool(
         description = text::END_PROCESS,
         annotations(
+            read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = false,
             open_world_hint = false
@@ -302,6 +303,7 @@ impl AnabolicMcp {
                        (its windows stop responding meanwhile). Critical processes and Anabolic \
                        are refused; a game or anti-cheat program needs force=true.",
         annotations(
+            read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
@@ -323,6 +325,7 @@ impl AnabolicMcp {
     #[tool(
         description = "Resumes a suspended process.",
         annotations(
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -346,6 +349,7 @@ impl AnabolicMcp {
                        above_normal, high or realtime (realtime can starve the rest of the \
                        system).",
         annotations(
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -386,6 +390,7 @@ impl AnabolicMcp {
     #[tool(
         description = "Sets which logical processors a process may run on (its affinity).",
         annotations(
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -416,6 +421,7 @@ impl AnabolicMcp {
     #[tool(
         description = text::EFFICIENCY_MODE,
         annotations(
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -445,6 +451,7 @@ impl AnabolicMcp {
     #[tool(
         description = text::CONTROL_SERVICE,
         annotations(
+            read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = false,
             open_world_hint = false
@@ -476,6 +483,7 @@ impl AnabolicMcp {
     #[tool(
         description = text::SERVICE_STARTUP,
         annotations(
+            read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
@@ -512,6 +520,7 @@ impl AnabolicMcp {
         description = "Closes one TCP connection (IPv4) of a process, as TCPView does: the \
                        process is not opened; the program usually reconnects if it wants to.",
         annotations(
+            read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = false,
             open_world_hint = true
@@ -544,6 +553,7 @@ impl AnabolicMcp {
     #[tool(
         description = text::BLOCK_PROGRAM,
         annotations(
+            read_only_hint = false,
             destructive_hint = true,
             idempotent_hint = true,
             open_world_hint = false
@@ -560,6 +570,7 @@ impl AnabolicMcp {
         description = "Removes the firewall rules block_program (or the Network page) made for \
                        a program.",
         annotations(
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
@@ -575,6 +586,7 @@ impl AnabolicMcp {
     #[tool(
         description = text::STARTUP_ITEM,
         annotations(
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
