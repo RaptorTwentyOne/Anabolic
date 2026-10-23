@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! What a program does, step by step, the way Process Monitor shows it:
 //! the processes it starts, the code it loads, every file it opens,
 //! creates, reads, writes, renames or deletes, every registry key and value

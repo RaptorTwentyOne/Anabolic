@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The notification area icon. With its window closed Anabolic keeps
 //! running (the history is recorded, rules applied); the icon brings the
 //! window back or quits. A thread of its own owns a hidden window that

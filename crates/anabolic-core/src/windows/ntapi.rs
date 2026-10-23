@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Hand-written bindings for the native API pieces Win32 does not expose.
 //!
 //! Layouts follow phnt (the System Informer headers) and are x64 only; every

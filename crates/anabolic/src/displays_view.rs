@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Performance > Displays: the monitors as they sit on the desktop, and for
 //! each the GPU it hangs off, its mode against the best it offers, HDR and
 //! scaling. A monitor left at 60 Hz that does 144, or run below its own

@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Updates in the app (see anabolic_core::update): a check soon after the
 //! start and then once a day, what it finds installed or announced as
 //! Settings says, and the bar that tells of it.

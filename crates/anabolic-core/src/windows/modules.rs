@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Loaded modules of a process (user mode) and of the kernel (drivers), and
 //! turning code addresses into `module!export+offset` without symbol files:
 //! the nearest export from the image's own export table on disk.

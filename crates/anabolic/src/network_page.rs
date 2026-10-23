@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The Network page: everything on the network, machine-wide. Who receives
 //! and sends how much, every connection with its state and its other end's
 //! name, the ports open for others to connect to and to whom, and where the

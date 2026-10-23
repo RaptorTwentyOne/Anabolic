@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Open files as handles: what /proc/<pid>/fd lists, each named by the link
 //! it is and typed by what it points at. Reading it needs the right to
 //! look into the process (being its owner, or cap_sys_ptrace); nothing is

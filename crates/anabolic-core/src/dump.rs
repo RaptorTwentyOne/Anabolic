@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Memory dumps of a process, for a debugger. The process is frozen as
 //! briefly as the system allows, and the dump written to a file. Opening a
 //! process to read all of its memory is as invasive as inspection gets: the

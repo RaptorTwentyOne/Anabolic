@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Monitors on Linux. The kernel's display connectors (/sys/class/drm) say
 //! what is plugged in and what it is (its EDID: name, panel resolution,
 //! refresh rates, HDR); the compositor says where each one sits and how it

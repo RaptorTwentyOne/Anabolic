@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Physical disks: throughput, active time and latency from the partition
 //! manager's counters (IOCTL_DISK_PERFORMANCE), plus identity, partitions
 //! and volumes. None of the frequent queries sends I/O to the device, so a

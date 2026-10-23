@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Programs that start when the user signs in: the Run keys, the Startup
 //! folders, and scheduled tasks triggered at sign-in or boot. Turned on and
 //! off the way Task Manager does it (the StartupApproved keys), so the two

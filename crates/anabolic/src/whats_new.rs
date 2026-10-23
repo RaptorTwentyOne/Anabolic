@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! What changed since the version that ran last, shown once in a small
 //! window the first time a new version starts. It comes from CHANGELOG.md,
 //! carried inside the executable: nothing is fetched for it.

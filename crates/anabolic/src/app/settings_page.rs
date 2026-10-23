@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The Settings page (Ctrl+,): every preference in one column of sections,
 //! each setting with what it does in words, and what this copy of Anabolic
 //! is (version, rights, where it keeps its files).
@@ -344,7 +349,9 @@ impl App {
             ui,
             &format!("Anabolic {}", env!("CARGO_PKG_VERSION")),
             "Performance monitoring and diagnostics for Windows and Linux that stays responsive \
-             when the machine does not. MIT or Apache-2.0, at your option.",
+             when the machine does not. Copyright (c) 2026 Coşkun Bağrıaçık, open source under \
+             MIT or Apache-2.0, at your option: reuse is welcome, with this notice kept and \
+             Anabolic named.",
             |ui| {
                 if ui
                     .add(egui::Button::new("Shortcuts and colours").shortcut_text("F1"))

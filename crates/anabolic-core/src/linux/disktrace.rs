@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Who reads and writes each physical disk: the block layer's tracepoints
 //! (perf events, cap_perfmon) report every request as it goes to the disk
 //! and as it completes, with the task that issued it. Matched up, they give

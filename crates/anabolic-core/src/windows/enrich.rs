@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Slow, per-process facts (path, command line, owner, icon, version info) are
 //! gathered here, off both the UI and the collector thread. Results stream to
 //! the UI over a channel; nothing ever waits for them.

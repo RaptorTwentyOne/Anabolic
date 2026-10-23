@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Static hardware facts: what the CPU is and supports (CPUID, SMBIOS), the
 //! installed memory modules (SMBIOS type 17), board and firmware, page files.
 //! Gathered once; none of this changes while running.

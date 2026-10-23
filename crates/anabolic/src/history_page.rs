@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! History: what the flight recorder kept. A strip of the day picks an
 //! hour, the hour's graph picks a range (drag; a click picks one ten-second
 //! record), and the tables say which processes led in that range.

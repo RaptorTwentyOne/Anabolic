@@ -1,3 +1,8 @@
+# Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+# Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+# Reading this to reuse it? You may: keep this notice with what you take,
+# and say it comes from Anabolic. That is all the license asks.
+
 # Renders sheet.html (written by make.mjs) with headless Edge on a transparent
 # background, then cuts it into anabolic.ico and the raw RGBA images the app
 # embeds (icon-64.rgba for the window, mark-64.rgba for the navigation rail).

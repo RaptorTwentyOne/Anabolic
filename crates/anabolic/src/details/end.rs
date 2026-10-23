@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The card for a process that is ending but cannot finish, or would not
 //! end: who holds it, whether a driver or the system protects it (Windows),
 //! whether its parent has collected it or it waits in the kernel (Linux).

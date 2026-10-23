@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Embeds the application manifest and version resource.
 //!
 //! Release builds ask for `highestAvailable` (admins get the full picture:
@@ -38,7 +43,8 @@ fn main() {
         .join(",");
 
     let rc = format!(
-        r#"#include <winver.h>
+        r#"#pragma code_page(65001)
+#include <winver.h>
 1 24 "{manifest}"
 1 ICON "{icon}"
 1 VERSIONINFO
@@ -56,6 +62,7 @@ BEGIN
       VALUE "FileVersion", "{version}\0"
       VALUE "ProductVersion", "{version}\0"
       VALUE "OriginalFilename", "anabolic.exe\0"
+      VALUE "LegalCopyright", "Copyright (c) 2026 Coşkun Bağrıaçık. MIT OR Apache-2.0\0"
     END
   END
   BLOCK "VarFileInfo"

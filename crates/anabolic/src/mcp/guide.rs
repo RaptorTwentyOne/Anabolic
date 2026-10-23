@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Resources and prompts. A resource is a tool call under a fixed address
 //! (the same data, the same permissions); a prompt is a ready question that
 //! tells the assistant which tools answer it and in what order.

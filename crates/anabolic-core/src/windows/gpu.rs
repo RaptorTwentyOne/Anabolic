@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! GPU engine utilisation and video memory from the kernel graphics
 //! statistics interface (D3DKMT), the same source Task Manager reads; the
 //! temperature and fan speed the driver reports through it; and, for

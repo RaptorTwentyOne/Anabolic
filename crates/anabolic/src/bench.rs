@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Scroll benchmark: with ANABOLIC_BENCH_SCROLL=<report file> set, the
 //! Performance page scrolls itself and per-frame costs are written to the
 //! report. ANABOLIC_BENCH_MODE=wheel scrolls with injected mouse wheel notches

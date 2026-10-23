@@ -1,3 +1,8 @@
+# Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+# Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+# Reading this to reuse it? You may: keep this notice with what you take,
+# and say it comes from Anabolic. That is all the license asks.
+
 """Draws the installer's two pictures from the logo: the strip at the top of
 its pages (banner.bmp) and the panel beside its first and last page
 (dialog.bmp). Windows Installer draws its own black text over the white

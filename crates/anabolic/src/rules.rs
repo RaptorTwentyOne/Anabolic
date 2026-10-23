@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Rules: standing orders for a program, Process Lasso style. A rule names
 //! an executable; its settings (priority, cores, efficiency mode) are
 //! applied once to each of its processes when it appears, and to the

@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The Handles tab: what a process has open, by type and name, with the
 //! side pane for one handle. On Linux these are its open files (file
 //! descriptors), numbered from 0 and named as /proc gives them.

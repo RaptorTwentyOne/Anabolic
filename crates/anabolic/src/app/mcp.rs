@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The MCP server's life in the app: started and stopped with its setting,
 //! fed what only the UI holds (the settings, the leaks it watches, the
 //! traces it owns), and what it reports kept for the MCP page. Also where

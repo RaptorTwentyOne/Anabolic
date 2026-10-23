@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Power profiles for game mode, through power-profiles-daemon (the
 //! profiles KDE's and GNOME's battery menus switch): Performance while a
 //! game runs, and the profile it replaced afterwards.

@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The HTTP side: a listener on 127.0.0.1, every request checked for the
 //! access key and for a browser origin before rmcp's Streamable HTTP service
 //! sees it, on a small tokio runtime of its own thread.

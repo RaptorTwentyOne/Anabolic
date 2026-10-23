@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 // The Anabolic mark, "Steroid Core": a processor whose die is the steroid
 // skeleton (gonane: three fused hexagons and a pentagon), its hot ring
 // burning like a busy core, traces running out to the pins.

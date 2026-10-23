@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Leaks: processes whose handles, private memory or threads keep growing.
 //! A sample a minute per process, two hours kept; a counter that rose
 //! steadily (a straight line fits it well) and by a real amount over at

@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Who reads and writes which disk, and which file: kernel disk I/O events
 //! (ETW, admin) joined with file-name events. Windows' per-process disk
 //! counters say how much, never where; this says both, like Resource Monitor.

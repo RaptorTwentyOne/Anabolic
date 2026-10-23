@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The notification area icon on Linux: a StatusNotifierItem on the session
 //! bus (what KDE's system tray shows, and GNOME's with the AppIndicator
 //! extension), its menu over com.canonical.dbusmenu, and notifications

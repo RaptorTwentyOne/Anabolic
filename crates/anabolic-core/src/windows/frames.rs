@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Frame times of the programs that draw: every present a process makes,
 //! from the graphics runtimes' own ETW events (PresentMon's method). Nothing
 //! is opened or injected: Windows asks the runtime inside each process to log

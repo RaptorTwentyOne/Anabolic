@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Tools that open a process to look inside: its handles, modules, thread
 //! stacks and wait chains, and memory dumps. Each is refused the first time
 //! with the risks in words (anti-cheat software above all); the client asks

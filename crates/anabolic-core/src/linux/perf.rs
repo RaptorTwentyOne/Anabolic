@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The kernel's own tracing, through perf_event_open: per-processor ring
 //! buffers the kernel writes samples and tracepoint events into, read on a
 //! thread of Anabolic's own. No module is loaded and nothing is injected:

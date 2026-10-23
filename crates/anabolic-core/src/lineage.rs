@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Who started each process, kept for the whole session: a parent that has
 //! exited is still named, with when it ran and how it ended. Fed by the
 //! kernel's process start and stop events (so a launcher that lives a few

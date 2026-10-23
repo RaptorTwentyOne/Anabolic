@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
+  Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+  Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+  Reading this to reuse it? You may: keep this notice with what you take,
+  and say it comes from Anabolic. That is all the license asks.
+-->
+<!--
   Anabolic in Program Files, an entry in the Start menu, and one in
   Settings > Apps that takes it away again. Settings, the history and
   dumps stay where Anabolic keeps them (see PRIVACY.md): removing the

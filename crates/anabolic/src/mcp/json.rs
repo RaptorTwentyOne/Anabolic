@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Anabolic's data as JSON for MCP clients: numbers with their unit in the
 //! field name (`_bytes`, `_bps`, `_percent`), and the same in words where a
 //! person would read it.

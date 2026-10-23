@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The end of the session. Signing out or shutting down, Windows tells each
 //! top-level window (WM_ENDSESSION) and ends the process once they have
 //! answered: winit's windows answer at once, and the settings changed since

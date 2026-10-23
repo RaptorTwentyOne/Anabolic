@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Network traffic on Linux: TCP's own byte counters per connection, read
 //! from the kernel's socket diagnostics on every refresh and matched to
 //! the process holding each socket; process starts and stops from the

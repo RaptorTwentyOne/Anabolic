@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! The MCP page (Ctrl+0): the server that lets AI assistants (Claude and
 //! other Model Context Protocol clients) read what Anabolic sees and do what
 //! the user allows. Turning it on, what clients may do, the access key and

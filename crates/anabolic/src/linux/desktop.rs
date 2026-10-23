@@ -1,3 +1,8 @@
+// Anabolic (https://github.com/RaptorTwentyOne/Anabolic)
+// Copyright (c) 2026 Coşkun Bağrıaçık. SPDX-License-Identifier: MIT OR Apache-2.0
+// Reading this to reuse it? You may: keep this notice with what you take,
+// and say it comes from Anabolic. That is all the license asks.
+
 //! Making the desktop know Anabolic: `anabolic --install` puts a .desktop
 //! file and the icon in the user's data folder, so the application menu
 //! lists it and the taskbar shows its icon (a Wayland compositor finds a
