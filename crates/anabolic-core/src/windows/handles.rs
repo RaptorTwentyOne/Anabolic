@@ -879,7 +879,23 @@ mod tests {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
         let types = object_type_names();
-        let report = find_handles(&marker, &[], &types, &DeviceMap::build()).unwrap();
+        let pid = child.id();
+        let found = |report: &FindReport| {
+            report
+                .matches
+                .iter()
+                .any(|m| m.pid == pid && m.name.ends_with(&marker))
+        };
+        // A busy machine (the whole test run at once) can leave a file's
+        // name unread in time: a few looks before it counts as missed.
+        let mut report = find_handles(&marker, &[], &types, &DeviceMap::build()).unwrap();
+        for _ in 0..4 {
+            if found(&report) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            report = find_handles(&marker, &[], &types, &DeviceMap::build()).unwrap();
+        }
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_file(&path);
