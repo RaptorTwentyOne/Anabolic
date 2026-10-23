@@ -17,6 +17,7 @@
   <img src="https://img.shields.io/badge/rust-1.95%2B-orange" alt="Rust 1.95+">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT OR Apache-2.0"></a>
   <a href="https://m8ven.ai/mcp/raptortwentyone-anabolic-r9uj5q?s=readme"><img src="https://m8ven.ai/badge/mcp/raptortwentyone-anabolic-r9uj5q?v=5b44c58ad85b1459b45efefc1a635f33" alt="M8ven Score"></a>
+  <a href="https://hub.xerj.org/contributors/cbagriacik"><img src="https://hub.xerj.org/contributors/cbagriacik/badge.svg" alt="XERJ Corpus Hub contributor"></a>
 </p>
 
 ---
