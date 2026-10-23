@@ -299,22 +299,31 @@ mod tests {
             .spawn()
             .unwrap();
         let cmd_pid = launcher.id();
-        std::thread::sleep(std::time::Duration::from_millis(2500));
         let _ = launcher.wait();
-        let traffic = tracer.take();
-        let ping = traffic
-            .starts
-            .iter()
-            .find(|s| s.ppid == cmd_pid && s.image.to_lowercase().ends_with("ping.exe"))
-            .expect("ping's start event")
-            .clone();
+        // The events come when the trace's buffers are delivered, later on
+        // a busy machine (CI): until both ping's start and cmd's end are in.
+        let (mut starts, mut stops) = (Vec::new(), Vec::new());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let ping = loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let traffic = tracer.take();
+            starts.extend(traffic.starts);
+            stops.extend(traffic.stops);
+            let ping = starts
+                .iter()
+                .find(|s| s.ppid == cmd_pid && s.image.to_lowercase().ends_with("ping.exe"));
+            if let Some(ping) = ping
+                && stops.iter().any(|s| s.pid == cmd_pid)
+            {
+                break ping.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "ping's start or cmd's end did not come in 10 s"
+            );
+        };
         let mut l = Lineage::default();
-        l.observe(
-            &[],
-            traffic.starts,
-            traffic.stops,
-            crate::sysinfo::now_filetime(),
-        );
+        l.observe(&[], starts, stops, crate::sysinfo::now_filetime());
         let chain = l.ancestry(ProcKey {
             pid: ping.pid,
             create_time: ping.create_time,

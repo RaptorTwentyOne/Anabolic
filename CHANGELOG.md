@@ -21,8 +21,8 @@ new when it updates.
   Task Scheduler starts it elevated, without asking; that takes the
   installed copy, since a file started elevated has to be where only
   administrators can change it.
-- **What's new:** the first time a new version starts, a window says what
-  changed, from this file.
+- **What's new:** the first time a new version starts, a small window says
+  what changed since the version before.
 - **Signing out and shutting down:** Anabolic saves its settings and stops
   its kernel traces before Windows ends it, instead of losing what changed
   since the last save.

@@ -90,8 +90,10 @@ jobs:
       # The release's notes are its part of CHANGELOG.md, the same text the
       # app shows as What's new; a tag without one is not released.
       - name: Notes
+        id: notes
         run: |
           version="${GITHUB_REF_NAME#v}"
+          echo "title=Anabolic $version" >> "$GITHUB_OUTPUT"
           awk -v v="$version" '$0 ~ "^## " v "( |$)" { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
           if ! grep -q '[^[:space:]]' notes.md; then
             echo "CHANGELOG.md has no part for $version" >&2
@@ -109,6 +111,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           draft: true
+          name: ${{ steps.notes.outputs.title }}
           body_path: notes.md
           fail_on_unmatched_files: true
           files: |
