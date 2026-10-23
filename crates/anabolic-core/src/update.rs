@@ -1,6 +1,10 @@
 //! Updates from GitHub's releases: is there a newer one, fetch it, check it
 //! against the SHA-256 GitHub lists for it, and put it in place of the
 //! running executable for the next start.
+//!
+//! A copy the Windows installer put in place is updated by the release's
+//! installer instead, so that Windows' list of programs keeps the right
+//! version and removing it later removes all of it.
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -20,10 +24,31 @@ pub struct Release {
     pub version: String,
     /// The release's page, with its notes.
     pub page: String,
-    zip: String,
+    zip: Download,
+    /// The Windows installer, for copies it installed; releases from before
+    /// there was one have none.
+    package: Option<Download>,
+}
+
+/// One of a release's files.
+#[derive(Clone, Debug)]
+struct Download {
+    url: String,
     size: u64,
     /// As GitHub lists it; releases from before it did have none.
     sha256: Option<String>,
+}
+
+impl From<ApiAsset> for Download {
+    fn from(asset: ApiAsset) -> Self {
+        Self {
+            url: asset.browser_download_url,
+            size: asset.size,
+            sha256: asset
+                .digest
+                .and_then(|d| Some(d.strip_prefix("sha256:")?.to_ascii_lowercase())),
+        }
+    }
 }
 
 pub enum Event {
@@ -139,6 +164,12 @@ pub fn this_exe() -> Option<PathBuf> {
     })
 }
 
+/// Whether `exe` is a copy the Windows installer put in place: it is
+/// updated through the installer, and may start elevated at sign-in.
+pub fn installed_copy(exe: &Path) -> bool {
+    imp::installed(exe)
+}
+
 /// Built by cargo (it sits in a target folder, which cargo marks with
 /// CACHEDIR.TAG): such a copy is updated from its source, not replaced by
 /// a release.
@@ -206,25 +237,34 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
         403 | 429 => return Err("GitHub asks to wait before the next check".into()),
         _ => return Err(format!("GitHub answered {status}")),
     }
-    let release: ApiRelease = serde_json::from_slice(&body)
-        .map_err(|e| format!("GitHub's answer was unexpected: {e}"))?;
+    from_answer(&body, current)
+}
+
+/// GitHub's description of its latest release, as a release to update to
+/// when it is newer than `current`.
+fn from_answer(body: &[u8], current: &str) -> Result<Option<Release>, String> {
+    let release: ApiRelease =
+        serde_json::from_slice(body).map_err(|e| format!("GitHub's answer was unexpected: {e}"))?;
     let version = release.tag_name.trim_start_matches('v').to_string();
     if !newer(&version, current) {
         return Ok(None);
     }
-    let asset = release
-        .assets
-        .into_iter()
-        .find(|a| a.name.ends_with(imp::ASSET))
-        .ok_or_else(|| format!("Anabolic {version} has no download for {}", imp::PLATFORM))?;
+    let mut zip = None;
+    let mut package = None;
+    for asset in release.assets {
+        if asset.name.ends_with(imp::ASSET) {
+            zip = Some(asset.into());
+        } else if imp::PACKAGE.is_some_and(|end| asset.name.ends_with(end)) {
+            package = Some(asset.into());
+        }
+    }
+    let zip =
+        zip.ok_or_else(|| format!("Anabolic {version} has no download for {}", imp::PLATFORM))?;
     Ok(Some(Release {
         version,
         page: release.html_url,
-        zip: asset.browser_download_url,
-        size: asset.size,
-        sha256: asset
-            .digest
-            .and_then(|d| Some(d.strip_prefix("sha256:")?.to_ascii_lowercase())),
+        zip,
+        package,
     }))
 }
 
@@ -250,26 +290,15 @@ pub fn newer(version: &str, current: &str) -> bool {
 /// is. The license and notice files that came with an earlier release are
 /// replaced too, where they lie beside it. `progress` hears the bytes so
 /// far and the total.
-fn install(
-    release: &Release,
-    exe: &Path,
-    mut progress: impl FnMut(u64, u64),
-) -> Result<(), String> {
-    let want = release
-        .sha256
-        .as_deref()
-        .ok_or("GitHub lists no checksum for this release, so it is not installed")?;
-    let limit = (release.size as usize).saturating_add(1 << 20);
-    let (status, zip) = imp::get(&release.zip, "", limit, |done| {
-        progress(done as u64, release.size)
-    })?;
-    if status != 200 {
-        return Err(format!("the download failed: GitHub answered {status}"));
+fn install(release: &Release, exe: &Path, progress: impl FnMut(u64, u64)) -> Result<(), String> {
+    if let Some(package) = &release.package
+        && imp::installed(exe)
+    {
+        imp::may_install_package()?;
+        let data = fetch(package, progress)?;
+        return install_package(&data, &package.sha256, exe);
     }
-    let have = crate::filefacts::sha256_of(&zip[..]).ok_or("its checksum could not be computed")?;
-    if have != want {
-        return Err("the download does not match its checksum; nothing was changed".into());
-    }
+    let zip = fetch(&release.zip, progress)?;
     let files = unzip(&zip)?;
     let new = files
         .iter()
@@ -295,6 +324,68 @@ fn install(
         }
     }
     Ok(())
+}
+
+/// Downloads one of a release's files and checks it against its checksum.
+fn fetch(file: &Download, mut progress: impl FnMut(u64, u64)) -> Result<Vec<u8>, String> {
+    let want = file
+        .sha256
+        .as_deref()
+        .ok_or("GitHub lists no checksum for this release, so it is not installed")?;
+    let limit = (file.size as usize).saturating_add(1 << 20);
+    let (status, data) = imp::get(&file.url, "", limit, |done| {
+        progress(done as u64, file.size)
+    })?;
+    if status != 200 {
+        return Err(format!("the download failed: GitHub answered {status}"));
+    }
+    let have =
+        crate::filefacts::sha256_of(&data[..]).ok_or("its checksum could not be computed")?;
+    if have != want {
+        return Err("the download does not match its checksum; nothing was changed".into());
+    }
+    Ok(data)
+}
+
+/// Runs the release's installer over the installed copy `exe`. The
+/// installer runs elevated, so the file it reads is held against changes
+/// from the moment it is checked until the installer is done with it. The
+/// running program's file is moved aside first, as for a zip: the
+/// installer then finds nothing in use to close or to replace at the next
+/// restart of Windows.
+fn install_package(data: &[u8], want: &Option<String>, exe: &Path) -> Result<(), String> {
+    let path = std::env::temp_dir().join(format!("anabolic-update-{}.msi", crate::random_hex(8)));
+    let log = std::env::temp_dir().join("anabolic-update.log");
+    let written = |e: std::io::Error| format!("the installer could not be saved: {e}");
+    write_all(&path, data).map_err(written)?;
+    let result = (|| {
+        let held = imp::hold(&path).map_err(written)?;
+        let have =
+            crate::filefacts::sha256_of(&held).ok_or("its checksum could not be computed")?;
+        if Some(&have) != want.as_ref() {
+            return Err("the installer changed after it was checked; nothing was changed".into());
+        }
+        let old = aside(exe, "old");
+        let _ = std::fs::remove_file(&old);
+        rename_patiently(exe, &old).map_err(|e| {
+            format!(
+                "{} did not let Anabolic move {} aside: {e}",
+                imp::SYSTEM,
+                exe.display()
+            )
+        })?;
+        let ran = imp::run_package(&path, &log);
+        if ran.is_err() && !exe.exists() {
+            let _ = std::fs::rename(&old, exe);
+        }
+        drop(held);
+        ran
+    })();
+    let _ = std::fs::remove_file(&path);
+    if result.is_ok() {
+        let _ = std::fs::remove_file(&log);
+    }
+    result
 }
 
 /// Puts `data` in place of `exe`, running or not.

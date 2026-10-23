@@ -28,6 +28,25 @@ pub(super) fn busy(_: &std::io::Error) -> bool {
     false
 }
 
+/// There is no installer on Linux: every copy updates from the zip.
+pub(super) const PACKAGE: Option<&str> = None;
+
+pub(super) fn installed(_exe: &Path) -> bool {
+    false
+}
+
+pub(super) fn may_install_package() -> Result<(), String> {
+    Ok(())
+}
+
+pub(super) fn hold(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+pub(super) fn run_package(_package: &Path, _log: &Path) -> Result<(), String> {
+    Err("there is no installer on Linux".into())
+}
+
 pub(super) fn relaunch(exe: &Path, args: &[String]) -> Result<(), String> {
     Command::new(exe)
         .arg("--after")

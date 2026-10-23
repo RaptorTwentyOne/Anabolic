@@ -512,6 +512,9 @@ pub struct Settings {
     /// path.
     pub blocked: Vec<String>,
     pub updates: Updates,
+    /// The version that ran last: what changed since is shown once (see
+    /// `whats_new`). None from before there was this.
+    pub last_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -553,6 +556,7 @@ impl Default for Settings {
             game: Default::default(),
             blocked: Vec::new(),
             updates: Updates::default(),
+            last_version: None,
         }
     }
 }

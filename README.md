@@ -55,6 +55,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 - [Games and anti-cheat](#games-and-anti-cheat)
 - [Privacy](#privacy)
 - [Building from source](#building-from-source)
+- [Reusing the code](#reusing-the-code)
 - [License](#license)
 
 ## What it does
@@ -119,13 +120,17 @@ take lsass' place as what is not dumped unless allowed.
 
 ## Getting started
 
-Download the zip for your system from the
-[releases](https://github.com/RaptorTwentyOne/Anabolic/releases) page and
-unpack it anywhere: a single executable with nothing to install.
+Everything is on the
+[releases](https://github.com/RaptorTwentyOne/Anabolic/releases) page: for
+Windows an installer and a zip, for Linux a zip. A zip holds a single
+executable with nothing to install: unpack it anywhere.
 
 ### Windows
 
-Windows 10 or 11, x64. Run `anabolic.exe`.
+Windows 10 or 11, x64. The installer (`anabolic-…-windows-x64.msi`) puts
+Anabolic in Program Files and the Start menu, for every user of the PC;
+Settings → Apps removes it again, and leaves its settings and history (see
+[Privacy](#privacy)). From the zip, run `anabolic.exe` wherever you put it.
 
 On an administrator account Windows asks for elevation as it starts, and with
 it Anabolic sees everything: kernel traces, every process' details, disk
@@ -133,8 +138,9 @@ counters. On a standard account it runs without, shows what it can and says
 what is missing and why; Settings has **Restart as admin**.
 
 > [!NOTE]
-> Releases are not code-signed yet, so Windows SmartScreen may warn on first
-> run. Choose **More info** → **Run anyway**, or build it yourself.
+> Releases are not code-signed yet, so Windows SmartScreen may warn when the
+> installer or the program first runs. Choose **More info** → **Run anyway**,
+> or build it yourself.
 
 ### Linux
 
@@ -163,9 +169,29 @@ the old executable; it runs from the next start, or at once from the bar that
 says it is installed. An install that fails (a download that broke off, a
 virus scanner holding the file) is tried again after a minute, five and
 thirty. In Settings → Updates it can ask first instead, or not
-check at all. Copies built from source are left to their source. On Linux the
+check at all. Copies built from source are left to their source. The first
+time a new version starts, a small window says what changed since the one
+before, from [CHANGELOG.md](CHANGELOG.md), which Anabolic carries inside it.
+
+An installed copy updates through the new release's installer, without a
+window, so that Settings → Apps keeps showing the right version. Changing
+what is in Program Files takes an administrator, which Anabolic is whenever
+it runs on an administrator's account; on a standard account the bar says
+so, and the new installer can be run from the release page. On Linux the
 download goes through curl, and the new file has to be granted full access
 again: the rights belong to the file they were given to.
+
+### Starting when you sign in
+
+Settings → Window → **Start when I sign in** starts Anabolic in the
+notification area as you sign in, recording the history and applying your
+rules from the start. On an administrator's account it is a task in Task
+Scheduler (folder `Anabolic`) that starts it elevated without asking, which
+the installed copy offers: a program started elevated without asking has to
+be where only administrators can change it, and a zip's copy in Downloads is
+not. On a standard account it is the Run key; on Linux, an entry in
+`~/.config/autostart`. Removing Anabolic with Settings → Apps removes every
+user's task with it.
 
 ### Bringing it up from anywhere
 
@@ -301,6 +327,26 @@ system (process scans, kernel traces, handles, services, the history) and has
 no interface; `crates/anabolic` is the egui application and the MCP server.
 Each core module says what it means on every system; what reads it lives
 beside it, in `windows/` and `linux/`.
+
+`installer/` holds the Windows installer: `dotnet build installer
+-p:ProductVersion=x.y.z -p:BinDir=<folder with anabolic.exe and
+THIRD-PARTY-NOTICES.html>` makes `anabolic.msi` with WiX.
+
+## Reusing the code
+
+Open source is not the same as free for the taking. Anabolic's code is open
+so that it can be read, learned from and built on, and its license asks one
+thing in return: credit.
+
+- **Copying or adapting it**, a file or a part of one: keep the copyright
+  and license notice with it, and name Anabolic among your project's
+  notices. That is the whole of what the MIT license asks, and it is not
+  optional.
+- **Rewriting it** while working from it, by hand or by having a tool or an
+  AI assistant rewrite it, is still adapting it. Renamed variables and
+  reworded comments do not make it new code; the notice stays.
+- **Ideas** are free. Nobody owns a feature: if Anabolic gives you one,
+  write your own code for it, and a mention is welcome.
 
 ## License
 

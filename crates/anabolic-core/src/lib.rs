@@ -49,6 +49,7 @@ pub mod resolver;
 pub mod scan;
 pub mod sensors;
 pub mod services;
+pub mod signin;
 pub mod sockets;
 pub mod startup;
 pub mod sysinfo;

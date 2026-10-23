@@ -98,6 +98,42 @@ pub fn random_hex(bytes: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The signed-in user's SID ("S-1-5-21-..."); empty when it cannot be read.
+pub fn user_sid() -> String {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return String::new();
+        }
+        let token = OwnedHandle(token);
+        let mut buf = vec![0u64; 64];
+        let mut size = 0u32;
+        if GetTokenInformation(
+            token.raw(),
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            (buf.len() * 8) as u32,
+            &mut size,
+        )
+        .is_err()
+        {
+            return String::new();
+        }
+        let user = &*buf.as_ptr().cast::<TOKEN_USER>();
+        let mut text = windows::core::PWSTR::null();
+        if ConvertSidToStringSidW(user.User.Sid, &mut text).is_err() {
+            return String::new();
+        }
+        let sid = text.to_string().unwrap_or_default();
+        let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+        sid
+    }
+}
+
 #[cfg(test)]
 mod random_tests {
     #[test]

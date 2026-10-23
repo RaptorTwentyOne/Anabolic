@@ -33,6 +33,9 @@ mod platform;
 mod proc_table;
 mod rules;
 mod services_page;
+#[cfg(windows)]
+#[path = "windows/session.rs"]
+mod session;
 mod settings;
 #[cfg(debug_assertions)]
 mod shot;
@@ -45,6 +48,7 @@ mod theme;
 #[cfg_attr(target_os = "linux", path = "linux/tray.rs")]
 mod tray;
 mod tree;
+mod whats_new;
 mod widgets;
 #[cfg(target_os = "linux")]
 #[path = "linux/windowless.rs"]
@@ -57,6 +61,15 @@ fn main() -> eframe::Result {
     #[cfg(windows)]
     attach_parent_console();
     let args: Vec<String> = std::env::args().collect();
+    // The installer, as it removes Anabolic: every user's sign-in task
+    // goes with it. Nothing else starts.
+    if args.iter().any(|a| a == "--forget-sign-in") {
+        if let Err(e) = anabolic_core::signin::forget_everyone() {
+            eprintln!("anabolic: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     if let Some(install) = args.iter().find_map(|a| match a.as_str() {
         "--install" => Some(true),

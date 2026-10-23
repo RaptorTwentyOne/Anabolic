@@ -1,0 +1,26 @@
+<!--
+  The Windows installer, anabolic.msi. The release workflow builds it with
+
+    dotnet build installer -c Release -p:ProductVersion=0.3.0 -p:BinDir=<folder with anabolic.exe>
+
+  BinDir also holds THIRD-PARTY-NOTICES.html (cargo about generate). The
+  license files, README.md and PRIVACY.md come from the repository.
+-->
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputName>anabolic</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.0.0</ProductVersion>
+    <BinDir Condition="'$(BinDir)' == ''">..\target\release</BinDir>
+    <DefineConstants>Version=$(ProductVersion);BinDir=$(BinDir);Repo=..</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+  <!-- MSBuild knows the .wxs as the only input, not the files it packs:
+       a new anabolic.exe would leave the last build's installer standing. -->
+  <Target Name="PackAnew" BeforeTargets="CoreCompile">
+    <Delete Files="$(TargetPath);@(IntermediateAssembly)" />
+  </Target>
+</Project>

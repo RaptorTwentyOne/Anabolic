@@ -39,6 +39,7 @@ pub fn perform(action: Action) -> Option<Outcome> {
             perform(*action);
             return None;
         }
+        Action::SignIn(on) => return Some(crate::signin::perform(on)),
         Action::Firewall { path, block } => {
             let file = std::path::Path::new(&path)
                 .file_name()

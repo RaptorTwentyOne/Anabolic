@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Anabolic in Program Files, an entry in the Start menu, and one in
+  Settings > Apps that takes it away again. Settings, the history and
+  dumps stay where Anabolic keeps them (see PRIVACY.md): removing the
+  program does not remove what it recorded.
+
+  A newer release replaces an older one (MajorUpgrade); the running
+  Anabolic is closed first, unless it is the one updating itself: then it
+  has moved its file aside already (see anabolic_core::update) and passes
+  ANABOLIC_UPDATE=1.
+
+  Installed copies are per machine: Anabolic runs elevated, and what runs
+  elevated belongs where only administrators can change it.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Anabolic"
+           Manufacturer="Raptor 21"
+           Version="$(Version)"
+           UpgradeCode="4B2B1C31-4C85-4D52-AF35-B25C39C3953C"
+           Scope="perMachine"
+           Compressed="yes">
+    <SummaryInformation Description="Anabolic $(Version): performance monitoring and diagnostics" />
+    <!-- The new files go in first and the old release is taken away after:
+         the components stay the same from release to release, so nothing
+         of the new one is removed, and a running copy is never left with
+         its file gone. -->
+    <MajorUpgrade Schedule="afterInstallExecute"
+                  DowngradeErrorMessage="A newer version of Anabolic is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Never restart Windows, whoever runs it and however: a file still in
+         use (an Anabolic in another user's session, say) is then replaced
+         at the next restart the user makes, and msiexec says so with 3010.
+         Without this, a quiet install restarts the PC on its own. -->
+    <Property Id="REBOOT" Value="ReallySuppress" />
+
+    <Icon Id="anabolic.ico" SourceFile="$(Repo)\crates\anabolic\assets\logo\anabolic.ico" />
+    <Property Id="ARPPRODUCTICON" Value="anabolic.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/RaptorTwentyOne/Anabolic" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/RaptorTwentyOne/Anabolic/issues" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/RaptorTwentyOne/Anabolic/releases" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Anabolic">
+        <Component Id="Program">
+          <File Id="anabolic.exe" Source="$(BinDir)\anabolic.exe" KeyPath="yes" />
+          <!-- What an update leaves beside it until the next start. -->
+          <RemoveFile Id="UpdateLeftovers" Name="anabolic.exe.*" On="uninstall" />
+          <!-- How a copy knows it was installed, and so updates through
+               the installer. -->
+          <RegistryValue Root="HKLM" Key="Software\RaptorTwentyOne\Anabolic"
+                         Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
+          <File Source="$(Repo)\LICENSE-MIT" />
+          <File Source="$(Repo)\LICENSE-APACHE" />
+          <File Source="$(BinDir)\THIRD-PARTY-NOTICES.html" />
+          <File Source="$(Repo)\crates\anabolic\assets\fonts\OFL.txt" Name="OFL-Aldrich.txt" />
+          <File Source="$(Repo)\README.md" />
+          <File Source="$(Repo)\PRIVACY.md" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenu">
+        <Shortcut Id="StartMenuShortcut" Name="Anabolic"
+                  Description="Performance monitoring and diagnostics"
+                  Target="[INSTALLFOLDER]anabolic.exe" WorkingDirectory="INSTALLFOLDER" />
+        <!-- A shortcut cannot be a component's key; this value stands in. -->
+        <RegistryValue Root="HKCU" Key="Software\RaptorTwentyOne\Anabolic"
+                       Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="Program" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <!-- A running Anabolic, perhaps only in the notification area, holds
+         its file: asked to close, then ended after five seconds. Not when
+         it updates itself, and not in the old release's removal during an
+         upgrade (UPGRADINGPRODUCTCODE): the new release's install has
+         closed it already where it had to. -->
+    <util:CloseApplication Id="CloseAnabolic" Target="anabolic.exe"
+                           CloseMessage="yes" TerminateProcess="1" Timeout="5"
+                           RebootPrompt="no"
+                           Condition="NOT ANABOLIC_UPDATE AND NOT UPGRADINGPRODUCTCODE" />
+
+    <!-- Every user's "Start when I sign in" task goes with Anabolic (see
+         anabolic_core::signin), so none is left starting a file that is
+         gone; not when a newer release replaces this one. -->
+    <SetProperty Id="ForgetSignIn" Value="&quot;[INSTALLFOLDER]anabolic.exe&quot; --forget-sign-in"
+                 Before="ForgetSignIn" Sequence="execute" />
+    <CustomAction Id="ForgetSignIn" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="ForgetSignIn" Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <!-- Welcome, the folder, then installing: no license to accept, since
+         MIT and Apache-2.0 ask nothing of someone who only runs it. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="StartAnabolic"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+    <WixVariable Id="WixUIBannerBmp" Value="banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="dialog.bmp" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Start Anabolic" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#anabolic.exe]" />
+    <CustomAction Id="StartAnabolic" BinaryRef="Wix4UtilCA_X64" DllEntry="WixShellExec" Impersonate="yes" />
+  </Package>
+</Wix>

@@ -247,10 +247,15 @@ pub struct App {
     pending_stack: bool,
     /// The shortcuts and colours page (F1).
     help_open: bool,
+    /// What changed since the version that ran last: shown until closed.
+    whats_new: Vec<crate::whats_new::Release>,
     /// The notification area icon, while closing hides the window.
     tray: Option<crate::tray::Tray>,
     /// There is no notification area (no Explorer on this desktop).
     tray_failed: bool,
+    /// Whether Anabolic starts at sign-in; None until known, and while a
+    /// change is on its way.
+    sign_in: Option<anabolic_core::signin::SignIn>,
     /// `--tray`: started hidden, so the icon is needed this session.
     start_in_tray: bool,
     /// The window is closed into the notification area.
@@ -291,10 +296,20 @@ impl App {
         theme::apply(&cc.egui_ctx);
         #[cfg(target_os = "linux")]
         crate::windowless::attach(&cc.egui_ctx);
-        let mut settings: Settings = cc
+        #[cfg(windows)]
+        crate::session::watch(&cc.egui_ctx);
+        let stored: Option<Settings> = cc
             .storage
-            .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
-            .unwrap_or_default();
+            .and_then(|s| eframe::get_value(s, eframe::APP_KEY));
+        // A first start has nothing to compare with: everything is new.
+        let whats_new = match &stored {
+            Some(s) => {
+                crate::whats_new::since(s.last_version.as_deref(), env!("CARGO_PKG_VERSION"))
+            }
+            None => Vec::new(),
+        };
+        let mut settings = stored.unwrap_or_default();
+        settings.last_version = Some(env!("CARGO_PKG_VERSION").to_string());
         settings.sanitize();
         // Command line overrides apply to this session only; with any of them
         // present nothing is saved, so the stored preferences stay intact.
@@ -519,6 +534,7 @@ impl App {
         if !settings.blocked.is_empty() {
             actions.run(Action::QueryFirewall(settings.blocked.clone()));
         }
+        actions.run(Action::SignIn(None));
         let repaint = cc.egui_ctx.clone();
         let (inspector, inspections) = Inspector::start(move || crate::stalls::wake(&repaint));
         if let Some(query) = &find_query {
@@ -628,8 +644,10 @@ impl App {
             }),
             pending_stack: args.iter().any(|a| a == "--stack"),
             help_open: args.iter().any(|a| a == "--help-page"),
+            whats_new,
             tray: None,
             tray_failed: false,
+            sign_in: None,
             start_in_tray: args.iter().any(|a| a == "--tray"),
             hidden: args.iter().any(|a| a == "--tray"),
             quitting: false,
@@ -726,6 +744,12 @@ impl App {
                     }
                 }
                 Outcome::StillBlocked(paths) => self.settings.blocked = paths,
+                Outcome::SignIn { state, error } => {
+                    self.sign_in = Some(state);
+                    if let Some(e) = error {
+                        self.toasts.error(e);
+                    }
+                }
                 Outcome::PowerRestored(name) => {
                     self.settings.game.replaced_plan = None;
                     self.game_mode.note(match name {
@@ -1422,6 +1446,18 @@ impl eframe::App for App {
         }
         self.dialogs(&ctx);
         crate::help::show(&ctx, &mut self.help_open);
+        if !self.whats_new.is_empty() {
+            let mut all = false;
+            if !crate::whats_new::show(&ctx, &self.whats_new, &mut all) {
+                self.whats_new.clear();
+            }
+            if all {
+                self.actions.run(Action::OpenUrl(format!(
+                    "{}/releases",
+                    env!("CARGO_PKG_REPOSITORY")
+                )));
+            }
+        }
         let mut later = Vec::new();
         self.toasts.show(&ctx, &mut later);
         self.handle(later);
@@ -1448,6 +1484,8 @@ impl eframe::App for App {
         }
         // Stops the ETW session before the process goes away.
         self.collector.shutdown();
+        #[cfg(windows)]
+        crate::session::done();
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1475,6 +1513,14 @@ impl App {
                 Some(tray) if self.hidden => tray.notify("Anabolic rule", &alert, true),
                 _ => self.toasts.error(alert),
             }
+        }
+        // Windows signing out or shutting down: a real quit, from the
+        // notification area too.
+        #[cfg(windows)]
+        if crate::session::ending() && !self.quitting {
+            self.quitting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint();
         }
         self.tray_logic(ctx);
         self.hotkey_logic(ctx);

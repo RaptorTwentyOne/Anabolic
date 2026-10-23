@@ -3,3 +3,7 @@ target/
 
 # Generated for releases from about.hbs.
 THIRD-PARTY-NOTICES.html
+
+# dotnet build installer
+installer/bin/
+installer/obj/

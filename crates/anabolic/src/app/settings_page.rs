@@ -23,6 +23,17 @@ const HOTKEY_HINT: &str = "From any program, while Anabolic runs: in the notific
                            when it keeps running there. The desktop asks once whether Anabolic \
                            may have the key, and lets you pick another in its shortcut settings.";
 
+/// What the sign-in setting says it does.
+#[cfg(windows)]
+const SIGN_IN_HINT: &str = "Anabolic starts in the notification area as you sign in, so the \
+                            history and your rules run from the start. On an administrator's \
+                            account a task in Task Scheduler (folder Anabolic) starts it \
+                            elevated, without asking.";
+#[cfg(target_os = "linux")]
+const SIGN_IN_HINT: &str = "Anabolic starts in the notification area as you sign in, so the \
+                            history and your rules run from the start: an entry in \
+                            ~/.config/autostart, which every desktop reads.";
+
 /// A section: more room above the heading than below, and a hairline.
 pub(super) fn heading(ui: &mut Ui, title: &str) {
     ui.add_space(26.0);
@@ -136,6 +147,26 @@ impl App {
                 }
             },
         );
+        row(ui, "Start when I sign in", SIGN_IN_HINT, |ui| {
+            use anabolic_core::signin::SignIn;
+            match self.sign_in.clone() {
+                // Not known yet, or a change on its way.
+                None => {
+                    ui.add_enabled(false, egui::Checkbox::new(&mut false, ""));
+                }
+                Some(SignIn::Unavailable(why)) => {
+                    ui.add_enabled(false, egui::Checkbox::new(&mut false, ""));
+                    caution(ui, why);
+                }
+                Some(state) => {
+                    let mut on = state == SignIn::On;
+                    if ui.checkbox(&mut on, "").changed() {
+                        self.sign_in = None;
+                        self.actions.run(Action::SignIn(Some(on)));
+                    }
+                }
+            }
+        });
     }
 
     fn process_section(&mut self, ui: &mut Ui) {

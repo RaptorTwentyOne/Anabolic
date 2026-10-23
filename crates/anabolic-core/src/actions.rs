@@ -123,6 +123,9 @@ pub enum Action {
     },
     /// Which of these blocked programs still have their rules.
     QueryFirewall(Vec<String>),
+    /// Start Anabolic at sign-in (`Some(true)`), or no longer; `None` only
+    /// asks whether it does.
+    SignIn(Option<bool>),
     /// Drop one TCP connection (IPv4) of a process; it is not opened.
     CloseConnection {
         pid: u32,
@@ -182,6 +185,11 @@ pub enum Outcome {
     },
     /// Of the programs Anabolic blocked, those whose rules are still there.
     StillBlocked(Vec<String>),
+    /// Whether Anabolic starts at sign-in, and why setting it failed.
+    SignIn {
+        state: crate::signin::SignIn,
+        error: Option<String>,
+    },
 }
 
 pub struct ActionRunner {

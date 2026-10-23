@@ -11,6 +11,10 @@
 //! the old one steps aside as anabolic.exe.old, the new one takes its name,
 //! and the next start deletes the old one. The program goes on running from
 //! the renamed file until it restarts.
+//!
+//! A copy the installer put in Program Files steps aside the same way, and
+//! the release's installer (msiexec, without a window) puts the new one in
+//! its place.
 
 use std::path::Path;
 
@@ -20,6 +24,7 @@ use windows::Win32::Networking::WinHttp::{
     WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
     WinHttpSendRequest, WinHttpSetTimeouts,
 };
+use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{PCWSTR, w};
@@ -33,9 +38,100 @@ pub(super) const SYSTEM: &str = "Windows";
 pub(super) const EXECUTABLE: &str = "anabolic.exe";
 pub(super) const MAGIC: &[u8] = b"MZ";
 
+/// The release's installer, for copies it installed.
+pub(super) const PACKAGE: Option<&str> = Some("-windows-x64.msi");
+
 /// Any file runs on Windows.
 pub(super) fn make_runnable(_path: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Whether `exe` lies in the folder the installer put Anabolic in: the
+/// installer writes it down for this.
+pub(super) fn installed(exe: &Path) -> bool {
+    let mut buf = [0u16; 1024];
+    let mut size = (buf.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"Software\RaptorTwentyOne\Anabolic"),
+            w!("InstallFolder"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status.is_err() {
+        return false;
+    }
+    let folder = crate::util::from_wide(&buf);
+    let folder = folder.trim_end_matches('\\');
+    exe.parent()
+        .and_then(|dir| dir.to_str())
+        .is_some_and(|dir| dir.trim_end_matches('\\').eq_ignore_ascii_case(folder))
+}
+
+/// The installer puts Anabolic in Program Files, for every user of the PC:
+/// only an administrator may change it.
+pub(super) fn may_install_package() -> Result<(), String> {
+    if crate::hardening::is_elevated() {
+        Ok(())
+    } else {
+        Err(
+            "Anabolic is installed for every user of this PC, so only an administrator can \
+             update it: start Anabolic as administrator, or run the new release's installer"
+                .into(),
+        )
+    }
+}
+
+/// `path` open for reading, and while it is, for nobody else to write,
+/// rename or delete.
+pub(super) fn hold(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_SHARE_READ only.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(path)
+}
+
+/// Runs the installer at `package` without a window, as an update
+/// (ANABOLIC_UPDATE=1: it leaves the running Anabolic alone), and waits
+/// for it. Its log goes to `log`.
+pub(super) fn run_package(package: &Path, log: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let msiexec = std::env::var_os("SystemRoot")
+        .map_or_else(|| r"C:\Windows".into(), std::path::PathBuf::from)
+        .join(r"System32\msiexec.exe");
+    let status = std::process::Command::new(msiexec)
+        .arg("/i")
+        .arg(package)
+        .args(["/qn", "/norestart", "ANABOLIC_UPDATE=1", "/l*v"])
+        .arg(log)
+        // CREATE_NO_WINDOW
+        .creation_flags(0x0800_0000)
+        .status()
+        .map_err(|e| format!("the installer could not start: {e}"))?;
+    match status.code() {
+        // Done; done and Windows wants a restart (it does not, unless
+        // something else of ours was in use).
+        Some(0 | 3010) => Ok(()),
+        Some(1618) => {
+            Err("Windows is installing another program; it installs one at a time".into())
+        }
+        Some(code) => {
+            let why = crate::util::error_text(&windows::core::Error::from_hresult(
+                windows::core::HRESULT::from_win32(code as u32),
+            ));
+            Err(format!(
+                "the installer stopped: {why}. What it did is in {}",
+                log.display()
+            ))
+        }
+        None => Err("the installer stopped without an answer".into()),
+    }
 }
 
 /// A rename refused because another program has the file open (sharing or
@@ -301,6 +397,47 @@ mod tests {
         );
     }
 
+    /// The zip for every copy and the installer for installed ones, among
+    /// whatever else a release holds.
+    #[test]
+    fn finds_the_zip_and_the_installer() {
+        let asset = |name: &str, size: u64, digest: &str| {
+            format!(
+                r#"{{"name": "{name}", "browser_download_url": "https://example.invalid/{name}",
+                    "size": {size}, "digest": "sha256:{digest}"}}"#
+            )
+        };
+        let answer = |assets: &[String]| {
+            format!(
+                r#"{{"tag_name": "v0.3.0", "html_url": "https://example.invalid/v0.3.0",
+                    "assets": [{}]}}"#,
+                assets.join(",")
+            )
+        };
+        let all = answer(&[
+            asset("anabolic-v0.3.0-linux-x64.zip", 1, "AA"),
+            asset("anabolic-v0.3.0-windows-x64.msi", 2, "BB"),
+            asset("anabolic-v0.3.0-windows-x64.zip", 3, "CC"),
+        ]);
+        let release = from_answer(all.as_bytes(), "0.2.1").unwrap().unwrap();
+        assert_eq!(release.version, "0.3.0");
+        assert!(release.zip.url.ends_with("-windows-x64.zip"));
+        assert_eq!(
+            (release.zip.size, release.zip.sha256.as_deref()),
+            (3, Some("cc"))
+        );
+        let package = release.package.unwrap();
+        assert!(package.url.ends_with("-windows-x64.msi"));
+        assert_eq!((package.size, package.sha256.as_deref()), (2, Some("bb")));
+        assert!(from_answer(all.as_bytes(), "0.3.0").unwrap().is_none());
+        // A release from before the installer: the zip for every copy.
+        let zip_only = answer(&[asset("anabolic-v0.3.0-windows-x64.zip", 3, "CC")]);
+        let release = from_answer(zip_only.as_bytes(), "0.2.1").unwrap().unwrap();
+        assert!(release.package.is_none());
+        let none = answer(&[asset("anabolic-v0.3.0-windows-x64.msi", 2, "BB")]);
+        assert!(from_answer(none.as_bytes(), "0.2.1").is_err());
+    }
+
     #[test]
     fn refuses_damaged_zips() {
         let mut zip = zip_of(&[("pack/anabolic.exe", &[1u8; 3000], true)]);
@@ -378,7 +515,7 @@ mod tests {
     fn latest_release() {
         let release = check("0.0.1").unwrap().expect("a release");
         println!("{release:?}");
-        assert!(release.sha256.is_some());
+        assert!(release.zip.sha256.is_some());
         assert!(newer(&release.version, "0.0.1"));
         assert_eq!(check(&release.version).unwrap().map(|r| r.version), None);
     }
@@ -396,11 +533,61 @@ mod tests {
         let release = check("0.0.1").unwrap().expect("a release");
         let mut last = (0, 0);
         install(&release, &exe, |done, total| last = (done, total)).unwrap();
-        assert_eq!(last, (release.size, release.size));
+        assert_eq!(last, (release.zip.size, release.zip.size));
         let new = std::fs::read(&exe).unwrap();
         assert!(new.starts_with(b"MZ") && new.len() > 1 << 20);
         // Only the program: nothing else of ours lay beside it.
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An installer that does not match its checksum is never run, and
+    /// the program stays where it was.
+    #[test]
+    fn refuses_an_installer_that_does_not_match() {
+        let dir = std::env::temp_dir().join(format!("anabolic-package-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("anabolic.exe");
+        std::fs::write(&exe, b"MZ old").unwrap();
+        let want = Some("0".repeat(64));
+        let e = install_package(b"not the installer", &want, &exe).unwrap_err();
+        assert!(e.contains("changed after it was checked"), "{e}");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"MZ old");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Updates the installed copy in Program Files with an installer, as
+    /// an update does while it runs. Elevated, with Anabolic installed and
+    /// ANABOLIC_TEST_MSI naming a newer anabolic.msi:
+    /// `cargo test -p anabolic-core updates_an_installed_copy -- --ignored`.
+    #[test]
+    #[ignore]
+    fn updates_an_installed_copy() {
+        let msi = std::fs::read(std::env::var("ANABOLIC_TEST_MSI").unwrap()).unwrap();
+        let exe = std::path::PathBuf::from(std::env::var("ProgramFiles").unwrap())
+            .join(r"Anabolic\anabolic.exe");
+        assert!(installed(&exe), "not installed: {}", exe.display());
+        may_install_package().unwrap();
+        let before = std::fs::read(&exe).unwrap();
+        // Mapped as a running program's is.
+        let path = wide(&exe.to_string_lossy());
+        let module =
+            unsafe { LoadLibraryExW(PCWSTR(path.as_ptr()), None, DONT_RESOLVE_DLL_REFERENCES) }
+                .unwrap();
+        let sha = crate::filefacts::sha256_of(&msi[..]);
+        install_package(&msi, &sha, &exe).unwrap();
+        assert_ne!(std::fs::read(&exe).unwrap(), before);
+        assert_eq!(
+            std::fs::read(exe.with_extension("exe.old")).unwrap(),
+            before
+        );
+        assert!(installed(&exe));
+        unsafe {
+            let _ = FreeLibrary(module);
+        }
+        clean_up(&exe);
+        assert!(!exe.with_extension("exe.old").exists());
     }
 }
