@@ -17,10 +17,9 @@ use anabolic_core::startup::{StartupItem, StartupList};
 use anabolic_core::sysinfo::local_time;
 use anabolic_core::{ProcState, ProcessDetails, ProcessInfo, Snapshot};
 use eframe::egui::{self, Align, Label, Layout, RichText, Sense, Ui};
-use egui_extras::{Column, TableBuilder};
 
 use crate::proc_table::{UiCmd, item};
-use crate::table::{TableView, text_cmp};
+use crate::table::{Columns, Spec, TableView, text_cmp};
 use crate::{fmt, panes, theme, widgets};
 
 #[derive(Default)]
@@ -97,6 +96,26 @@ fn switch_note(i: &StartupItem) -> &'static str {
          turning it on again restores it."
     }
 }
+
+/// The list's columns, by number.
+const TITLES: [(&str, bool); 7] = [
+    ("Name", false),
+    ("Publisher", false),
+    ("Status", false),
+    ("Kind", false),
+    ("CPU %", true),
+    ("Memory", true),
+    ("Command", false),
+];
+const COLUMNS: [Spec; 7] = [
+    Spec::new(260.0).clip(),
+    Spec::new(170.0).clip(),
+    Spec::new(110.0),
+    Spec::new(170.0).clip(),
+    Spec::new(60.0),
+    Spec::new(80.0),
+    Spec::new(360.0).clip(),
+];
 
 const READING: &str = if cfg!(windows) {
     "Reading what starts with Windows…"
@@ -354,96 +373,94 @@ pub fn show(
     }
     let busy = page.busy;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("startup")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(260.0).clip(true))
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::initial(110.0))
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::initial(60.0))
-            .column(Column::initial(80.0))
-            .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for (n, (t, numeric)) in [
-                    ("Name", false),
-                    ("Publisher", false),
-                    ("Status", false),
-                    ("Kind", false),
-                    ("CPU %", true),
-                    ("Memory", true),
-                    ("Command", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, n, t, numeric);
+        Columns::load(ui.ctx(), "startup", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let i = rows[row.index()];
-                    let procs = procs(i);
-                    row.set_selected(selected.as_ref() == Some(&key(i)));
-                    row.col(|ui| {
-                        let mut text = RichText::new(title(i));
-                        if !i.enabled {
-                            text = text.color(theme::TEXT_WEAK);
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let i = rows[row.index()];
+                        let procs = procs(i);
+                        row.set_selected(selected.as_ref() == Some(&key(i)));
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    let mut text = RichText::new(title(i));
+                                    if !i.enabled {
+                                        text = text.color(theme::TEXT_WEAK);
+                                    }
+                                    ui.add(Label::new(text).truncate());
+                                }
+                                1 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(i.publisher.as_deref().unwrap_or(""))
+                                                .color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                2 => {
+                                    let (text, color) = status(i);
+                                    ui.label(RichText::new(text).color(color));
+                                }
+                                3 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(i.source.label()).color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                4 => {
+                                    if !procs.is_empty() {
+                                        right(ui, fmt::cpu(procs.iter().map(|p| p.cpu).sum()));
+                                    }
+                                }
+                                5 => {
+                                    if !procs.is_empty() {
+                                        right(
+                                            ui,
+                                            fmt::bytes(procs.iter().map(|p| p.private_bytes).sum()),
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(&i.command)
+                                                .small()
+                                                .color(theme::TEXT_DIM),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            });
                         }
-                        ui.add(Label::new(text).truncate());
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(
-                                RichText::new(i.publisher.as_deref().unwrap_or(""))
-                                    .color(theme::TEXT_WEAK),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        let (text, color) = status(i);
-                        ui.label(RichText::new(text).color(color));
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(i.source.label()).color(theme::TEXT_WEAK))
-                                .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        if !procs.is_empty() {
-                            right(ui, fmt::cpu(procs.iter().map(|p| p.cpu).sum()));
+                        let response = row.response();
+                        if response.clicked() {
+                            page.selected = if selected.as_ref() == Some(&key(i)) {
+                                None
+                            } else {
+                                Some(key(i))
+                            };
                         }
+                        widgets::row_menu(&response, "startup", key(i), |ui| {
+                            startup_menu(ui, i, &procs, busy, out)
+                        });
                     });
-                    row.col(|ui| {
-                        if !procs.is_empty() {
-                            right(ui, fmt::bytes(procs.iter().map(|p| p.private_bytes).sum()));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(&i.command).small().color(theme::TEXT_DIM))
-                                .truncate(),
-                        );
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        page.selected = if selected.as_ref() == Some(&key(i)) {
-                            None
-                        } else {
-                            Some(key(i))
-                        };
-                    }
-                    response.context_menu(|ui| startup_menu(ui, i, &procs, busy, out));
-                });
-            });
+                })
+        });
     });
 }
 

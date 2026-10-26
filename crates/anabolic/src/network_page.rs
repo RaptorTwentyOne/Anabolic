@@ -18,15 +18,17 @@ use anabolic_core::nettrace::Proto;
 use anabolic_core::sockets::TcpState;
 use anabolic_core::{Connection, Listener, NetActivity, ProcKey, ProcState, ProcessInfo, Snapshot};
 use eframe::egui::{self, Align, Color32, Label, Layout, RichText, Sense, Ui};
-use egui_extras::{Column, TableBuilder};
 
 use crate::graph::Graph;
 use crate::netnames::{Name, Names};
 use crate::panes::{ConnRow, connection_menu, connection_pane, port_service, remote_text};
 use crate::proc_table::{UiCmd, item};
-use crate::table::{TableView, text_cmp};
+use crate::table::{Columns, Spec, TableView, text_cmp};
 use crate::tree::Details;
 use crate::{fmt, theme, widgets};
+
+mod dev;
+pub(crate) use dev::{DevPort, dev_ports};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum NetTab {
@@ -34,6 +36,8 @@ pub enum NetTab {
     Programs,
     Connections,
     Listening,
+    /// Dev servers, databases, debuggers, and the watched ports.
+    Development,
     Destinations,
     /// The names programs looked up.
     Lookups,
@@ -61,6 +65,10 @@ pub struct NetworkPage {
     /// Also list open connections that carried nothing while Anabolic
     /// watched.
     pub quiet: bool,
+    development: TableView,
+    /// A port being typed in to watch, and its name.
+    add_port: String,
+    add_name: String,
 }
 
 impl Default for NetworkPage {
@@ -78,6 +86,9 @@ impl Default for NetworkPage {
             program: None,
             connection: None,
             quiet: true,
+            development: TableView::sorted(0, false),
+            add_port: String::new(),
+            add_name: String::new(),
         }
     }
 }
@@ -298,6 +309,7 @@ fn header(ui: &mut Ui, snap: &Snapshot, activity: &NetActivity, page: &mut Netwo
             (NetTab::Programs, "Programs"),
             (NetTab::Connections, "Connections"),
             (NetTab::Listening, "Listening"),
+            (NetTab::Development, "Development ports"),
             (NetTab::Destinations, "Destinations"),
             (NetTab::Lookups, "DNS"),
         ] {
@@ -334,6 +346,7 @@ pub fn show(
     details: &Details,
     names: &mut Names,
     blocked: &[String],
+    watched: &[crate::settings::PortWatch],
     out: &mut Vec<UiCmd>,
 ) {
     let Some(activity) = snap.system.net_activity.clone() else {
@@ -384,7 +397,10 @@ pub fn show(
                 page.connection = if selected == Some(c) { None } else { Some(c) };
             }
         }
-        NetTab::Listening => listening_tab(ui, page, snap, &activity, &path_of, blocked, out),
+        NetTab::Listening => {
+            listening_tab(ui, page, snap, &activity, &path_of, blocked, watched, out)
+        }
+        NetTab::Development => dev::development_tab(ui, page, snap, &activity, watched, out),
         NetTab::Destinations => destinations_tab(ui, page, snap, &activity, names),
         NetTab::Lookups => lookups_tab(ui, page, snap, out),
     }
@@ -511,116 +527,125 @@ fn programs_tab(
     let mut pick = None;
     let view = &mut page.programs;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("net-programs")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(200.0).clip(true))
-            .column(Column::initial(64.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(96.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(76.0))
-            .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Program", false),
-                    ("PID", true),
-                    ("Total", true),
-                    ("Receive", true),
-                    ("Send", true),
-                    ("Received", true),
-                    ("Sent", true),
-                    ("Connections", true),
-                    ("Listening", true),
-                    ("Lookups", true),
-                    ("Talks most to", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 11] = [
+            ("Program", false),
+            ("PID", true),
+            ("Total", true),
+            ("Receive", true),
+            ("Send", true),
+            ("Received", true),
+            ("Sent", true),
+            ("Connections", true),
+            ("Listening", true),
+            ("Lookups", true),
+            ("Talks most to", false),
+        ];
+        const COLUMNS: [Spec; 11] = [
+            Spec::new(200.0).clip(),
+            Spec::new(64.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(96.0),
+            Spec::new(80.0),
+            Spec::new(76.0),
+            Spec::new(240.0).clip(),
+        ];
+        Columns::load(ui.ctx(), "net-programs", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let (p, top) = &rows[row.index()];
-                    row.set_selected(chosen == Some(p.pid));
-                    let quiet = p.rx + p.tx == 0.0;
-                    let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
-                    row.col(|ui| {
-                        ui.add(Label::new(RichText::new(&*p.name).color(color)).truncate());
-                    });
-                    row.col(|ui| {
-                        right(ui, RichText::new(p.pid.to_string()).color(theme::TEXT_WEAK))
-                    });
-                    row.col(|ui| rate_cell(ui, p.rx + p.tx, color));
-                    row.col(|ui| rate_cell(ui, p.rx, theme::NET_RX));
-                    row.col(|ui| rate_cell(ui, p.tx, theme::NET_TX));
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(p.rx_total)).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(p.tx_total)).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| {
-                        if p.open > 0 {
-                            right(ui, p.open.to_string());
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let (p, top) = &rows[row.index()];
+                        row.set_selected(chosen == Some(p.pid));
+                        let quiet = p.rx + p.tx == 0.0;
+                        let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    ui.add(
+                                        Label::new(RichText::new(&*p.name).color(color)).truncate(),
+                                    );
+                                }
+                                1 => right(
+                                    ui,
+                                    RichText::new(p.pid.to_string()).color(theme::TEXT_WEAK),
+                                ),
+                                2 => rate_cell(ui, p.rx + p.tx, color),
+                                3 => rate_cell(ui, p.rx, theme::NET_RX),
+                                4 => rate_cell(ui, p.tx, theme::NET_TX),
+                                5 => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(p.rx_total)).color(theme::TEXT_WEAK),
+                                ),
+                                6 => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(p.tx_total)).color(theme::TEXT_WEAK),
+                                ),
+                                7 => {
+                                    if p.open > 0 {
+                                        right(ui, p.open.to_string());
+                                    }
+                                }
+                                8 => {
+                                    if p.listening > 0 {
+                                        right(
+                                            ui,
+                                            RichText::new(p.listening.to_string())
+                                                .color(theme::TEXT_WEAK),
+                                        );
+                                    }
+                                }
+                                9 => {
+                                    if p.lookups > 0 {
+                                        right(
+                                            ui,
+                                            RichText::new(p.lookups.to_string())
+                                                .color(theme::TEXT_WEAK),
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    ui.add(
+                                        Label::new(RichText::new(top).color(theme::TEXT_WEAK))
+                                            .truncate(),
+                                    );
+                                }
+                            });
                         }
-                    });
-                    row.col(|ui| {
-                        if p.listening > 0 {
-                            right(
-                                ui,
-                                RichText::new(p.listening.to_string()).color(theme::TEXT_WEAK),
-                            );
+                        let response = row.response();
+                        if response.clicked() {
+                            pick = Some(p.pid);
                         }
+                        widgets::row_menu(&response, "net-programs", p.pid, |ui| {
+                            if let Some(key) = p.key {
+                                item(ui, out, "Go to process", "", UiCmd::GoTo(key));
+                            }
+                            let path = p
+                                .key
+                                .and_then(|k| details.get(&k))
+                                .and_then(|d| d.path.clone());
+                            if let Some(path) = path {
+                                block_item(ui, &p.name, &path, blocked, out);
+                            }
+                            item(ui, out, "Copy name", "", UiCmd::Copy(p.name.to_string()));
+                        });
                     });
-                    row.col(|ui| {
-                        if p.lookups > 0 {
-                            right(
-                                ui,
-                                RichText::new(p.lookups.to_string()).color(theme::TEXT_WEAK),
-                            );
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.add(Label::new(RichText::new(top).color(theme::TEXT_WEAK)).truncate());
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        pick = Some(p.pid);
-                    }
-                    response.context_menu(|ui| {
-                        if let Some(key) = p.key {
-                            item(ui, out, "Go to process", "", UiCmd::GoTo(key));
-                        }
-                        let path = p
-                            .key
-                            .and_then(|k| details.get(&k))
-                            .and_then(|d| d.path.clone());
-                        if let Some(path) = path {
-                            block_item(ui, &p.name, &path, blocked, out);
-                        }
-                        item(ui, out, "Copy name", "", UiCmd::Copy(p.name.to_string()));
-                    });
-                });
-            });
+                })
+        });
     });
     if let Some(pid) = pick {
         page.program = if chosen == Some(pid) { None } else { Some(pid) };
@@ -661,7 +686,7 @@ fn block_item(ui: &mut Ui, name: &Arc<str>, path: &str, blocked: &[String], out:
 #[allow(clippy::too_many_arguments)]
 fn connections_table(
     ui: &mut Ui,
-    salt: &str,
+    salt: &'static str,
     list: &[&Connection],
     with_program: bool,
     view: &mut TableView,
@@ -751,154 +776,170 @@ fn connections_table(
     }
     let mut clicked = None;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        let mut table = TableBuilder::new(ui)
-            .id_salt(salt)
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center));
-        table = table.column(if with_program {
-            Column::initial(170.0).clip(true)
-        } else {
-            Column::exact(0.0)
+        const TITLES: [(&str, bool); 11] = [
+            ("Program", false),
+            ("Proto", false),
+            ("State", false),
+            ("Remote", false),
+            ("Name", false),
+            ("Local port", true),
+            ("Receive", true),
+            ("Send", true),
+            ("Received", true),
+            ("Sent", true),
+            ("Idle", true),
+        ];
+        const COLUMNS: [Spec; 11] = [
+            Spec::new(170.0).clip(),
+            Spec::new(46.0),
+            Spec::new(110.0).clip(),
+            Spec::new(220.0).clip(),
+            Spec::new(220.0).clip(),
+            Spec::new(72.0),
+            Spec::new(84.0),
+            Spec::new(84.0),
+            Spec::new(84.0),
+            Spec::new(84.0),
+            Spec::new(70.0),
+        ];
+        let mut columns = Columns::load(ui.ctx(), salt, &COLUMNS);
+        if !with_program {
+            columns = columns.without(0);
+        }
+        columns.show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
+                    });
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let (c, program, name, name_color) = &rows[row.index()];
+                        let c = *c;
+                        row.set_selected(selected == Some(id(c)));
+                        let quiet = c.rx_rate + c.tx_rate == 0.0;
+                        let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
+                        for &column in columns.order() {
+                            row.col(|ui| match column {
+                                0 => {
+                                    if with_program {
+                                        ui.add(
+                                            Label::new(RichText::new(&**program).color(color))
+                                                .truncate(),
+                                        );
+                                    }
+                                }
+                                1 => {
+                                    ui.label(
+                                        RichText::new(format!("{:?}", c.proto).to_uppercase())
+                                            .color(theme::TEXT_WEAK),
+                                    );
+                                }
+                                2 => {
+                                    let (text, color) = state_text(c);
+                                    ui.add(Label::new(RichText::new(text).color(color)).truncate());
+                                }
+                                3 => {
+                                    let response = ui.add(
+                                        Label::new(
+                                            RichText::new(remote_text(c)).monospace().color(color),
+                                        )
+                                        .truncate(),
+                                    );
+                                    if let Some(service) = port_service(c.proto, c.remote_port) {
+                                        response.on_hover_text(format!(
+                                            "Port {}: usually {service}",
+                                            c.remote_port
+                                        ));
+                                    }
+                                }
+                                4 => {
+                                    ui.add(
+                                        Label::new(RichText::new(name.as_str()).color(*name_color))
+                                            .truncate(),
+                                    );
+                                }
+                                5 => right(
+                                    ui,
+                                    RichText::new(c.local_port.to_string()).color(theme::TEXT_WEAK),
+                                ),
+                                6 => rate_cell(ui, c.rx_rate, theme::NET_RX),
+                                7 => rate_cell(ui, c.tx_rate, theme::NET_TX),
+                                8 => {
+                                    if c.traffic {
+                                        right(
+                                            ui,
+                                            RichText::new(fmt::bytes(c.rx_total))
+                                                .color(theme::TEXT_WEAK),
+                                        );
+                                    }
+                                }
+                                9 => {
+                                    if c.traffic {
+                                        right(
+                                            ui,
+                                            RichText::new(fmt::bytes(c.tx_total))
+                                                .color(theme::TEXT_WEAK),
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    let idle = if !c.traffic {
+                                        "quiet".to_string()
+                                    } else if c.idle == 0 {
+                                        String::new()
+                                    } else {
+                                        format!("{} s", c.idle)
+                                    };
+                                    right(ui, RichText::new(idle).color(theme::TEXT_DIM));
+                                }
+                            });
+                        }
+                        let response = row.response();
+                        if response.clicked() {
+                            clicked = Some(id(c));
+                        }
+                        widgets::row_menu(&response, salt, id(c), |ui| {
+                            let path = path_of(c.pid);
+                            if let Some(p) = process(snap, c.pid) {
+                                item(ui, out, "Go to process", "", UiCmd::GoTo(p.key));
+                                ui.separator();
+                                let r = ConnRow {
+                                    c,
+                                    name,
+                                    p,
+                                    path: path.as_deref(),
+                                    blocked: path.as_deref().is_some_and(|p| {
+                                        blocked.iter().any(|b| b.eq_ignore_ascii_case(p))
+                                    }),
+                                };
+                                connection_menu(ui, &r, out);
+                            }
+                        });
+                    });
+                })
         });
-        table = table
-            .column(Column::initial(46.0))
-            .column(Column::initial(110.0).clip(true))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::initial(72.0))
-            .column(Column::initial(84.0))
-            .column(Column::initial(84.0))
-            .column(Column::initial(84.0))
-            .column(Column::initial(84.0))
-            .column(Column::remainder());
-        table
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    (if with_program { "Program" } else { "" }, false),
-                    ("Proto", false),
-                    ("State", false),
-                    ("Remote", false),
-                    ("Name", false),
-                    ("Local port", true),
-                    ("Receive", true),
-                    ("Send", true),
-                    ("Received", true),
-                    ("Sent", true),
-                    ("Idle", true),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        if !t.is_empty() {
-                            view.header(ui, i, t, numeric);
-                        }
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let (c, program, name, name_color) = &rows[row.index()];
-                    let c = *c;
-                    row.set_selected(selected == Some(id(c)));
-                    let quiet = c.rx_rate + c.tx_rate == 0.0;
-                    let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
-                    row.col(|ui| {
-                        if with_program {
-                            ui.add(Label::new(RichText::new(&**program).color(color)).truncate());
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            RichText::new(format!("{:?}", c.proto).to_uppercase())
-                                .color(theme::TEXT_WEAK),
-                        );
-                    });
-                    row.col(|ui| {
-                        let (text, color) = state_text(c);
-                        ui.add(Label::new(RichText::new(text).color(color)).truncate());
-                    });
-                    row.col(|ui| {
-                        let response = ui.add(
-                            Label::new(RichText::new(remote_text(c)).monospace().color(color))
-                                .truncate(),
-                        );
-                        if let Some(service) = port_service(c.proto, c.remote_port) {
-                            response.on_hover_text(format!(
-                                "Port {}: usually {service}",
-                                c.remote_port
-                            ));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(name.as_str()).color(*name_color)).truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(c.local_port.to_string()).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| rate_cell(ui, c.rx_rate, theme::NET_RX));
-                    row.col(|ui| rate_cell(ui, c.tx_rate, theme::NET_TX));
-                    row.col(|ui| {
-                        if c.traffic {
-                            right(
-                                ui,
-                                RichText::new(fmt::bytes(c.rx_total)).color(theme::TEXT_WEAK),
-                            );
-                        }
-                    });
-                    row.col(|ui| {
-                        if c.traffic {
-                            right(
-                                ui,
-                                RichText::new(fmt::bytes(c.tx_total)).color(theme::TEXT_WEAK),
-                            );
-                        }
-                    });
-                    row.col(|ui| {
-                        let idle = if !c.traffic {
-                            "quiet".to_string()
-                        } else if c.idle == 0 {
-                            String::new()
-                        } else {
-                            format!("{} s", c.idle)
-                        };
-                        right(ui, RichText::new(idle).color(theme::TEXT_DIM));
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        clicked = Some(id(c));
-                    }
-                    response.context_menu(|ui| {
-                        let path = path_of(c.pid);
-                        if let Some(p) = process(snap, c.pid) {
-                            item(ui, out, "Go to process", "", UiCmd::GoTo(p.key));
-                            ui.separator();
-                            let r = ConnRow {
-                                c,
-                                name,
-                                p,
-                                path: path.as_deref(),
-                                blocked: path.as_deref().is_some_and(|p| {
-                                    blocked.iter().any(|b| b.eq_ignore_ascii_case(p))
-                                }),
-                            };
-                            connection_menu(ui, &r, out);
-                        }
-                    });
-                });
-            });
     });
     clicked
 }
 
+/// What a port is usually for: its service, or the development tool that
+/// listens on it.
+fn usually(l: &Listener, program: &str) -> &'static str {
+    port_service(l.proto, l.port)
+        .or_else(|| crate::devports::tool(l.port, program))
+        .unwrap_or("")
+}
+
+#[allow(clippy::too_many_arguments)]
 fn listening_tab(
     ui: &mut Ui,
     page: &mut NetworkPage,
@@ -906,6 +947,7 @@ fn listening_tab(
     activity: &NetActivity,
     path_of: &dyn Fn(u32) -> Option<String>,
     blocked: &[String],
+    watched: &[crate::settings::PortWatch],
     out: &mut Vec<UiCmd>,
 ) {
     let view = &mut page.listening;
@@ -921,7 +963,7 @@ fn listening_tab(
                 &proto_of(l),
                 &l.local.to_string(),
                 &l.port.to_string(),
-                port_service(l.proto, l.port).unwrap_or(""),
+                usually(l, name),
                 open_to(l).0,
             ])
         })
@@ -935,9 +977,10 @@ fn listening_tab(
         2 => proto_of(a).cmp(&proto_of(b)),
         3 => a.local.cmp(&b.local),
         4 => a.port.cmp(&b.port).then(proto_of(a).cmp(&proto_of(b))),
-        5 => port_service(a.proto, a.port)
-            .unwrap_or("~")
-            .cmp(port_service(b.proto, b.port).unwrap_or("~")),
+        5 => {
+            let (x, y) = (usually(a, an), usually(b, bn));
+            (x.is_empty(), x).cmp(&(y.is_empty(), y))
+        }
         _ => open_to(a).0.cmp(open_to(b).0),
     });
     let tcp = activity
@@ -966,90 +1009,126 @@ fn listening_tab(
         );
     });
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("net-listening")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(200.0).clip(true))
-            .column(Column::initial(64.0))
-            .column(Column::initial(50.0))
-            .column(Column::initial(240.0).clip(true))
-            .column(Column::initial(70.0))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::remainder())
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Program", false),
-                    ("PID", true),
-                    ("Proto", false),
-                    ("Address", false),
-                    ("Port", true),
-                    ("Usually", false),
-                    ("Open to", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 7] = [
+            ("Program", false),
+            ("PID", true),
+            ("Proto", false),
+            ("Address", false),
+            ("Port", true),
+            ("Usually", false),
+            ("Open to", false),
+        ];
+        const COLUMNS: [Spec; 7] = [
+            Spec::new(200.0).clip(),
+            Spec::new(64.0),
+            Spec::new(50.0),
+            Spec::new(240.0).clip(),
+            Spec::new(70.0),
+            Spec::new(220.0).clip(),
+            Spec::new(160.0),
+        ];
+        Columns::load(ui.ctx(), "net-listening", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let (l, name) = &rows[row.index()];
-                    row.col(|ui| {
-                        ui.add(Label::new(&**name).truncate());
-                    });
-                    row.col(|ui| {
-                        right(ui, RichText::new(l.pid.to_string()).color(theme::TEXT_WEAK))
-                    });
-                    row.col(|ui| {
-                        ui.label(RichText::new(proto_of(l)).color(theme::TEXT_WEAK));
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(
-                                RichText::new(l.local.to_string())
-                                    .monospace()
-                                    .color(theme::TEXT_WEAK),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    row.col(|ui| right(ui, l.port.to_string()));
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(
-                                RichText::new(port_service(l.proto, l.port).unwrap_or(""))
-                                    .color(theme::TEXT_WEAK),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        let (text, color) = open_to(l);
-                        ui.label(RichText::new(text).color(color));
-                    });
-                    row.response().context_menu(|ui| {
-                        if let Some(p) = process(snap, l.pid) {
-                            item(ui, out, "Go to process", "", UiCmd::GoTo(p.key));
-                            if let Some(path) = path_of(l.pid) {
-                                block_item(ui, &p.name, &path, blocked, out);
-                            }
-                            ui.separator();
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let (l, name) = &rows[row.index()];
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    ui.add(Label::new(&**name).truncate());
+                                }
+                                1 => right(
+                                    ui,
+                                    RichText::new(l.pid.to_string()).color(theme::TEXT_WEAK),
+                                ),
+                                2 => {
+                                    ui.label(RichText::new(proto_of(l)).color(theme::TEXT_WEAK));
+                                }
+                                3 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(l.local.to_string())
+                                                .monospace()
+                                                .color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                4 => right(ui, l.port.to_string()),
+                                5 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(usually(l, name)).color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                _ => {
+                                    let (text, color) = open_to(l);
+                                    ui.label(RichText::new(text).color(color));
+                                }
+                            });
                         }
-                        let address = match l.local {
-                            IpAddr::V6(v6) => format!("[{v6}]:{}", l.port),
-                            v4 => format!("{v4}:{}", l.port),
-                        };
-                        item(ui, out, "Copy address", "", UiCmd::Copy(address));
+                        let what = (proto_of(l), l.local, l.port, l.pid);
+                        widgets::row_menu(&row.response(), "net-listening", what, |ui| {
+                            if let Some(p) = process(snap, l.pid) {
+                                item(ui, out, "Go to process", "", UiCmd::GoTo(p.key));
+                                item(
+                                    ui,
+                                    out,
+                                    &format!("Free port {}\u{2026}", l.port),
+                                    "",
+                                    UiCmd::FreePort {
+                                        port: l.port,
+                                        pid: l.pid,
+                                    },
+                                );
+                                if let Some(path) = path_of(l.pid) {
+                                    block_item(ui, &p.name, &path, blocked, out);
+                                }
+                                ui.separator();
+                            }
+                            if watched.iter().any(|w| w.port == l.port) {
+                                item(
+                                    ui,
+                                    out,
+                                    "Stop watching this port",
+                                    "",
+                                    UiCmd::UnwatchPort(l.port),
+                                );
+                            } else {
+                                item(
+                                    ui,
+                                    out,
+                                    "Watch this port",
+                                    "",
+                                    UiCmd::WatchPort(crate::settings::PortWatch {
+                                        port: l.port,
+                                        name: String::new(),
+                                    }),
+                                );
+                            }
+                            let address = match l.local {
+                                IpAddr::V6(v6) => format!("[{v6}]:{}", l.port),
+                                v4 => format!("{v4}:{}", l.port),
+                            };
+                            item(ui, out, "Copy address", "", UiCmd::Copy(address));
+                        });
                     });
-                });
-            });
+                })
+        });
     });
 }
 
@@ -1150,93 +1229,94 @@ fn destinations_tab(
     });
     let mut open = None;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("net-destinations")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(300.0).clip(true))
-            .column(Column::initial(240.0).clip(true))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::remainder())
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Destination", false),
-                    ("Programs", false),
-                    ("Connections", true),
-                    ("Receive", true),
-                    ("Total", true),
-                    ("Send", true),
-                    ("Received", true),
-                    ("Sent", true),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 8] = [
+            ("Destination", false),
+            ("Programs", false),
+            ("Connections", true),
+            ("Receive", true),
+            ("Total", true),
+            ("Send", true),
+            ("Received", true),
+            ("Sent", true),
+        ];
+        const COLUMNS: [Spec; 8] = [
+            Spec::new(300.0).clip(),
+            Spec::new(240.0).clip(),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+        ];
+        Columns::load(ui.ctx(), "net-destinations", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let d = &rows[row.index()];
-                    let quiet = d.rx + d.tx == 0.0;
-                    let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
-                    row.col(|ui| {
-                        let response =
-                            ui.add(Label::new(RichText::new(&d.host).color(color)).truncate());
-                        if d.addresses.len() > 1 {
-                            let mut list: Vec<String> =
-                                d.addresses.iter().map(|a| a.to_string()).collect();
-                            list.sort();
-                            response.on_hover_text(list.join("\n"));
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let d = &rows[row.index()];
+                        let quiet = d.rx + d.tx == 0.0;
+                        let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    let response = ui.add(
+                                        Label::new(RichText::new(&d.host).color(color)).truncate(),
+                                    );
+                                    if d.addresses.len() > 1 {
+                                        let mut list: Vec<String> =
+                                            d.addresses.iter().map(|a| a.to_string()).collect();
+                                        list.sort();
+                                        response.on_hover_text(list.join("\n"));
+                                    }
+                                }
+                                1 => {
+                                    let programs = d
+                                        .programs
+                                        .iter()
+                                        .map(|p| &**p)
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    ui.add(
+                                        Label::new(RichText::new(programs).color(theme::TEXT_WEAK))
+                                            .truncate(),
+                                    );
+                                }
+                                2 => right(ui, d.connections.to_string()),
+                                3 => rate_cell(ui, d.rx, theme::NET_RX),
+                                4 => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(d.rx_total + d.tx_total))
+                                        .color(theme::TEXT_WEAK),
+                                ),
+                                5 => rate_cell(ui, d.tx, theme::NET_TX),
+                                6 => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(d.rx_total)).color(theme::TEXT_WEAK),
+                                ),
+                                _ => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(d.tx_total)).color(theme::TEXT_WEAK),
+                                ),
+                            });
+                        }
+                        if row.response().clicked() {
+                            open = Some(d.host.clone());
                         }
                     });
-                    row.col(|ui| {
-                        let programs = d
-                            .programs
-                            .iter()
-                            .map(|p| &**p)
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        ui.add(
-                            Label::new(RichText::new(programs).color(theme::TEXT_WEAK)).truncate(),
-                        );
-                    });
-                    row.col(|ui| right(ui, d.connections.to_string()));
-                    row.col(|ui| rate_cell(ui, d.rx, theme::NET_RX));
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(d.rx_total + d.tx_total))
-                                .color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| rate_cell(ui, d.tx, theme::NET_TX));
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(d.rx_total)).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(d.tx_total)).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    if row.response().clicked() {
-                        open = Some(d.host.clone());
-                    }
-                });
-            });
+                })
+        });
     });
     // A destination opens the connections to it.
     if let Some(host) = open {
@@ -1316,90 +1396,101 @@ fn lookups_tab(ui: &mut Ui, page: &mut NetworkPage, snap: &Snapshot, out: &mut V
         );
     });
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("net-lookups")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(76.0))
-            .column(Column::initial(180.0).clip(true))
-            .column(Column::initial(320.0).clip(true))
-            .column(Column::initial(60.0))
-            .column(Column::initial(110.0))
-            .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Time", false),
-                    ("Program", false),
-                    ("Name", false),
-                    ("Type", false),
-                    ("Result", false),
-                    ("Answer", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 6] = [
+            ("Time", false),
+            ("Program", false),
+            ("Name", false),
+            ("Type", false),
+            ("Result", false),
+            ("Answer", false),
+        ];
+        const COLUMNS: [Spec; 6] = [
+            Spec::new(76.0),
+            Spec::new(180.0).clip(),
+            Spec::new(320.0).clip(),
+            Spec::new(60.0),
+            Spec::new(110.0),
+            Spec::new(300.0).clip(),
+        ];
+        Columns::load(ui.ctx(), "net-lookups", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let (_, l, program) = &rows[row.index()];
-                    let failed = l.status != 0;
-                    row.col(|ui| {
-                        ui.label(RichText::new(fmt::clock(l.at, false)).color(theme::TEXT_WEAK));
-                    });
-                    row.col(|ui| {
-                        ui.add(Label::new(&**program).truncate());
-                    });
-                    row.col(|ui| {
-                        let response = ui.add(Label::new(&*l.name).truncate());
-                        if !l.aliases.is_empty() {
-                            response.on_hover_text(format!(
-                                "{} is an alias of {}",
-                                l.name,
-                                l.aliases.join(" → ")
-                            ));
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let (_, l, program) = &rows[row.index()];
+                        let failed = l.status != 0;
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    ui.label(
+                                        RichText::new(fmt::clock(l.at, false))
+                                            .color(theme::TEXT_WEAK),
+                                    );
+                                }
+                                1 => {
+                                    ui.add(Label::new(&**program).truncate());
+                                }
+                                2 => {
+                                    let response = ui.add(Label::new(&*l.name).truncate());
+                                    if !l.aliases.is_empty() {
+                                        response.on_hover_text(format!(
+                                            "{} is an alias of {}",
+                                            l.name,
+                                            l.aliases.join(" → ")
+                                        ));
+                                    }
+                                }
+                                3 => {
+                                    ui.label(RichText::new(l.kind_label()).color(theme::TEXT_WEAK));
+                                }
+                                4 => {
+                                    let color = if failed {
+                                        theme::ELEVATED_TEXT
+                                    } else {
+                                        theme::TEXT_WEAK
+                                    };
+                                    ui.label(RichText::new(l.status_label()).color(color));
+                                }
+                                _ => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(answer(l))
+                                                .monospace()
+                                                .color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            });
                         }
+                        let what = (l.pid, &*l.name, l.at);
+                        widgets::row_menu(&row.response(), "net-lookups", what, |ui| {
+                            if let Some(p) = process(snap, l.pid) {
+                                item(ui, out, "Go to process", "", UiCmd::GoTo(p.key));
+                                ui.separator();
+                            }
+                            item(ui, out, "Copy name", "", UiCmd::Copy(l.name.to_string()));
+                            item(
+                                ui,
+                                out,
+                                "Search the name online",
+                                "",
+                                UiCmd::SearchOnline(l.name.to_string()),
+                            );
+                        });
                     });
-                    row.col(|ui| {
-                        ui.label(RichText::new(l.kind_label()).color(theme::TEXT_WEAK));
-                    });
-                    row.col(|ui| {
-                        let color = if failed {
-                            theme::ELEVATED_TEXT
-                        } else {
-                            theme::TEXT_WEAK
-                        };
-                        ui.label(RichText::new(l.status_label()).color(color));
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(
-                                RichText::new(answer(l)).monospace().color(theme::TEXT_WEAK),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    row.response().context_menu(|ui| {
-                        if let Some(p) = process(snap, l.pid) {
-                            item(ui, out, "Go to process", "", UiCmd::GoTo(p.key));
-                            ui.separator();
-                        }
-                        item(ui, out, "Copy name", "", UiCmd::Copy(l.name.to_string()));
-                        item(
-                            ui,
-                            out,
-                            "Search the name online",
-                            "",
-                            UiCmd::SearchOnline(l.name.to_string()),
-                        );
-                    });
-                });
-            });
+                })
+        });
     });
 }

@@ -15,10 +15,9 @@ use std::sync::Arc;
 use anabolic_core::services::{Service, ServiceList, ServiceOp, StartType, State};
 use anabolic_core::{ProcState, ProcessInfo, Snapshot};
 use eframe::egui::{self, Align, Color32, Label, Layout, RichText, Sense, Ui};
-use egui_extras::{Column, TableBuilder};
 
 use crate::proc_table::{UiCmd, item};
-use crate::table::{TableView, text_cmp};
+use crate::table::{Columns, Spec, TableView, text_cmp};
 use crate::{fmt, panes, theme, widgets};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -146,6 +145,30 @@ const ACCOUNT: &str = if cfg!(windows) {
 };
 
 /// Who may start and stop services.
+/// The list's columns, by number.
+const TITLES: [(&str, bool); 9] = [
+    ("Name", false),
+    ("Service", false),
+    ("Status", false),
+    ("Startup", false),
+    ("PID", true),
+    ("CPU %", true),
+    ("Memory", true),
+    (ACCOUNT, false),
+    ("Description", false),
+];
+const COLUMNS: [Spec; 9] = [
+    Spec::new(250.0).clip(),
+    Spec::new(150.0).clip(),
+    Spec::new(110.0),
+    Spec::new(150.0).clip(),
+    Spec::new(60.0),
+    Spec::new(60.0),
+    Spec::new(80.0),
+    Spec::new(120.0).clip(),
+    Spec::new(320.0).clip(),
+];
+
 const RIGHTS: &str = if cfg!(windows) {
     "Starting and stopping most services needs administrator"
 } else {
@@ -546,120 +569,123 @@ pub fn show(
         });
     }
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("services")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(250.0).clip(true))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(110.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(60.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(120.0).clip(true))
-            .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Name", false),
-                    ("Service", false),
-                    ("Status", false),
-                    ("Startup", false),
-                    ("PID", true),
-                    ("CPU %", true),
-                    ("Memory", true),
-                    (ACCOUNT, false),
-                    ("Description", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        Columns::load(ui.ctx(), "services", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let s = rows[row.index()];
-                    let busy = page.busy.contains(&s.name);
-                    row.set_selected(selected.as_deref() == Some(&*s.name));
-                    let host = host(s, &processes, &sharing);
-                    // A shared host's figures are the whole process'.
-                    let figure = if host.is_some_and(|(_, n)| n > 1) {
-                        theme::TEXT_DIM
-                    } else {
-                        theme::TEXT
-                    };
-                    row.col(|ui| {
-                        ui.add(Label::new(&*s.display).truncate());
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(&*s.name).color(theme::TEXT_WEAK)).truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        let (text, color, why) = status_text(s);
-                        let response = ui.label(RichText::new(text).color(color));
-                        if let Some(why) = why {
-                            response.on_hover_text(why);
-                        }
-                        if busy {
-                            ui.spinner();
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(startup_text(s)).color(theme::TEXT_WEAK))
-                                .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        if s.pid != 0 {
-                            right(ui, RichText::new(s.pid.to_string()).color(theme::TEXT_WEAK));
-                        }
-                    });
-                    row.col(|ui| {
-                        if let Some((p, n)) = host {
-                            let response = right(ui, RichText::new(fmt::cpu(p.cpu)).color(figure));
-                            if n > 1 {
-                                response.on_hover_text(format!(
-                                    "{} ({}) runs {n} services; this is the whole process.",
-                                    p.name, p.pid
-                                ));
-                            }
-                        }
-                    });
-                    row.col(|ui| {
-                        if let Some((p, _)) = host {
-                            right(ui, RichText::new(fmt::bytes(p.private_bytes)).color(figure));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(account(s)).color(theme::TEXT_WEAK))
-                                .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        let text = s.config.as_ref().map_or("", |c| c.description.as_str());
-                        ui.add(Label::new(RichText::new(text).color(theme::TEXT_DIM)).truncate());
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        page.selected = if selected.as_deref() == Some(&*s.name) {
-                            None
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let s = rows[row.index()];
+                        let busy = page.busy.contains(&s.name);
+                        row.set_selected(selected.as_deref() == Some(&*s.name));
+                        let host = host(s, &processes, &sharing);
+                        // A shared host's figures are the whole process'.
+                        let figure = if host.is_some_and(|(_, n)| n > 1) {
+                            theme::TEXT_DIM
                         } else {
-                            Some(s.name.clone())
+                            theme::TEXT
                         };
-                    }
-                    response.context_menu(|ui| service_menu(ui, s, busy, out));
-                });
-            });
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    ui.add(Label::new(&*s.display).truncate());
+                                }
+                                1 => {
+                                    ui.add(
+                                        Label::new(RichText::new(&*s.name).color(theme::TEXT_WEAK))
+                                            .truncate(),
+                                    );
+                                }
+                                2 => {
+                                    let (text, color, why) = status_text(s);
+                                    let response = ui.label(RichText::new(text).color(color));
+                                    if let Some(why) = why {
+                                        response.on_hover_text(why);
+                                    }
+                                    if busy {
+                                        ui.spinner();
+                                    }
+                                }
+                                3 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(startup_text(s)).color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                4 => {
+                                    if s.pid != 0 {
+                                        right(
+                                            ui,
+                                            RichText::new(s.pid.to_string())
+                                                .color(theme::TEXT_WEAK),
+                                        );
+                                    }
+                                }
+                                5 => {
+                                    if let Some((p, n)) = host {
+                                        let response =
+                                            right(ui, RichText::new(fmt::cpu(p.cpu)).color(figure));
+                                        if n > 1 {
+                                            response.on_hover_text(format!(
+                                            "{} ({}) runs {n} services; this is the whole process.",
+                                            p.name, p.pid
+                                        ));
+                                        }
+                                    }
+                                }
+                                6 => {
+                                    if let Some((p, _)) = host {
+                                        right(
+                                            ui,
+                                            RichText::new(fmt::bytes(p.private_bytes))
+                                                .color(figure),
+                                        );
+                                    }
+                                }
+                                7 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(account(s)).color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                _ => {
+                                    let text =
+                                        s.config.as_ref().map_or("", |c| c.description.as_str());
+                                    ui.add(
+                                        Label::new(RichText::new(text).color(theme::TEXT_DIM))
+                                            .truncate(),
+                                    );
+                                }
+                            });
+                        }
+                        let response = row.response();
+                        if response.clicked() {
+                            page.selected = if selected.as_deref() == Some(&*s.name) {
+                                None
+                            } else {
+                                Some(s.name.clone())
+                            };
+                        }
+                        widgets::row_menu(&response, "services", &s.name, |ui| {
+                            service_menu(ui, s, busy, out)
+                        });
+                    });
+                })
+        });
     });
 }
 

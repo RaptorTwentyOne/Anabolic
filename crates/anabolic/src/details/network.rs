@@ -133,118 +133,123 @@ pub(super) fn network_tab(
     }
     let mut clicked = None;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("connections")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(50.0))
-            .column(Column::initial(230.0).clip(true))
-            .column(Column::initial(230.0).clip(true))
-            .column(Column::initial(76.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::remainder())
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Proto", false),
-                    ("Remote", false),
-                    ("Name", false),
-                    ("Local port", true),
-                    ("Receive", true),
-                    ("Send", true),
-                    ("Received", true),
-                    ("Sent", true),
-                    ("Idle", true),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 9] = [
+            ("Proto", false),
+            ("Remote", false),
+            ("Name", false),
+            ("Local port", true),
+            ("Receive", true),
+            ("Send", true),
+            ("Received", true),
+            ("Sent", true),
+            ("Idle", true),
+        ];
+        const COLUMNS: [Spec; 9] = [
+            Spec::new(50.0),
+            Spec::new(230.0).clip(),
+            Spec::new(230.0).clip(),
+            Spec::new(76.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(70.0),
+        ];
+        Columns::load(ui.ctx(), "connections", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let (c, name, name_color) = &rows[row.index()];
-                    let c = *c;
-                    let key = key_of(c);
-                    row.set_selected(selected == Some(key));
-                    let quiet = c.rx_rate + c.tx_rate == 0.0;
-                    let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
-                    row.col(|ui| {
-                        ui.label(RichText::new(proto_of(c)).color(color));
-                    });
-                    row.col(|ui| {
-                        let response = ui.add(
-                            Label::new(
-                                RichText::new(crate::panes::remote_text(c))
-                                    .monospace()
-                                    .color(color),
-                            )
-                            .truncate(),
-                        );
-                        if let Some(service) = crate::panes::port_service(c.proto, c.remote_port) {
-                            response.on_hover_text(format!(
-                                "Port {}: usually {service}",
-                                c.remote_port
-                            ));
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let (c, name, name_color) = &rows[row.index()];
+                        let c = *c;
+                        let key = key_of(c);
+                        row.set_selected(selected == Some(key));
+                        let quiet = c.rx_rate + c.tx_rate == 0.0;
+                        let color = if quiet { theme::TEXT_WEAK } else { theme::TEXT };
+                        for &column in columns.order() {
+                            row.col(|ui| match column {
+                                0 => {
+                                    ui.label(RichText::new(proto_of(c)).color(color));
+                                }
+                                1 => {
+                                    let response = ui.add(
+                                        Label::new(
+                                            RichText::new(crate::panes::remote_text(c))
+                                                .monospace()
+                                                .color(color),
+                                        )
+                                        .truncate(),
+                                    );
+                                    if let Some(service) =
+                                        crate::panes::port_service(c.proto, c.remote_port)
+                                    {
+                                        response.on_hover_text(format!(
+                                            "Port {}: usually {service}",
+                                            c.remote_port
+                                        ));
+                                    }
+                                }
+                                2 => {
+                                    ui.add(
+                                        Label::new(RichText::new(name.as_str()).color(*name_color))
+                                            .truncate(),
+                                    );
+                                }
+                                3 => {
+                                    right(
+                                        ui,
+                                        RichText::new(c.local_port.to_string())
+                                            .color(theme::TEXT_WEAK),
+                                    );
+                                }
+                                4 => right(ui, RichText::new(fmt::rate(c.rx_rate)).color(color)),
+                                5 => right(ui, RichText::new(fmt::rate(c.tx_rate)).color(color)),
+                                6 => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(c.rx_total)).color(theme::TEXT_WEAK),
+                                ),
+                                7 => right(
+                                    ui,
+                                    RichText::new(fmt::bytes(c.tx_total)).color(theme::TEXT_WEAK),
+                                ),
+                                _ => {
+                                    let idle = if c.idle == 0 {
+                                        String::new()
+                                    } else {
+                                        format!("{} s", c.idle)
+                                    };
+                                    right(ui, RichText::new(idle).color(theme::TEXT_DIM));
+                                }
+                            });
                         }
+                        let response = row.response();
+                        if response.clicked() {
+                            clicked = Some(key);
+                        }
+                        widgets::row_menu(&response, "connections", key, |ui| {
+                            let r = crate::panes::ConnRow {
+                                c,
+                                name,
+                                p,
+                                path,
+                                blocked,
+                            };
+                            crate::panes::connection_menu(ui, &r, out);
+                        });
                     });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(name.as_str()).color(*name_color)).truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(c.local_port.to_string()).color(theme::TEXT_WEAK),
-                        );
-                    });
-                    row.col(|ui| right(ui, RichText::new(fmt::rate(c.rx_rate)).color(color)));
-                    row.col(|ui| right(ui, RichText::new(fmt::rate(c.tx_rate)).color(color)));
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(c.rx_total)).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| {
-                        right(
-                            ui,
-                            RichText::new(fmt::bytes(c.tx_total)).color(theme::TEXT_WEAK),
-                        )
-                    });
-                    row.col(|ui| {
-                        let idle = if c.idle == 0 {
-                            String::new()
-                        } else {
-                            format!("{} s", c.idle)
-                        };
-                        right(ui, RichText::new(idle).color(theme::TEXT_DIM));
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        clicked = Some(key);
-                    }
-                    response.context_menu(|ui| {
-                        let r = crate::panes::ConnRow {
-                            c,
-                            name,
-                            p,
-                            path,
-                            blocked,
-                        };
-                        crate::panes::connection_menu(ui, &r, out);
-                    });
-                });
-            });
+                })
+        });
     });
     if let Some(key) = clicked {
         tables.connection = if selected == Some(key) {

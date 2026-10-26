@@ -108,6 +108,8 @@ impl App {
                 }
                 self.window_section(ui);
                 self.process_section(ui);
+                self.warning_section(ui);
+                self.ports_section(ui);
                 self.history_section(ui);
                 self.stutter_section(ui);
                 self.dump_section(ui);
@@ -150,6 +152,16 @@ impl App {
                         "There is no notification area here, so closing still quits.",
                     );
                 }
+            },
+        );
+        row(
+            ui,
+            "Show CPU use on the icon",
+            "The notification area icon fills a bar up its right edge as the CPU gets busy, amber \
+             from 90 %. While the icon is there: when Anabolic keeps running in the notification \
+             area, or waits to tell you a process exited.",
+            |ui| {
+                ui.checkbox(&mut self.settings.tray_cpu, "");
             },
         );
         row(ui, "Start when I sign in", SIGN_IN_HINT, |ui| {
@@ -210,6 +222,10 @@ impl App {
                 ui.checkbox(&mut self.settings.confirm_kill, "");
             },
         );
+    }
+
+    fn warning_section(&mut self, ui: &mut Ui) {
+        heading(ui, "Warnings");
         row(
             ui,
             "Memory warning at",
@@ -222,6 +238,125 @@ impl App {
                 );
             },
         );
+        row(
+            ui,
+            "Warn about a program in many copies",
+            "When one program runs this many times over from the same starter (a script or a \
+             build gone wrong), a bar says who started them and can end them all; with the window \
+             closed, a notification. Browsers and the system's service hosts run many processes \
+             by design and are left out.",
+            |ui| {
+                ui.horizontal(|ui| {
+                    let mut on = self.settings.runaway_at != 0;
+                    if ui.checkbox(&mut on, "").changed() {
+                        self.settings.runaway_at = if on { crate::runaway::DEFAULT_AT } else { 0 };
+                    }
+                    if on {
+                        ui.add(
+                            egui::DragValue::new(&mut self.settings.runaway_at)
+                                .range(10..=1000)
+                                .suffix(" copies"),
+                        );
+                    }
+                });
+            },
+        );
+        if !self.settings.runaway_ignored.is_empty() {
+            let mut forget = None;
+            row(
+                ui,
+                "Never warned about",
+                "Programs you said not to warn about.",
+                |ui| {
+                    for (i, name) in self.settings.runaway_ignored.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(name.as_str());
+                            if ui
+                                .small_button(widgets::icon(theme::icon::CLOSE, 9.0))
+                                .on_hover_text("Warn about it again")
+                                .clicked()
+                            {
+                                forget = Some(i);
+                            }
+                        });
+                    }
+                },
+            );
+            if let Some(i) = forget {
+                self.settings.runaway_ignored.remove(i);
+            }
+        }
+    }
+
+    fn ports_section(&mut self, ui: &mut Ui) {
+        heading(ui, "Development ports");
+        let mut forget = None;
+        row(
+            ui,
+            "Ports you watch",
+            "Each shows as free, or with the program that holds it, on Network > Development \
+             ports and on the Overview, where Free… ends what holds it. A name says what the port \
+             is for, in place of the tool Anabolic would guess.",
+            |ui| {
+                for (i, w) in self.settings.watched_ports.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        widgets::text(
+                            ui,
+                            52.0,
+                            Align::Max,
+                            widgets::strong(format!(":{}", w.port), theme::BODY),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut w.name)
+                                .hint_text("name")
+                                .char_limit(crate::settings::PORT_NAME)
+                                .desired_width(120.0),
+                        );
+                        if ui
+                            .small_button(widgets::icon(theme::icon::CLOSE, 9.0))
+                            .on_hover_text("Stop watching it")
+                            .clicked()
+                        {
+                            forget = Some(i);
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    let (port, name) = &mut self.port_entry;
+                    ui.add(
+                        egui::TextEdit::singleline(port)
+                            .hint_text("port")
+                            .desired_width(52.0),
+                    );
+                    port.retain(|c| c.is_ascii_digit());
+                    port.truncate(5);
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .hint_text("name (optional)")
+                            .char_limit(crate::settings::PORT_NAME)
+                            .desired_width(120.0),
+                    );
+                    let parsed = port.parse::<u16>().ok().filter(|&p| p != 0);
+                    if ui
+                        .add_enabled(parsed.is_some(), egui::Button::new("Add"))
+                        .clicked()
+                        && let Some(port) = parsed
+                    {
+                        let ports = &mut self.settings.watched_ports;
+                        ports.retain(|w| w.port != port);
+                        ports.push(crate::settings::PortWatch {
+                            port,
+                            name: self.port_entry.1.trim().to_string(),
+                        });
+                        ports.sort_by_key(|w| w.port);
+                        self.port_entry = Default::default();
+                    }
+                });
+            },
+        );
+        if let Some(i) = forget {
+            self.settings.watched_ports.remove(i);
+        }
     }
 
     fn history_section(&mut self, ui: &mut Ui) {

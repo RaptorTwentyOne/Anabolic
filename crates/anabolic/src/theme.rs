@@ -134,6 +134,10 @@ pub mod icon {
     pub const MCP: &str = "\u{E99A}";
     /// An arrow into a tray: a new release.
     pub const UPDATE: &str = "\u{E896}";
+    /// A house: the Overview page.
+    pub const OVERVIEW: &str = "\u{E80F}";
+    /// A plus: Run new task.
+    pub const RUN: &str = "\u{E710}";
 }
 
 /// The symbols in egui's own fonts (its emoji and icon fonts), which come
@@ -171,6 +175,10 @@ pub mod icon {
     pub const MCP: &str = "\u{1F50C}";
     /// Arrows going round: a new release.
     pub const UPDATE: &str = "\u{27F3}";
+    /// A house: the Overview page.
+    pub const OVERVIEW: &str = "\u{1F3E0}";
+    /// A plus: Run new task.
+    pub const RUN: &str = "\u{2795}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

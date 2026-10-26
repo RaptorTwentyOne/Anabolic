@@ -62,14 +62,15 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 
 | Page | |
 |---|---|
-| **Processes** | A tree, a flat list or grouped by app, with CPU, memory, disk, network, GPU, handles, user and command line. End, end tree, suspend, priority, cores, efficiency mode. Details show threads with their call stacks, modules with their signatures and hashes, handles in words, network connections, the services a process hosts and the chain of processes that started it, including parents that already exited. |
+| **Overview** | The machine at a glance: a tile for CPU, memory, disk, network and GPU, each with the app behind most of it; what needs attention (memory running out, a full or overworked disk, a hung or stuck program, one that keeps growing, a hot sensor, a program in many copies) with a button for what can be done; the busiest apps; development servers listening; what started in the last ten minutes; and this PC in a few lines. |
+| **Processes** | A tree, a flat list or grouped by app, with CPU, memory, disk, network, GPU, handles, user and command line. Quick filters narrow it to what uses CPU, memory, disk, network or a GPU, what started in the last ten minutes, or the services. End, end tree, suspend, priority, cores, efficiency mode, and a notification when a process exits, with its exit code. Run new task starts a program with administrator rights or without, as Task Manager does. Details show threads with their call stacks, modules with their signatures and hashes, handles in words, network connections, the services a process hosts and the chain of processes that started it, including parents that already exited. |
 | **Performance** | CPU with who ran on each core, memory and its modules, each physical disk with its partitions and the processes and files it serves, network adapters, GPUs, process I/O, temperatures and fans, and every monitor on a map of the desktop. Windows lets only drivers read the processor's own temperature sensors, so there Anabolic shows the processor's power from its energy meter, the firmware's thermal zones where it has any, the GPU's temperature, fan and (NVIDIA) power, and the disks' temperatures. |
 | **History** | Every 10 seconds, the machine's totals and the processes that led, kept for 7 days by default: a day strip, an hour graph and a range picker answer "what happened at 14:32". |
 | **Rules** | Per program, in the manner of Process Lasso: priority, cores and efficiency mode applied to every new process, plus memory, CPU and handle alerts. A rule can mark a program as a game. |
 | **Services** | Every service with its state, startup type, account and the process it runs in, with that process' CPU and memory; start, stop (asking about dependents), restart, pause, startup type. |
 | **Startup** | Run keys, Startup folders and sign-in or boot tasks with their publisher and what they cost right now; turned on and off the way Task Manager does it. Nothing is deleted. |
 | **Stutters** | Frame rate, 1 % lows and frame times of every program that draws, each stutter with what else happened at that moment, and DPC/ISR time per driver, in the manner of LatencyMon. No game is opened to measure it. |
-| **Network** | Traffic per program, every connection with its state and the other end's name, the ports open to others and who can reach them, and every DNS lookup with the program that made it. Close a TCP connection, or block a program in Windows Firewall and allow it again. |
+| **Network** | Traffic per program, every connection with its state and the other end's name, the ports open to others and who can reach them, and every DNS lookup with the program that made it. Development ports lists the dev servers, databases and debuggers listening, named by their tool (Vite, PostgreSQL, the Node.js debugger and more), with the ports you watch, free or with who holds each; a port is freed by ending what holds it. Close a TCP connection, or block a program in Windows Firewall and allow it again. |
 | **Activity** | Process Monitor style: every file, registry key, connection and program a process touches, in order, from a kernel trace. Start a program under recording, record a running one or its whole tree, or record the whole computer and filter afterwards. CSV export. |
 | **MCP** | A Model Context Protocol server for Claude and other AI assistants, off until you turn it on. See [below](#ai-assistants-mcp). |
 
@@ -84,6 +85,10 @@ And across the pages:
   cannot finish ending says what holds it (handles still open to it, a
   driver that strips the right to end it, Windows' protection).
 - **Leaks**: handle, memory and thread growth that keeps going is flagged.
+- **A program in many copies**: when one program runs 50 times over from the
+  same starter (a script or a build gone wrong), a bar names the starter and
+  ends them all at a click. Browsers and Windows' service hosts, many
+  processes by design, are left out; the number is in Settings.
 - **Memory dumps**, small or full, taken from a snapshot so the process
   pauses only for a moment.
 - **Game mode** (optional): while a game is in front, busy background
@@ -91,9 +96,12 @@ And across the pages:
   core processes, audio and anti-cheat software are never touched.
 - **Notification area** (optional): closing the window leaves Anabolic
   running, recording the history and applying rules; alerts become
-  notifications.
+  notifications, and the icon shows how busy the CPU is.
 - **Several monitors**: called up during a full-screen game, the window opens
   on another monitor (Windows: on Linux the compositor places windows).
+- **Columns where you want them**: in every table, dragging a title moves
+  its column, and the order and widths stay for next time. A table wider
+  than the window scrolls sideways.
 
 ## On Linux
 
@@ -116,14 +124,18 @@ Around them: the notification area icon is a StatusNotifierItem (KDE has
 it; GNOME needs the AppIndicator extension), the hotkey goes through the
 desktop's GlobalShortcuts portal, and game mode finds the window in front on
 KDE and on X11. The keyrings (KWallet, GNOME Keyring, ssh-agent, gpg-agent)
-take lsass' place as what is not dumped unless allowed.
+take lsass' place as what is not dumped unless allowed. Run new task runs a
+command line as you, the way a terminal would; a program that needs root
+asks for it itself.
 
 ## Getting started
 
 Everything is on the
 [releases](https://github.com/RaptorTwentyOne/Anabolic/releases) page: for
 Windows an installer and a zip, for Linux a zip. A zip holds a single
-executable with nothing to install: unpack it anywhere.
+executable with nothing to install: unpack it anywhere. Each file has its
+SHA-256 checksum beside it, as a `.sha256` file (`sha256sum -c` reads it;
+on Windows, compare it with `Get-FileHash`).
 
 ### Windows
 
@@ -216,8 +228,10 @@ one in KDE's shortcut settings.
 
 | Keys | |
 |---|---|
-| Ctrl+1 … Ctrl+9, Ctrl+0 | Pages, in the order of the rail; Ctrl+0 is MCP |
+| Alt+Home | Overview |
+| Ctrl+1 … Ctrl+9, Ctrl+0 | The pages below it, in the order of the rail; Ctrl+0 is MCP |
 | Ctrl+, | Settings |
+| Ctrl+N | Run new task |
 | Alt+←, Alt+→ | Back and forward through the pages and processes visited; the mouse's back and forward buttons too |
 | Ctrl+F | Filter processes |
 | Ctrl+T | Tree, list or apps |

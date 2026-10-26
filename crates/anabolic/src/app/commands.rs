@@ -62,8 +62,8 @@ impl App {
         }
         self.table
             .rebuild(&self.snapshot, &self.details, &self.settings);
-        if self.table.selected_row(&self.snapshot).is_none() && !self.table.filter.is_empty() {
-            self.table.filter.clear();
+        if self.table.selected_row(&self.snapshot).is_none() && self.table.filtered() {
+            self.table.unfilter();
             self.table
                 .rebuild(&self.snapshot, &self.details, &self.settings);
         }
@@ -428,6 +428,7 @@ impl App {
                         self.settings.columns.insert(at, col);
                     }
                 }
+                UiCmd::Columns(columns) => self.settings.columns = columns,
                 UiCmd::ResetColumns => self.settings.columns = Settings::default().columns,
                 UiCmd::InspectHandles { key, names } => self.inspect_handles(key, names),
                 UiCmd::ConfirmResolveNames(key) => {
@@ -655,12 +656,198 @@ impl App {
                     self.zombie_view.pending = true;
                     self.inspector.request(InspectRequest::Zombies);
                 }
+                UiCmd::ShowTab(tab) => {
+                    self.jumped();
+                    self.settings.tab = tab;
+                }
+                UiCmd::ShowPerf(view) => {
+                    self.jumped();
+                    self.settings.tab = Tab::Performance;
+                    self.perf_view = view;
+                }
+                UiCmd::ShowApp(name) => self.show_app(&name),
+                UiCmd::ShowCopies { name, starter } => self.show_copies(&name, starter),
+                UiCmd::ShowNew => {
+                    self.jumped();
+                    self.settings.tab = Tab::Processes;
+                    self.table.unfilter();
+                    self.table.quick.toggle(crate::tree::Quick::New);
+                    self.set_view(View::List);
+                }
+                UiCmd::AppsByMemory(ram) => self.apps_by_memory(ram),
+                UiCmd::KillMany {
+                    title,
+                    subject,
+                    keys,
+                } => {
+                    let targets = keys.into_iter().filter_map(|k| self.target(k)).collect();
+                    self.confirm_kill(title, subject, None, targets);
+                }
+                UiCmd::IgnoreRunaway(id) => {
+                    if !self.settings.runaway_ignored.contains(&id.to_string()) {
+                        self.settings.runaway_ignored.push(id.to_string());
+                    }
+                    if let Some(r) = self.runaways.iter().find(|r| r.id == id) {
+                        self.toasts.info(format!(
+                            "No more warnings about {} running in many copies. Settings > \
+                             Warnings can bring them back.",
+                            r.name
+                        ));
+                    }
+                    self.runaways.retain(|r| r.id != id);
+                }
+                UiCmd::RunTask => {
+                    if self.run_dialog.is_none() {
+                        self.run_dialog =
+                            Some(crate::dialogs::RunDialog::new(self.settings.run_elevated));
+                    }
+                }
+                UiCmd::NotifyExit(key, on) => self.notify_exit(key, on),
+                UiCmd::ShowListening => {
+                    self.jumped();
+                    self.settings.tab = Tab::Network;
+                    self.network.tab = crate::network_page::NetTab::Listening;
+                }
+                UiCmd::ShowDevPorts => {
+                    self.jumped();
+                    self.settings.tab = Tab::Network;
+                    self.network.tab = crate::network_page::NetTab::Development;
+                }
+                UiCmd::WatchPort(watch) => {
+                    let ports = &mut self.settings.watched_ports;
+                    ports.retain(|w| w.port != watch.port);
+                    if watch.port != 0 {
+                        ports.push(watch);
+                        ports.sort_by_key(|w| w.port);
+                    }
+                }
+                UiCmd::UnwatchPort(port) => self.settings.watched_ports.retain(|w| w.port != port),
+                UiCmd::FreePort { port, pid } => self.free_port(port, pid),
             }
         }
         if self.table.dirty {
             self.table
                 .rebuild(&self.snapshot, &self.details, &self.settings);
         }
+    }
+
+    /// Every process of a program, in the Apps view: its group selected, or
+    /// the process when it runs alone.
+    pub(super) fn show_app(&mut self, name: &str) {
+        let id: Arc<str> = name.to_ascii_lowercase().into();
+        self.jumped();
+        self.settings.tab = Tab::Processes;
+        self.set_view(View::Apps);
+        self.table.unfilter();
+        self.table.only_app = Some(id.clone());
+        self.table
+            .rebuild(&self.snapshot, &self.details, &self.settings);
+        if self.table.group(&id).is_some() {
+            self.select_group(id);
+        } else if let Some(key) = self
+            .snapshot
+            .processes
+            .iter()
+            .find(|p| p.state != ProcState::Exited && p.name.eq_ignore_ascii_case(name))
+            .map(|p| p.key)
+        {
+            self.select(Some(key));
+        }
+        self.table.scroll_to_selected = true;
+    }
+
+    /// A program's copies in the tree, under the program that started them
+    /// (selected), and nothing else.
+    pub(super) fn show_copies(&mut self, name: &str, starter: Option<ProcKey>) {
+        self.jumped();
+        self.settings.tab = Tab::Processes;
+        self.set_view(View::Tree);
+        self.table.unfilter();
+        self.table.only_app = Some(name.to_ascii_lowercase().into());
+        if let Some(key) = starter {
+            self.table.collapsed.remove(&key);
+        }
+        self.table
+            .rebuild(&self.snapshot, &self.details, &self.settings);
+        let first = || {
+            self.snapshot
+                .processes
+                .iter()
+                .find(|p| p.state != ProcState::Exited && p.name.eq_ignore_ascii_case(name))
+                .map(|p| p.key)
+        };
+        let key = starter.or_else(first);
+        self.select(key);
+        self.table.scroll_to_selected = true;
+    }
+
+    /// The Apps view by memory, biggest first: RAM (private working set)
+    /// or commit (private bytes), with its column shown.
+    pub(super) fn apps_by_memory(&mut self, ram: bool) {
+        let sort = if ram { Col::PrivateWs } else { Col::Private };
+        self.jumped();
+        self.settings.tab = Tab::Processes;
+        self.set_view(View::Apps);
+        self.settings.sort = sort;
+        self.settings.descending = true;
+        if !self.settings.columns.contains(&sort) {
+            self.settings
+                .columns
+                .insert(3.min(self.settings.columns.len()), sort);
+        }
+        self.table.scroll_to_selected = false;
+    }
+
+    /// Ends what holds a port, after asking; a service or Windows itself is
+    /// pointed at instead.
+    pub(super) fn free_port(&mut self, port: u16, pid: u32) {
+        let Some(p) = self
+            .snapshot
+            .processes
+            .iter()
+            .find(|p| p.pid == pid && p.state != ProcState::Exited)
+        else {
+            self.toasts
+                .info(format!("Port {port} is free: what held it has exited"));
+            return;
+        };
+        if crate::platform::system_pid(pid) {
+            self.toasts.error_with(
+                format!("{} itself holds port {port}", crate::platform::SYSTEM),
+                Some(if cfg!(windows) {
+                    "A driver or Windows' web server (HTTP.sys) has it for a service or a program; \
+                     the Services page may name which."
+                        .into()
+                } else {
+                    "The kernel has it for a service; the Services page may name which.".into()
+                }),
+            );
+            return;
+        }
+        let services = self.services.hosted(pid);
+        if !services.is_empty() {
+            let names: Vec<&str> = services.iter().map(|(_, d)| &**d).collect();
+            self.toasts.info_with(
+                format!(
+                    "Port {port} is held by {} (service: {}). Stop the service to free it.",
+                    p.name,
+                    names.join(", ")
+                ),
+                "Show services",
+                UiCmd::ShowServices(pid),
+            );
+            return;
+        }
+        let Some(target) = self.target(p.key) else {
+            return;
+        };
+        let subject = format!("{} (PID {pid}) holds port {port}", p.name);
+        self.confirm_kill(
+            format!("Free port {port}?"),
+            subject,
+            Some("Ending it frees the port.".into()),
+            vec![target],
+        );
     }
 
     pub(super) fn run_on(&self, key: ProcKey, make: impl FnOnce(Target) -> Action) {

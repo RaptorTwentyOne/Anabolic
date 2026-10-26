@@ -10,7 +10,11 @@ use super::*;
 
 impl App {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context, out: &mut Vec<UiCmd>) {
-        if self.kill_dialog.is_some() || self.affinity_dialog.is_some() || self.confirm.is_some() {
+        if self.kill_dialog.is_some()
+            || self.affinity_dialog.is_some()
+            || self.confirm.is_some()
+            || self.run_dialog.is_some()
+        {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
@@ -50,6 +54,13 @@ impl App {
             }
             if i.consume_key(Modifiers::COMMAND, Key::H) {
                 out.push(UiCmd::OpenFind);
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::N) {
+                out.push(UiCmd::RunTask);
+            }
+            // The home page, as in a browser.
+            if !typing && i.consume_key(Modifiers::ALT, Key::Home) {
+                self.settings.tab = Tab::Overview;
             }
             if i.consume_key(Modifiers::COMMAND, Key::Num1) {
                 self.settings.tab = Tab::Processes;
@@ -203,6 +214,7 @@ impl App {
         });
         ui.add_space(10.0);
         let pages = [
+            (Tab::Overview, theme::icon::OVERVIEW, "Overview", "Alt+Home"),
             (
                 Tab::Processes,
                 theme::icon::PROCESSES,
@@ -435,21 +447,83 @@ impl App {
             self.alert_dismissed = true;
         }
         if show_apps {
-            let sort = if alert.what == "RAM" {
-                Col::PrivateWs
-            } else {
-                Col::Private
-            };
-            self.settings.tab = Tab::Processes;
-            self.set_view(View::Apps);
-            self.settings.sort = sort;
-            self.settings.descending = true;
-            if !self.settings.columns.contains(&sort) {
-                self.settings
-                    .columns
-                    .insert(3.min(self.settings.columns.len()), sort);
+            let ram = alert.what == "RAM";
+            self.apps_by_memory(ram);
+        }
+    }
+
+    /// The biggest runaway whose bar was not closed.
+    pub(super) fn runaway_for_bar(&self) -> Option<&crate::runaway::Runaway> {
+        self.runaways
+            .iter()
+            .find(|s| !self.runaways_hidden.iter().any(|h| h.same(s)))
+    }
+
+    /// One program in many copies: who started them, and ending them all.
+    pub(super) fn runaway_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        runaway: &crate::runaway::Runaway,
+        out: &mut Vec<UiCmd>,
+    ) {
+        let mut hide = false;
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui
+                .small_button(widgets::icon(theme::icon::CLOSE, 10.0))
+                .on_hover_text("Hide while these copies run")
+                .clicked()
+            {
+                hide = true;
             }
-            self.table.scroll_to_selected = false;
+            if ui
+                .small_button(format!("Don't warn about {}", runaway.name))
+                .on_hover_text("Settings > Warnings lists the programs left out")
+                .clicked()
+            {
+                out.push(UiCmd::IgnoreRunaway(runaway.id.clone()));
+            }
+            if ui
+                .small_button(format!("End all {}\u{2026}", runaway.copies.len()))
+                .clicked()
+            {
+                out.push(UiCmd::KillMany {
+                    title: format!(
+                        "Terminate {} copies of {}?",
+                        runaway.copies.len(),
+                        runaway.name
+                    ),
+                    subject: runaway.headline(),
+                    keys: runaway.copies.clone(),
+                });
+            }
+            if ui
+                .small_button("Show")
+                .on_hover_text("Only them in the list, under the program that started them")
+                .clicked()
+            {
+                out.push(UiCmd::ShowCopies {
+                    name: runaway.name.clone(),
+                    starter: runaway.starter.as_ref().map(|s| s.0),
+                });
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.label(widgets::icon(theme::icon::WARNING, 13.0).color(theme::ELEVATED_TEXT));
+                ui.label(widgets::strong(runaway.headline(), theme::BODY));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "  ·  {} of memory, {:.1} % CPU between them",
+                            fmt::bytes(runaway.memory),
+                            runaway.cpu
+                        ))
+                        .color(theme::TEXT_WEAK),
+                    )
+                    .truncate(),
+                );
+            });
+        });
+        if hide {
+            self.runaways_hidden.push(runaway.clone());
         }
     }
 

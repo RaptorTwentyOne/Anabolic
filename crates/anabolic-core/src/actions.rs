@@ -154,6 +154,16 @@ pub enum Action {
         /// lsass too (the user's setting).
         secrets: bool,
     },
+    /// Start something the way the Run box does: a program with its
+    /// arguments, a document, a folder or a web address. `elevated` asks
+    /// for administrator rights; without it the program runs without them,
+    /// from an elevated Anabolic too.
+    Run {
+        command: String,
+        elevated: bool,
+    },
+    /// Pick a program file for Run new task, in the system's Open dialog.
+    BrowseProgram,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +205,8 @@ pub enum Outcome {
         state: crate::signin::SignIn,
         error: Option<String>,
     },
+    /// The file picked for Run new task; None when the dialog was cancelled.
+    Browsed(Option<String>),
 }
 
 pub struct ActionRunner {
@@ -242,6 +254,21 @@ impl ActionRunner {
                                 });
                         continue;
                     }
+                    // The Open dialog waits on the user: off this thread,
+                    // so the actions behind it are not held up.
+                    if matches!(action, Action::BrowseProgram) {
+                        let (out_tx, notify) = (out_tx.clone(), notify.clone());
+                        let _ = thread::Builder::new().name("anabolic-browse".into()).spawn(
+                            move || {
+                                imp::thread_init();
+                                if let Some(outcome) = perform(action) {
+                                    let _ = out_tx.send(outcome);
+                                }
+                                notify();
+                            },
+                        );
+                        continue;
+                    }
                     if let Some(outcome) = perform(action)
                         && out_tx.send(outcome).is_err()
                     {
@@ -259,6 +286,33 @@ impl ActionRunner {
     }
 }
 
+/// A Run box line split into what to start and its arguments: a quoted
+/// first part, else the longest start of the line that `exists` (a path
+/// with spaces needs no quotes), else the first word.
+pub fn split_command(line: &str, exists: impl Fn(&str) -> bool) -> (String, String) {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix('"') {
+        return match rest.split_once('"') {
+            Some((program, args)) => (program.to_string(), args.trim().to_string()),
+            None => (rest.to_string(), String::new()),
+        };
+    }
+    let mut ends: Vec<usize> = line
+        .char_indices()
+        .filter(|(_, c)| c.is_whitespace())
+        .map(|(i, _)| i)
+        .collect();
+    ends.push(line.len());
+    for &end in ends.iter().rev() {
+        let program = &line[..end];
+        if exists(program) {
+            return (program.to_string(), line[end..].trim().to_string());
+        }
+    }
+    let end = ends[0];
+    (line[..end].to_string(), line[end..].trim().to_string())
+}
+
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
@@ -271,4 +325,31 @@ fn url_encode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_command;
+
+    #[test]
+    fn splits_a_run_line_as_the_run_box_does() {
+        let none = |_: &str| false;
+        assert_eq!(
+            split_command("  cmd /k dir  ", none),
+            ("cmd".into(), "/k dir".into())
+        );
+        assert_eq!(
+            split_command(r#""C:\Program Files\App\app.exe" --new"#, none),
+            (r"C:\Program Files\App\app.exe".into(), "--new".into())
+        );
+        let app = |p: &str| p == r"C:\Program Files\App\app.exe";
+        assert_eq!(
+            split_command(r"C:\Program Files\App\app.exe --new x", app),
+            (r"C:\Program Files\App\app.exe".into(), "--new x".into())
+        );
+        assert_eq!(
+            split_command("https://example.com", none),
+            ("https://example.com".into(), String::new())
+        );
+    }
 }

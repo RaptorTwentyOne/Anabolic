@@ -108,6 +108,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # A .sha256 beside each file, in the form `sha256sum -c` reads. GitHub
+      # shows the same digest beside each download, and the updater checks
+      # that one; it takes only the names ending in .zip and .msi.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          for file in anabolic-*; do
+            sha256sum "$file" > "$file.sha256"
+          done
       - uses: softprops/action-gh-release@v3
         with:
           draft: true
@@ -116,5 +125,8 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/anabolic-*-windows-x64.msi
+            dist/anabolic-*-windows-x64.msi.sha256
             dist/anabolic-*-windows-x64.zip
+            dist/anabolic-*-windows-x64.zip.sha256
             dist/anabolic-*-linux-x64.zip
+            dist/anabolic-*-linux-x64.zip.sha256

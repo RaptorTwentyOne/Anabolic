@@ -268,106 +268,112 @@ pub(super) fn handles_tab(
             }
         });
         if grouped {
+            const TITLES: [(&str, bool); 3] =
+                [("Count", true), ("Type", false), ("Name / target", false)];
+            const COLUMNS: [Spec; 3] = [Spec::new(80.0), Spec::new(120.0), Spec::new(400.0).clip()];
             let groups = &view.group_rows;
-            TableBuilder::new(ui)
-                .id_salt("handle-names")
-                .striped(true)
-                .resizable(true)
-                .auto_shrink([false, false])
-                .sense(Sense::click())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::initial(80.0))
-                .column(Column::initial(120.0))
-                .column(Column::remainder().clip(true))
-                .header(20.0, |mut h| {
-                    for (i, (t, numeric)) in
-                        [("Count", true), ("Type", false), ("Name / target", false)]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        h.col(|ui| {
-                            changed |= view.groups.header(ui, i, t, numeric);
+            Columns::load(ui.ctx(), "handle-names", &COLUMNS).show(ui, |table, columns| {
+                table
+                    .striped(true)
+                    .resizable(true)
+                    .auto_shrink([false, false])
+                    .sense(Sense::click())
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .header(20.0, |mut h| {
+                        columns.titles(&mut h, |ui, c| {
+                            let (title, numeric) = TITLES[c];
+                            changed |= view.groups.header(ui, c, title, numeric);
                         });
-                    }
-                })
-                .body(|body| {
-                    body.rows(18.0, groups.len(), |mut row| {
-                        let (t, name, count) = &report.name_groups[groups[row.index()] as usize];
-                        row.col(|ui| right(ui, fmt::count(*count as u64)));
-                        row.col(|ui| {
-                            ui.label(&*report.type_name(*t));
-                        });
-                        row.col(|ui| {
-                            ui.add(Label::new(&**name).truncate());
-                        });
-                        row.response().context_menu(|ui| {
-                            crate::panes::group_menu(ui, &report.type_name(*t), name, out);
-                        });
-                    });
-                });
-        } else {
-            let rows = &view.rows;
-            TableBuilder::new(ui)
-                .id_salt("handle-list")
-                .striped(true)
-                .resizable(true)
-                .auto_shrink([false, false])
-                .sense(Sense::click())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::initial(90.0))
-                .column(Column::initial(120.0))
-                .column(Column::initial(100.0))
-                .column(Column::remainder().clip(true))
-                .header(20.0, |mut h| {
-                    for (i, t) in [words::NUMBER, "Type", "Access", "Name / target"]
-                        .into_iter()
-                        .enumerate()
-                    {
-                        h.col(|ui| {
-                            changed |= view.table.header(ui, i, t, false);
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(18.0, rows.len(), |mut row| {
-                        let i = rows[row.index()] as usize;
-                        let e = &report.entries[i];
-                        row.set_selected(selected == Some(e.value));
-                        row.col(|ui| {
-                            ui.label(RichText::new(value_text(e.value)).monospace());
-                        });
-                        row.col(|ui| {
-                            ui.label(&*report.type_name(e.type_index));
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(access_text(e.access))
-                                    .monospace()
-                                    .color(theme::TEXT_WEAK),
-                            );
-                        });
-                        row.col(|ui| {
-                            if let Some(Some(name)) = report.names.get(i) {
-                                ui.add(Label::new(&**name).truncate());
+                    })
+                    .body(|body| {
+                        columns.keep(body.widths());
+                        body.rows(18.0, groups.len(), |mut row| {
+                            let (t, name, count) =
+                                &report.name_groups[groups[row.index()] as usize];
+                            for &c in columns.order() {
+                                row.col(|ui| match c {
+                                    0 => right(ui, fmt::count(*count as u64)),
+                                    1 => {
+                                        ui.label(&*report.type_name(*t));
+                                    }
+                                    _ => {
+                                        ui.add(Label::new(&**name).truncate());
+                                    }
+                                });
                             }
+                            row.response().context_menu(|ui| {
+                                crate::panes::group_menu(ui, &report.type_name(*t), name, out);
+                            });
                         });
-                        let response = row.response();
-                        if response.clicked() {
-                            clicked = Some(e.value);
-                        }
-                        response.context_menu(|ui| {
-                            let name = report.names.get(i).cloned().flatten();
-                            crate::panes::handle_menu(
-                                ui,
-                                p,
-                                &report.type_name(e.type_index),
-                                e,
-                                name.as_deref(),
-                                out,
-                            );
+                    })
+            });
+        } else {
+            const TITLES: [&str; 4] = [words::NUMBER, "Type", "Access", "Name / target"];
+            const COLUMNS: [Spec; 4] = [
+                Spec::new(90.0),
+                Spec::new(120.0),
+                Spec::new(100.0),
+                Spec::new(400.0).clip(),
+            ];
+            let rows = &view.rows;
+            Columns::load(ui.ctx(), "handle-list", &COLUMNS).show(ui, |table, columns| {
+                table
+                    .striped(true)
+                    .resizable(true)
+                    .auto_shrink([false, false])
+                    .sense(Sense::click())
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .header(20.0, |mut h| {
+                        columns.titles(&mut h, |ui, c| {
+                            changed |= view.table.header(ui, c, TITLES[c], false);
                         });
-                    });
-                });
+                    })
+                    .body(|body| {
+                        columns.keep(body.widths());
+                        body.rows(18.0, rows.len(), |mut row| {
+                            let i = rows[row.index()] as usize;
+                            let e = &report.entries[i];
+                            row.set_selected(selected == Some(e.value));
+                            for &c in columns.order() {
+                                row.col(|ui| match c {
+                                    0 => {
+                                        ui.label(RichText::new(value_text(e.value)).monospace());
+                                    }
+                                    1 => {
+                                        ui.label(&*report.type_name(e.type_index));
+                                    }
+                                    2 => {
+                                        ui.label(
+                                            RichText::new(access_text(e.access))
+                                                .monospace()
+                                                .color(theme::TEXT_WEAK),
+                                        );
+                                    }
+                                    _ => {
+                                        if let Some(Some(name)) = report.names.get(i) {
+                                            ui.add(Label::new(&**name).truncate());
+                                        }
+                                    }
+                                });
+                            }
+                            let response = row.response();
+                            if response.clicked() {
+                                clicked = Some(e.value);
+                            }
+                            response.context_menu(|ui| {
+                                let name = report.names.get(i).cloned().flatten();
+                                crate::panes::handle_menu(
+                                    ui,
+                                    p,
+                                    &report.type_name(e.type_index),
+                                    e,
+                                    name.as_deref(),
+                                    out,
+                                );
+                            });
+                        });
+                    })
+            });
         }
         if changed {
             view.refilter();

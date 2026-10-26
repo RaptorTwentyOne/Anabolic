@@ -19,6 +19,7 @@ mod bench;
 #[path = "linux/desktop.rs"]
 mod desktop;
 mod details;
+mod devports;
 mod dialogs;
 mod displays_view;
 mod fmt;
@@ -29,14 +30,17 @@ mod history_page;
 mod icons;
 mod mcp;
 mod mcp_page;
+mod meter;
 mod netnames;
 mod network_page;
 mod origin;
+mod overview_page;
 mod panes;
 mod perf;
 mod platform;
 mod proc_table;
 mod rules;
+mod runaway;
 mod services_page;
 #[cfg(windows)]
 #[path = "windows/session.rs"]

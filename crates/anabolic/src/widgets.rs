@@ -242,3 +242,66 @@ pub fn stat(ui: &mut Ui, width: f32, caption: &str, value: impl Into<WidgetText>
         ui.add(Label::new(value).truncate());
     });
 }
+
+/// A table row's right click menu, kept with what the row shows (`what`,
+/// in `table`) instead of its place: rows trade places as their numbers
+/// change, and the menu stays with what it was opened on.
+pub fn row_menu(
+    response: &egui::Response,
+    table: &str,
+    what: impl std::hash::Hash + std::fmt::Debug,
+    add: impl FnOnce(&mut Ui),
+) {
+    egui::Popup::context_menu(response)
+        .id(egui::Id::new(("row menu", table, what)))
+        .show(add);
+}
+
+/// A vertical scroll bar for the scroll area `scroll` showed, at `right`:
+/// for an area wider than what shows of it, whose own bar is off to the
+/// right. Dragging the handle scrolls, and so does a click beside it.
+pub fn scroll_bar<R>(ui: &Ui, right: f32, scroll: &egui::scroll_area::ScrollAreaOutput<R>) {
+    let view = scroll.inner_rect;
+    let max = scroll.content_size.y - view.height();
+    if max <= 0.5 {
+        return;
+    }
+    let track = Rect::from_x_y_ranges(right - 10.0..=right, view.y_range());
+    let id = scroll.id.with("own bar");
+    let response = ui.interact(track, id, Sense::click_and_drag());
+    let length = (track.height() * view.height() / scroll.content_size.y)
+        .clamp(20.0_f32.min(track.height()), track.height());
+    let travel = (track.height() - length).max(1.0);
+    let mut offset = scroll.state.offset.y.clamp(0.0, max);
+    let top = |offset: f32| track.top() + travel * offset / max;
+    if let Some(pointer) = response.interact_pointer_pos() {
+        // Where on the handle it was taken; beside it: by its middle.
+        let grab = ui.data_mut(|d| {
+            let grab = d.get_temp_mut_or_insert_with(id, || {
+                let y = pointer.y - top(offset);
+                if (0.0..=length).contains(&y) {
+                    y
+                } else {
+                    length / 2.0
+                }
+            });
+            *grab
+        });
+        offset = ((pointer.y - grab - track.top()) / travel * max).clamp(0.0, max);
+        let mut state = scroll.state;
+        state.offset.y = offset;
+        state.store(ui.ctx(), scroll.id);
+        ui.ctx().request_repaint();
+    } else {
+        ui.data_mut(|d| d.remove::<f32>(id));
+    }
+    let active = response.hovered() || response.dragged();
+    let width = if active { 8.0 } else { 4.0 };
+    let handle = Rect::from_min_size(pos2(right - width - 2.0, top(offset)), vec2(width, length));
+    let color = if active {
+        theme::TEXT_DIM
+    } else {
+        theme::BORDER_STRONG
+    };
+    ui.painter().rect_filled(handle, width / 2.0, color);
+}

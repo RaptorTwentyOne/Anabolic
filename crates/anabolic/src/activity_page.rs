@@ -24,10 +24,9 @@ use anabolic_core::activity::{
 use anabolic_core::{ProcKey, ProcState, Snapshot};
 use crossbeam_channel::Receiver;
 use eframe::egui::{self, Align, Color32, Label, Layout, RichText, Sense, TextEdit, Ui};
-use egui_extras::{Column, TableBuilder};
 
 use crate::proc_table::{UiCmd, item};
-use crate::table::TableView;
+use crate::table::{Columns, Spec, TableView};
 use crate::{fmt, panes, theme, widgets};
 
 #[cfg(windows)]
@@ -80,6 +79,17 @@ const RECORD_INTRO: &str = "Start it here and every step it takes is listed from
 const PROGRAM_HINT: &str = r"C:\Path\To\setup.exe";
 #[cfg(target_os = "linux")]
 const PROGRAM_HINT: &str = "/path/to/program";
+
+/// The list's columns, by number.
+const TITLES: [&str; 6] = ["Time", "Process", "Operation", "Path", "Result", "Detail"];
+const COLUMNS: [Spec; 6] = [
+    Spec::new(96.0),
+    Spec::new(150.0).clip(),
+    Spec::new(110.0).clip(),
+    Spec::new(520.0).clip(),
+    Spec::new(130.0).clip(),
+    Spec::new(300.0).clip(),
+];
 
 /// Steps kept; older ones roll off. Recording the whole computer makes
 /// 3,000 to 13,000 a second here, about 135 bytes each.
@@ -1641,81 +1651,85 @@ pub fn show(
     let names = &page.names;
     let view = &mut page.view;
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("activity")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .stick_to_bottom(view.sort.is_none())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(96.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(110.0).clip(true))
-            .column(Column::initial(520.0).clip(true))
-            .column(Column::initial(130.0).clip(true))
-            .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for (i, t) in ["Time", "Process", "Operation", "Path", "Result", "Detail"]
-                    .into_iter()
-                    .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, false);
+        Columns::load(ui.ctx(), "activity", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .stick_to_bottom(view.sort.is_none())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        view.header(ui, c, TITLES[c], false);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, visible.len(), |mut row| {
-                    let e = &events[(visible[row.index()] - first) as usize];
-                    row.set_selected(selected == Some(e.seq));
-                    let failed = e.failed();
-                    row.col(|ui| {
-                        ui.label(RichText::new(fmt::clock(e.at, true)).color(theme::TEXT_WEAK));
-                    });
-                    row.col(|ui| {
-                        let name = names
-                            .get(&e.pid)
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| format!("PID {}", e.pid));
-                        ui.add(Label::new(name).truncate());
-                    });
-                    row.col(|ui| {
-                        ui.label(RichText::new(e.kind.label()).color(group_color(e.kind.group())));
-                    });
-                    row.col(|ui| {
-                        let mut text = RichText::new(&*e.path);
-                        if e.kind.changes() {
-                            text = text.strong();
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, visible.len(), |mut row| {
+                        let e = &events[(visible[row.index()] - first) as usize];
+                        row.set_selected(selected == Some(e.seq));
+                        let failed = e.failed();
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    ui.label(
+                                        RichText::new(fmt::clock(e.at, true))
+                                            .color(theme::TEXT_WEAK),
+                                    );
+                                }
+                                1 => {
+                                    let name = names
+                                        .get(&e.pid)
+                                        .map(|n| n.to_string())
+                                        .unwrap_or_else(|| format!("PID {}", e.pid));
+                                    ui.add(Label::new(name).truncate());
+                                }
+                                2 => {
+                                    ui.label(
+                                        RichText::new(e.kind.label())
+                                            .color(group_color(e.kind.group())),
+                                    );
+                                }
+                                3 => {
+                                    let mut text = RichText::new(&*e.path);
+                                    if e.kind.changes() {
+                                        text = text.strong();
+                                    }
+                                    ui.add(Label::new(text).truncate());
+                                }
+                                4 => {
+                                    let color = if failed { theme::BAD } else { theme::TEXT_WEAK };
+                                    ui.label(RichText::new(e.result_text()).color(color));
+                                }
+                                _ => {
+                                    let mut detail = detail_text(e).into_owned();
+                                    if e.count > 1 {
+                                        detail = format!("{}×  {detail}", e.count);
+                                    }
+                                    if e.bytes > 0 {
+                                        detail = format!("{}  {detail}", fmt::bytes(e.bytes));
+                                    }
+                                    ui.add(
+                                        Label::new(RichText::new(detail).color(theme::TEXT_DIM))
+                                            .truncate(),
+                                    );
+                                }
+                            });
                         }
-                        ui.add(Label::new(text).truncate());
-                    });
-                    row.col(|ui| {
-                        let color = if failed { theme::BAD } else { theme::TEXT_WEAK };
-                        ui.label(RichText::new(e.result_text()).color(color));
-                    });
-                    row.col(|ui| {
-                        let mut detail = detail_text(e).into_owned();
-                        if e.count > 1 {
-                            detail = format!("{}×  {detail}", e.count);
+                        let response = row.response();
+                        if response.clicked() {
+                            clicked = Some(e.seq);
                         }
-                        if e.bytes > 0 {
-                            detail = format!("{}  {detail}", fmt::bytes(e.bytes));
-                        }
-                        ui.add(Label::new(RichText::new(detail).color(theme::TEXT_DIM)).truncate());
+                        widgets::row_menu(&response, "activity", e.seq, |ui| {
+                            let name = names.get(&e.pid).cloned();
+                            if let Some(how) = step_menu(ui, e, name, snap, out) {
+                                narrow = Some(how);
+                            }
+                        });
                     });
-                    let response = row.response();
-                    if response.clicked() {
-                        clicked = Some(e.seq);
-                    }
-                    response.context_menu(|ui| {
-                        let name = names.get(&e.pid).cloned();
-                        if let Some(how) = step_menu(ui, e, name, snap, out) {
-                            narrow = Some(how);
-                        }
-                    });
-                });
-            });
+                })
+        });
     });
     if let Some(how) = narrow {
         page.narrow(how);

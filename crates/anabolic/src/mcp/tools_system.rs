@@ -310,6 +310,12 @@ impl AnabolicMcp {
         for leak in self.shared.leaks.load().iter() {
             attention.push(fmt::leak(leak));
         }
+        for r in crate::runaway::find(&snap, crate::runaway::DEFAULT_AT, &[]) {
+            attention.push(format!(
+                "{}: a script or a build gone wrong, most likely.",
+                r.headline()
+            ));
+        }
         for t in s.sensors.iter().filter(|t| t.heat() == Heat::Hot) {
             attention.push(format!(
                 "{} {} is at {:.0} °C{}.",

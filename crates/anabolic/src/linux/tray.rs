@@ -38,6 +38,8 @@ struct Shared {
     events: Sender<TrayEvent>,
     ctx: egui::Context,
     tip: Mutex<String>,
+    /// The CPU meter's level and colour (see `meter`); None: the plain logo.
+    meter: Mutex<Option<(usize, bool)>>,
 }
 
 impl Shared {
@@ -58,17 +60,28 @@ type Pixmap = (i32, i32, Vec<u8>);
 /// A tooltip: icon name, icon, title, text.
 type ToolTip = (String, Vec<Pixmap>, String, String);
 
-/// The logo, 64 pixels square, as the protocol wants it: ARGB32 in network
-/// byte order.
-fn pixmap() -> Pixmap {
-    let rgba = include_bytes!("../../assets/logo/icon-64.rgba");
-    let argb = rgba
-        .as_chunks::<4>()
+const LOGO: &[u8] = include_bytes!("../../assets/logo/icon-64.rgba");
+
+/// RGBA as the protocol wants it: ARGB32 in network byte order.
+fn argb(rgba: &[u8]) -> Vec<u8> {
+    rgba.as_chunks::<4>()
         .0
         .iter()
         .flat_map(|&[r, g, b, a]| [a, r, g, b])
-        .collect();
-    (64, 64, argb)
+        .collect()
+}
+
+/// The logo, 64 pixels square.
+fn pixmap() -> Pixmap {
+    (64, 64, argb(LOGO))
+}
+
+/// The logo with the CPU meter, when it shows.
+fn icon(meter: Option<(usize, bool)>) -> Pixmap {
+    match meter {
+        Some((level, hot)) => (64, 64, argb(&crate::meter::draw(LOGO, 64, level, hot))),
+        None => pixmap(),
+    }
 }
 
 struct Item {
@@ -109,7 +122,8 @@ impl Item {
 
     #[zbus(property)]
     fn icon_pixmap(&self) -> Vec<Pixmap> {
-        vec![pixmap()]
+        let meter = self.shared.meter.lock().map(|m| *m).unwrap_or_default();
+        vec![icon(meter)]
     }
 
     #[zbus(property)]
@@ -149,6 +163,9 @@ impl Item {
 
     #[zbus(signal)]
     async fn new_tool_tip(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn new_icon(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 /// One menu entry and its children: (ia{sv}av).
@@ -307,6 +324,7 @@ impl Tray {
             events,
             ctx,
             tip: Mutex::new(String::new()),
+            meter: Mutex::new(None),
         });
         let name = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
         let conn = zbus::blocking::connection::Builder::session()
@@ -406,6 +424,25 @@ impl Tray {
             ITEM_PATH,
             "org.kde.StatusNotifierItem",
             "NewToolTip",
+            &(),
+        );
+    }
+
+    /// The CPU meter at `cpu` percent, or the plain logo for None. The icon
+    /// is asked for again only when the bar moves a step.
+    pub fn cpu(&self, cpu: Option<f32>) {
+        let want = cpu.map(|c| (crate::meter::level(c, 64), c >= 90.0));
+        if let Ok(mut meter) = self.shared.meter.lock() {
+            if *meter == want {
+                return;
+            }
+            *meter = want;
+        }
+        let _ = self.conn.emit_signal(
+            None::<&str>,
+            ITEM_PATH,
+            "org.kde.StatusNotifierItem",
+            "NewIcon",
             &(),
         );
     }

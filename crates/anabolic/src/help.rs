@@ -21,10 +21,15 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
                 "Processes, Performance, History, Rules, Services, Startup, Stutters, Network, \
                  Activity, MCP",
             ),
+            ("Alt+Home", "Overview"),
             (
                 "Alt+← →",
                 "Back and forward through the pages and processes visited; the mouse's back and \
                  forward buttons too",
+            ),
+            (
+                "Ctrl+N",
+                "Run new task: a program, folder, document or web address",
             ),
             ("Ctrl+H", "Find which process holds a file or handle"),
             ("Space", "Pause or resume the view"),
@@ -51,9 +56,12 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
         ],
     ),
     (
-        "Tables in the details",
+        "Tables",
         &[
             ("Click a title", "Sort by it; again for the other way"),
+            ("Drag a title", "Move its column"),
+            ("Right click a title", "Columns, and back to how they were"),
+            ("Shift+wheel", "Scroll sideways"),
             ("Right click", "What can be done with the row"),
             ("Esc in a filter", "Clear it"),
         ],

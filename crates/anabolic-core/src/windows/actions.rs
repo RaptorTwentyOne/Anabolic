@@ -128,6 +128,8 @@ pub fn perform(action: Action) -> Option<Outcome> {
             });
         }
         Action::Terminate(targets) => return Some(terminate(&targets)),
+        Action::Run { command, elevated } => run(&command, elevated),
+        Action::BrowseProgram => return Some(Outcome::Browsed(browse_program())),
         // Run on their own thread by the runner.
         Action::Dump { .. } => return None,
         Action::Suspend(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtSuspendProcess)
@@ -372,6 +374,154 @@ fn shell_open(target: &str) {
     }
 }
 
+/// What the Run box would start for this line: a file that exists, with
+/// or without ".exe", or what is on the PATH or registered (left to the
+/// shell to find).
+fn exists(program: &str) -> bool {
+    let path = std::path::Path::new(program);
+    path.exists() || (path.extension().is_none() && path.with_extension("exe").exists())
+}
+
+/// Starts a program the way the Run box does. Without administrator
+/// rights asked for, an elevated Anabolic has Explorer start it, so it runs
+/// as the signed-in user does; with them, it is started elevated (a UAC
+/// prompt unless Anabolic is elevated already).
+fn run(command: &str, elevated: bool) -> Result<String, String> {
+    let (program, args) = crate::actions::split_command(command, exists);
+    if program.is_empty() {
+        return Err("Nothing to run".into());
+    }
+    let shown = std::path::Path::new(&program)
+        .file_name()
+        .map_or(program.clone(), |f| f.to_string_lossy().into_owned());
+    let dir = std::env::var("USERPROFILE").unwrap_or_default();
+    let as_user = !elevated && crate::hardening::is_elevated();
+    let started = if as_user {
+        run_as_user(&program, &args, &dir)
+    } else {
+        shell_execute(&program, &args, &dir, elevated)
+    };
+    match started {
+        Ok(true) if elevated => Ok(format!("Started {shown} as administrator")),
+        Ok(true) => Ok(format!("Started {shown}")),
+        // Cancelled at the UAC prompt: nothing to say.
+        Ok(false) => Ok(String::new()),
+        Err(e) => Err(format!("Could not start {shown}: {e}")),
+    }
+}
+
+/// ShellExecuteEx, its own error dialogs off: true once started, false
+/// when the UAC prompt was cancelled.
+fn shell_execute(program: &str, args: &str, dir: &str, elevated: bool) -> Result<bool, String> {
+    use windows::Win32::Foundation::{ERROR_CANCELLED, GetLastError};
+    use windows::Win32::UI::Shell::{
+        SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
+    let (file, params, directory) = (wide(program), wide(args), wide(dir));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+        lpVerb: if elevated { w!("runas") } else { w!("open") },
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        lpDirectory: PCWSTR(directory.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    match unsafe { ShellExecuteExW(&mut info) } {
+        Ok(()) => Ok(true),
+        Err(_) if unsafe { GetLastError() } == ERROR_CANCELLED => Ok(false),
+        Err(e) => Err(error_text(&e)),
+    }
+}
+
+/// Starts a program as the signed-in user, from an elevated Anabolic:
+/// through the desktop's own shell view, whose ShellExecute runs inside
+/// Explorer and so with Explorer's rights.
+fn run_as_user(program: &str, args: &str, dir: &str) -> Result<bool, String> {
+    use windows::Win32::System::Com::{
+        CLSCTX_LOCAL_SERVER, CoCreateInstance, IDispatch, IServiceProvider,
+    };
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Shell::{
+        IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, SID_STopLevelBrowser,
+        SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
+    };
+    use windows::core::{BSTR, Interface};
+    let shell = || -> windows::core::Result<IShellDispatch2> {
+        unsafe {
+            let windows: IShellWindows =
+                CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)?;
+            let nowhere = VARIANT::default();
+            let mut hwnd = 0;
+            let desktop = windows.FindWindowSW(
+                &nowhere,
+                &nowhere,
+                SWC_DESKTOP,
+                &mut hwnd,
+                SWFO_NEEDDISPATCH,
+            )?;
+            let browser: IShellBrowser = desktop
+                .cast::<IServiceProvider>()?
+                .QueryService(&SID_STopLevelBrowser)?;
+            let view = browser.QueryActiveShellView()?;
+            // As IDispatch: only that crosses into Explorer's process.
+            let folder: IShellFolderViewDual =
+                view.GetItemObject::<IDispatch>(SVGIO_BACKGROUND)?.cast()?;
+            folder.Application()?.cast()
+        }
+    };
+    let shell = shell().map_err(|_| {
+        "Explorer is not running, and only it can start a program without administrator rights \
+         from here. Tick \"Run as administrator\" to start it elevated."
+            .to_string()
+    })?;
+    unsafe {
+        shell.ShellExecute(
+            &BSTR::from(program),
+            &VARIANT::from(args),
+            &VARIANT::from(dir),
+            &VARIANT::from("open"),
+            &VARIANT::from(SW_SHOWNORMAL.0),
+        )
+    }
+    .map(|_| true)
+    .map_err(|e| error_text(&e))
+}
+
+/// Windows' Open dialog over Anabolic's window, for a program file.
+fn browse_program() -> Option<String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let types = [
+            COMDLG_FILTERSPEC {
+                pszName: w!("Programs"),
+                pszSpec: w!("*.exe;*.com;*.bat;*.cmd;*.lnk;*.msc;*.ps1"),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: w!("All files"),
+                pszSpec: w!("*.*"),
+            },
+        ];
+        let _ = dialog.SetFileTypes(&types);
+        let _ = dialog.SetTitle(w!("Run new task"));
+        // Cancelled: an error.
+        dialog.Show(crate::instance::own_window()).ok()?;
+        let name = dialog
+            .GetResult()
+            .ok()?
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .ok()?;
+        let path = name.to_string().ok();
+        CoTaskMemFree(Some(name.0 as *const c_void));
+        path
+    }
+}
+
 /// Starts a new elevated instance of the current executable (UAC prompt).
 /// It waits for this one to exit before taking over as the session's
 /// Anabolic (`--after`), or it would find us still running and hand over.
@@ -413,4 +563,64 @@ fn close_remote_handle(pid: u32, handle: u64) -> Result<(), String> {
         )
     }
     .map_err(|e| error_text(&e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs a windowless script that writes the groups of the token it got,
+    /// and answers whether that token was elevated (High integrity).
+    fn started_elevated(elevated: bool) -> bool {
+        let dir = std::env::temp_dir().join(format!("anabolic-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join(format!("groups-{elevated}.txt"));
+        let _ = std::fs::remove_file(&out);
+        let script = dir.join(format!("groups-{elevated}.vbs"));
+        std::fs::write(
+            &script,
+            format!(
+                "CreateObject(\"WScript.Shell\").Run \"cmd /c %SystemRoot%\\System32\\whoami.exe /groups > \"\"{}\"\"\", 0, True",
+                out.display()
+            ),
+        )
+        .unwrap();
+        thread_init();
+        let line = format!("wscript.exe //B \"{}\"", script.display());
+        run(&line, elevated).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let groups = loop {
+            if let Ok(text) = std::fs::read_to_string(&out)
+                && text.contains("S-1-16-")
+            {
+                break text;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the script wrote nothing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        // S-1-16-12288: High Mandatory Level.
+        groups.contains("S-1-16-12288")
+    }
+
+    #[test]
+    #[ignore = "needs an elevated test run and Explorer; runs a windowless script"]
+    fn runs_with_and_without_admin_rights_from_an_elevated_copy() {
+        assert!(crate::hardening::is_elevated(), "run the tests elevated");
+        assert!(
+            !started_elevated(false),
+            "unticked should start it as the user"
+        );
+        assert!(started_elevated(true));
+        // Asked of Windows directly, a missing program is an error, not a
+        // dialog. (Through Explorer, Explorer says so itself.)
+        let e = run("anabolic-no-such-program-here.exe", true).unwrap_err();
+        assert!(
+            e.starts_with("Could not start anabolic-no-such-program-here.exe"),
+            "{e}"
+        );
+    }
 }

@@ -8,11 +8,18 @@
 //! window back or quits. A thread of its own owns a hidden window that
 //! receives the icon's clicks, so they work while the UI thread sleeps.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
 use eframe::egui;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateCompatibleDC, CreateDIBSection,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDIBits,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_RESPECT_QUIET_TIME,
@@ -20,13 +27,14 @@ use windows::Win32::UI::Shell::{
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GWLP_USERDATA, GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, HICON,
-    IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON,
-    SetForegroundWindow, SetMenuDefaultItem, SetWindowLongPtrW, TPM_NONOTIFY, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE,
-    WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WNDCLASSW, WS_OVERLAPPED,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetIconInfo, GetMessageW,
+    GetSystemMetrics, GetWindowLongPtrW, HICON, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
+    MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow, SetMenuDefaultItem,
+    SetWindowLongPtrW, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP,
+    WM_NULL, WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -39,6 +47,19 @@ pub enum TrayEvent {
 pub struct Tray {
     hwnd: isize,
     events: Receiver<TrayEvent>,
+    meter: RefCell<Meter>,
+    readded: Arc<AtomicBool>,
+}
+
+/// The CPU meter drawn into the icon (see `meter`).
+struct Meter {
+    /// The logo's pixels at the icon's size, RGBA; empty when unreadable.
+    logo: Vec<u8>,
+    size: usize,
+    /// The level and colour shown; None while the plain logo is.
+    shown: Option<(usize, bool)>,
+    /// The icon drawn last, destroyed once replaced.
+    icon: HICON,
 }
 
 const WM_TRAY: u32 = WM_APP + 1;
@@ -57,6 +78,9 @@ struct State {
     /// Sent to every top-level window when Explorer (re)starts: the icon
     /// has to be added again.
     taskbar_created: u32,
+    /// The icon was added again with the plain logo: the meter has to be
+    /// drawn again.
+    readded: Arc<AtomicBool>,
 }
 
 /// Copies `text` into a fixed, nul-terminated buffer, cut to fit.
@@ -68,6 +92,111 @@ fn fill(dst: &mut [u16], text: &str) {
         i += 1;
     }
     dst[i] = 0;
+}
+
+/// A 32-bit DIB section header, top-down.
+fn dib_header(size: i32) -> BITMAPINFO {
+    BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size,
+            biHeight: -size,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The executable's icon at `size` pixels, RGBA.
+fn logo_pixels(size: i32) -> Option<Vec<u8>> {
+    unsafe {
+        let module = GetModuleHandleW(None).ok()?;
+        let icon = LoadImageW(
+            Some(module.into()),
+            PCWSTR(std::ptr::without_provenance(1)),
+            IMAGE_ICON,
+            size,
+            size,
+            LR_DEFAULTCOLOR,
+        )
+        .ok()?;
+        let icon = HICON(icon.0);
+        let pixels = icon_pixels(icon, size);
+        let _ = DestroyIcon(icon);
+        pixels
+    }
+}
+
+/// An icon's pixels, RGBA, `size` square.
+fn icon_pixels(icon: HICON, size: i32) -> Option<Vec<u8>> {
+    unsafe {
+        let mut info = ICONINFO::default();
+        GetIconInfo(icon, &mut info).ok()?;
+        let dc = CreateCompatibleDC(None);
+        let mut header = dib_header(size);
+        let mut pixels = vec![0u8; (size * size * 4) as usize];
+        let lines = GetDIBits(
+            dc,
+            info.hbmColor,
+            0,
+            size as u32,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut header,
+            DIB_RGB_COLORS,
+        );
+        let _ = DeleteDC(dc);
+        let _ = DeleteObject(info.hbmColor.into());
+        let _ = DeleteObject(info.hbmMask.into());
+        if lines == 0 {
+            return None;
+        }
+        for px in pixels.as_chunks_mut::<4>().0 {
+            px.swap(0, 2);
+        }
+        // An icon drawn without alpha would come out invisible.
+        if pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
+            for px in pixels.as_chunks_mut::<4>().0 {
+                px[3] = 255;
+            }
+        }
+        Some(pixels)
+    }
+}
+
+/// An icon from RGBA pixels (straight alpha), `size` square.
+fn icon_from(rgba: &[u8], size: i32) -> Option<HICON> {
+    unsafe {
+        let header = dib_header(size);
+        let mut bits = std::ptr::null_mut();
+        let color = CreateDIBSection(None, &header, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+        let dst = std::slice::from_raw_parts_mut(bits.cast::<u8>(), rgba.len());
+        for (d, s) in dst
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(rgba.as_chunks::<4>().0)
+        {
+            *d = [s[2], s[1], s[0], s[3]];
+        }
+        // The alpha says what shows; the mask has to be there all the same.
+        let row = (size as usize).div_ceil(16) * 2;
+        let zeros = vec![0u8; row * size as usize];
+        let mask = CreateBitmap(size, size, 1, 1, Some(zeros.as_ptr().cast()));
+        let info = ICONINFO {
+            fIcon: true.into(),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: color,
+        };
+        let icon = CreateIconIndirect(&info).ok();
+        let _ = DeleteObject(color.into());
+        let _ = DeleteObject(mask.into());
+        icon
+    }
 }
 
 fn data(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -165,6 +294,7 @@ unsafe extern "system" fn window_proc(
         }
         m if m == state.taskbar_created => {
             add_icon(hwnd, state.icon);
+            state.readded.store(true, Ordering::Relaxed);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -178,6 +308,8 @@ impl Tray {
     pub fn start(ctx: egui::Context) -> Option<Tray> {
         let (events, rx) = mpsc::channel();
         let (ready, ready_rx) = mpsc::channel::<Option<isize>>();
+        let readded = Arc::new(AtomicBool::new(false));
+        let readded_too = readded.clone();
         let spawned = std::thread::Builder::new()
             .name("anabolic-tray".into())
             .spawn(move || unsafe {
@@ -231,6 +363,7 @@ impl Tray {
                     ctx,
                     icon,
                     taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+                    readded: readded_too,
                 }));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
                 if !add_icon(hwnd, icon) {
@@ -253,7 +386,55 @@ impl Tray {
             return None;
         }
         let hwnd = ready_rx.recv_timeout(Duration::from_secs(3)).ok()??;
-        Some(Tray { hwnd, events: rx })
+        let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
+        Some(Tray {
+            hwnd,
+            events: rx,
+            meter: RefCell::new(Meter {
+                logo: logo_pixels(size).unwrap_or_default(),
+                size: size.max(0) as usize,
+                shown: None,
+                icon: HICON::default(),
+            }),
+            readded,
+        })
+    }
+
+    /// The CPU meter at `cpu` percent, or the plain logo for None. Redrawn
+    /// only when the bar moves a step.
+    pub fn cpu(&self, cpu: Option<f32>) {
+        let mut meter = self.meter.borrow_mut();
+        if meter.logo.is_empty() {
+            return;
+        }
+        let want = cpu.map(|c| (crate::meter::level(c, meter.size), c >= 90.0));
+        if self.readded.swap(false, Ordering::Relaxed) {
+            meter.shown = None;
+            if want.is_none() {
+                return;
+            }
+        }
+        if want == meter.shown {
+            return;
+        }
+        let pixels = match want {
+            Some((level, hot)) => crate::meter::draw(&meter.logo, meter.size, level, hot),
+            None => meter.logo.clone(),
+        };
+        let Some(icon) = icon_from(&pixels, meter.size as i32) else {
+            return;
+        };
+        let mut d = data(self.hwnd());
+        d.uFlags = NIF_ICON;
+        d.hIcon = icon;
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
+            if !meter.icon.is_invalid() {
+                let _ = DestroyIcon(meter.icon);
+            }
+        }
+        meter.icon = icon;
+        meter.shown = want;
     }
 
     fn hwnd(&self) -> HWND {
@@ -292,6 +473,29 @@ impl Drop for Tray {
         // The thread removes the icon and ends with its window.
         unsafe {
             let _ = PostMessageW(Some(self.hwnd()), WM_CLOSE, WPARAM(0), LPARAM(0));
+            let icon = self.meter.get_mut().icon;
+            if !icon.is_invalid() {
+                let _ = DestroyIcon(icon);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_meter_icon_shows_what_was_drawn() {
+        let size = 16;
+        // A half-transparent orange square for the logo.
+        let logo: Vec<u8> = (0..size * size).flat_map(|_| [255, 106, 61, 128]).collect();
+        let drawn = crate::meter::draw(&logo, size, 8, false);
+        let icon = icon_from(&drawn, size as i32).expect("an icon");
+        let back = icon_pixels(icon, size as i32).expect("its pixels");
+        unsafe {
+            let _ = DestroyIcon(icon);
+        }
+        assert_eq!(back, drawn);
     }
 }

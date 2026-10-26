@@ -213,6 +213,136 @@ impl ConfirmDialog {
     }
 }
 
+/// Run new task: a program, document, folder or web address to start.
+pub struct RunDialog {
+    pub line: String,
+    /// With administrator rights (Windows).
+    pub elevated: bool,
+    /// Put the cursor in the line on the next frame.
+    pub focus: bool,
+    /// Windows' Open dialog is up.
+    pub browsing: bool,
+}
+
+pub enum RunChoice {
+    Pending,
+    Run,
+    Browse,
+    Cancel,
+}
+
+impl RunDialog {
+    pub fn new(elevated: bool) -> Self {
+        Self {
+            line: String::new(),
+            elevated,
+            focus: true,
+            browsing: false,
+        }
+    }
+
+    /// `history` is what ran lately; `anabolic_elevated` says what the
+    /// checkbox changes.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        history: &[String],
+        anabolic_elevated: bool,
+    ) -> RunChoice {
+        let mut choice = RunChoice::Pending;
+        let response = Modal::new(Id::new("run-dialog")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.label(widgets::strong("Run new task", theme::SUBTITLE));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(if cfg!(windows) {
+                    "The name of a program, folder, document or web address, as in Windows' Run \
+                     box. Arguments go after the program."
+                } else {
+                    "A command line, as a terminal would run it, or a folder, document or web \
+                     address to open."
+                })
+                .color(theme::TEXT_WEAK),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut self.line)
+                        .hint_text(if cfg!(windows) {
+                            "notepad, cmd /k dir, C:\\Projects, https://…"
+                        } else {
+                            "gnome-text-editor, htop, ~/Projects, https://…"
+                        })
+                        .desired_width(if cfg!(windows) { 330.0 } else { 410.0 }),
+                );
+                if std::mem::take(&mut self.focus) {
+                    field.request_focus();
+                }
+                if field.lost_focus()
+                    && ui.input(|i| i.key_pressed(Key::Enter))
+                    && !self.line.trim().is_empty()
+                {
+                    choice = RunChoice::Run;
+                }
+                if !history.is_empty() {
+                    ui.menu_button(widgets::icon(theme::icon::CHEVRON_DOWN, 10.0), |ui| {
+                        ui.label(
+                            RichText::new("Lately")
+                                .size(theme::META)
+                                .color(theme::TEXT_WEAK),
+                        );
+                        for line in history {
+                            if ui.button(line.as_str()).clicked() {
+                                self.line = line.clone();
+                                self.focus = true;
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("What ran lately");
+                }
+                if cfg!(windows)
+                    && ui
+                        .add_enabled(!self.browsing, egui::Button::new("Browse\u{2026}"))
+                        .clicked()
+                {
+                    choice = RunChoice::Browse;
+                }
+            });
+            if cfg!(windows) {
+                ui.add_space(6.0);
+                ui.checkbox(&mut self.elevated, "Run as administrator")
+                    .on_hover_text(if anabolic_elevated {
+                        "Unticked, it runs as you do, without administrator rights, as if started \
+                         from Explorer."
+                    } else {
+                        "Windows asks at its UAC prompt first."
+                    });
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !self.line.trim().is_empty(),
+                        egui::Button::new(widgets::strong("Run", theme::BODY)),
+                    )
+                    .clicked()
+                {
+                    choice = RunChoice::Run;
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = RunChoice::Cancel;
+                }
+            });
+        });
+        if matches!(choice, RunChoice::Pending) && response.should_close() && !self.browsing {
+            choice = RunChoice::Cancel;
+        }
+        choice
+    }
+}
+
 const TOAST_LIFETIME: Duration = Duration::from_secs(5);
 
 struct Toast {

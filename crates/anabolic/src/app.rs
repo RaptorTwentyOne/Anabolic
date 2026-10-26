@@ -36,6 +36,7 @@ use crate::widgets;
 
 mod chrome;
 mod commands;
+mod exits;
 mod inspect;
 pub(crate) mod mcp;
 mod places;
@@ -244,6 +245,8 @@ pub struct App {
     /// `--waits`: analyze the wait chain of `--pid` once it shows up (the
     /// person who typed the flag asked for it; no dialog).
     pending_waits: bool,
+    /// `--notify-exit`: tell when `--pid` exits (tests).
+    pending_notify_exit: bool,
     /// `--pane [NAME]`: once `--pid` is selected, open the side pane of the
     /// detail tab on its first thread, the module NAME, or the first handle
     /// of type NAME. `--stack` also reads that thread's call stack. Both
@@ -278,6 +281,19 @@ pub struct App {
     update: update::UpdateState,
     /// Back and forward.
     places: places::Places,
+    overview: crate::overview_page::OverviewPage,
+    /// Programs running in many copies, as of the last snapshot.
+    runaways: Vec<crate::runaway::Runaway>,
+    /// Runaways whose bar was closed: not shown again while they last.
+    runaways_hidden: Vec<crate::runaway::Runaway>,
+    /// Runaways a notification told about while the window was closed.
+    runaways_told: Vec<crate::runaway::Runaway>,
+    /// The Run new task window, while open.
+    run_dialog: Option<crate::dialogs::RunDialog>,
+    /// Processes to tell about when they exit.
+    exit_watch: exits::ExitWatch,
+    /// A port and its name being typed into Settings.
+    port_entry: (String, String),
     /// The window is a Wayland one: closing into the notification area
     /// closes it (see `windowless`).
     #[cfg(target_os = "linux")]
@@ -342,6 +358,8 @@ impl App {
                     | "--tab"
                     | "--find"
                     | "--filter"
+                    | "--quick"
+                    | "--app"
                     | "--detail-sort"
                     | "--services"
                     | "--service"
@@ -354,6 +372,8 @@ impl App {
                     | "--mcp-port"
                     | "--mcp"
                     | "--settings"
+                    | "--overview"
+                    | "--run"
             )
         });
         if args.iter().any(|a| a == "--history") {
@@ -382,6 +402,9 @@ impl App {
         }
         if args.iter().any(|a| a == "--settings") {
             settings.tab = Tab::Settings;
+        }
+        if args.iter().any(|a| a == "--overview") {
+            settings.tab = Tab::Overview;
         }
         // `--record PID` or `--record all`: record from the start (tests).
         let mut activity = crate::activity_page::ActivityPage::default();
@@ -415,7 +438,7 @@ impl App {
             }
         }
         let serves_mcp = !args.iter().any(|a| a == "--new") || mcp_port.is_some();
-        // `--network [programs|connections|listening|destinations]`.
+        // `--network [programs|connections|listening|development|destinations|dns]`.
         let mut network = crate::network_page::NetworkPage::default();
         if args.iter().any(|a| a == "--network") {
             use crate::network_page::NetTab;
@@ -423,6 +446,7 @@ impl App {
             network.tab = match value("--network") {
                 Some("connections") => NetTab::Connections,
                 Some("listening") => NetTab::Listening,
+                Some("development") => NetTab::Development,
                 Some("destinations") => NetTab::Destinations,
                 Some("dns") => NetTab::Lookups,
                 _ => NetTab::Programs,
@@ -479,7 +503,23 @@ impl App {
             settings.sort = col;
             settings.descending = col.default_descending();
         }
-        if value("--view").is_some() || sort.is_some() || args.iter().any(|a| a == "--pid") {
+        // `--quick cpu,new`: the one-click filters of the process list.
+        let mut quick = tree::QuickSet::default();
+        for q in value("--quick")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(tree::Quick::parse)
+        {
+            quick.toggle(q);
+        }
+        // `--app NAME`: only that program's processes.
+        let only_app: Option<Arc<str>> = value("--app").map(|a| a.to_ascii_lowercase().into());
+        if value("--view").is_some()
+            || sort.is_some()
+            || !quick.is_empty()
+            || only_app.is_some()
+            || args.iter().any(|a| a == "--pid")
+        {
             settings.tab = Tab::Processes;
         }
         let detail_tab = match value("--tab") {
@@ -571,6 +611,8 @@ impl App {
             icons: IconCache::default(),
             table: ProcTable {
                 dirty: true,
+                quick,
+                only_app,
                 ..Default::default()
             },
             settings,
@@ -641,6 +683,7 @@ impl App {
             focus_search: false,
             pending_pid,
             pending_waits: args.iter().any(|a| a == "--waits"),
+            pending_notify_exit: args.iter().any(|a| a == "--notify-exit"),
             pending_pane: args.iter().any(|a| a == "--pane").then(|| {
                 value("--pane")
                     .filter(|v| !v.starts_with("--"))
@@ -668,6 +711,16 @@ impl App {
             session_only,
             update: update::UpdateState::new(&cc.egui_ctx),
             places: Default::default(),
+            overview: Default::default(),
+            runaways: Vec::new(),
+            runaways_hidden: Vec::new(),
+            runaways_told: Vec::new(),
+            run_dialog: args
+                .iter()
+                .any(|a| a == "--run")
+                .then(|| crate::dialogs::RunDialog::new(false)),
+            exit_watch: Default::default(),
+            port_entry: Default::default(),
             #[cfg(target_os = "linux")]
             wayland: crate::windowless::on_wayland(cc),
             #[cfg(target_os = "linux")]
@@ -749,6 +802,19 @@ impl App {
                     }
                 }
                 Outcome::StillBlocked(paths) => self.settings.blocked = paths,
+                Outcome::Browsed(path) => {
+                    if let Some(dialog) = &mut self.run_dialog {
+                        dialog.browsing = false;
+                        dialog.focus = true;
+                        if let Some(path) = path {
+                            dialog.line = if path.contains(' ') {
+                                format!("\"{path}\"")
+                            } else {
+                                path
+                            };
+                        }
+                    }
+                }
                 Outcome::SignIn { state, error } => {
                     self.sign_in = Some(state);
                     if let Some(e) = error {
@@ -969,6 +1035,7 @@ impl App {
                 self.snapshot = latest;
                 self.table.dirty = true;
                 self.update_alert();
+                self.update_runaways();
                 if self.snapshot.seq.is_multiple_of(30) {
                     self.prune();
                 }
@@ -986,6 +1053,9 @@ impl App {
                     self.go_to(key);
                     if std::mem::take(&mut self.pending_waits) {
                         self.analyze_waits(key);
+                    }
+                    if std::mem::take(&mut self.pending_notify_exit) {
+                        self.notify_exit(key, true);
                     }
                 }
             }
@@ -1064,6 +1134,41 @@ impl App {
             process,
         });
     }
+
+    /// Programs in many copies; a notification for a new one while the
+    /// window is closed, the bar while it is open.
+    fn update_runaways(&mut self) {
+        self.runaways = match self.settings.runaway_at {
+            0 => Vec::new(),
+            at => crate::runaway::find(&self.snapshot, at, &self.settings.runaway_ignored),
+        };
+        let runaways = &self.runaways;
+        self.runaways_hidden
+            .retain(|h| runaways.iter().any(|s| s.same(h)));
+        self.runaways_told
+            .retain(|t| runaways.iter().any(|s| s.same(t)));
+        if !self.hidden {
+            self.runaways_told.clone_from(&self.runaways);
+            return;
+        }
+        let Some(tray) = &self.tray else { return };
+        for runaway in &self.runaways {
+            if !self.runaways_told.iter().any(|t| t.same(runaway)) {
+                tray.notify(
+                    &format!("{} copies of {}", runaway.copies.len(), runaway.name),
+                    &match &runaway.starter {
+                        Some((key, name)) => format!(
+                            "Started by {name} (PID {}). Open Anabolic to end them.",
+                            key.pid
+                        ),
+                        None => "Their starter has exited. Open Anabolic to end them.".into(),
+                    },
+                    true,
+                );
+                self.runaways_told.push(runaway.clone());
+            }
+        }
+    }
 }
 
 /// The flight recorder's setup; None while the history is off.
@@ -1082,6 +1187,7 @@ impl eframe::App for App {
         let started = Instant::now();
         crate::bench::frame(ui.ctx(), frame.info().cpu_usage, self.ui_time);
         let page = match self.settings.tab {
+            Tab::Overview => "Overview".to_string(),
             Tab::Processes => "Processes".to_string(),
             Tab::Performance => format!("Performance/{:?}", self.perf_view),
             Tab::History => "History".to_string(),
@@ -1153,6 +1259,8 @@ impl eframe::App for App {
         self.tables
             .names
             .set_forward(self.snapshot.system.dns_names.clone());
+        // The tables' columns, as the settings keep them.
+        crate::table::sync(&ctx, &mut self.settings.tables);
         // Every graph reads its time span from here, in samples.
         crate::graph::set_window(self.settings.graph_span.seconds().map_or(0, |s| {
             (s * 1000 / self.settings.interval_ms.max(1)) as usize
@@ -1200,7 +1308,44 @@ impl eframe::App for App {
                 .show(ui, |ui| self.update_bar(ui));
         }
 
+        if let Some(runaway) = self.runaway_for_bar().cloned() {
+            egui::Panel::top("runaway")
+                .frame(
+                    Frame::new()
+                        .fill(theme::RAISED)
+                        .inner_margin(Margin::symmetric(10, 5)),
+                )
+                .show(ui, |ui| self.runaway_bar(ui, &runaway, &mut cmds));
+        }
+
         match self.settings.tab {
+            Tab::Overview => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    let input = crate::overview_page::Inputs {
+                        snap: &self.snapshot,
+                        details: &self.details,
+                        cmdlines: &self.cmdlines,
+                        hw: &self.hardware,
+                        cpu_name: &self.cpu_name,
+                        runaways: &self.runaways,
+                        leaks: self.growth.leaks(),
+                        memory_alert: self.alert.as_ref().map(|a| (a.what, a.pct)),
+                        elevated: self.elevated,
+                        relaunching: self.relaunching,
+                        watched_ports: &self.settings.watched_ports,
+                        blocked: &self.settings.blocked,
+                        secrets: self.settings.dump_sign_in_secrets,
+                        exit_watched: &self.exit_watch.keys(),
+                    };
+                    crate::overview_page::show(
+                        ui,
+                        &mut self.overview,
+                        &input,
+                        &mut self.icons,
+                        &mut cmds,
+                    );
+                });
+            }
             Tab::Processes => {
                 let group = self
                     .table
@@ -1256,6 +1401,8 @@ impl eframe::App for App {
                         });
                 }
                 egui::CentralPanel::default_margins().show(ui, |ui| {
+                    proc_table::quick_bar(ui, &mut self.table, &self.snapshot);
+                    ui.add_space(2.0);
                     proc_table::show(
                         ui,
                         &mut self.table,
@@ -1263,6 +1410,7 @@ impl eframe::App for App {
                         &self.details,
                         &mut self.icons,
                         &self.settings,
+                        &self.exit_watch.keys(),
                         &mut cmds,
                     );
                 });
@@ -1370,6 +1518,7 @@ impl eframe::App for App {
                         &self.details,
                         &mut self.tables.names,
                         &self.settings.blocked,
+                        &self.settings.watched_ports,
                         &mut cmds,
                     );
                 });
@@ -1479,6 +1628,8 @@ impl eframe::App for App {
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         crate::bench::inject(raw_input);
+        #[cfg(debug_assertions)]
+        crate::shot::script(_ctx, raw_input);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -1528,6 +1679,7 @@ impl App {
             ctx.request_repaint();
         }
         self.tray_logic(ctx);
+        self.exit_logic(ctx);
         self.hotkey_logic(ctx);
         self.update_logic(ctx);
         // Closing hides the window when its icon can bring it back. Here

@@ -195,7 +195,10 @@ impl App {
     /// some CPU, so nothing else keeps one on.
     pub(super) fn trace_logic(&mut self) {
         let shown = |app: &App, tab: Tab| !app.hidden && app.settings.tab == tab;
-        let want = shown(self, Tab::Network) || self.mcp.wants(Trace::Network);
+        // The Overview lists the dev servers listening.
+        let want = shown(self, Tab::Network)
+            || shown(self, Tab::Overview)
+            || self.mcp.wants(Trace::Network);
         if want != self.network_watched {
             self.network_watched = want;
             self.collector.send(Command::NetActivity(want));

@@ -49,6 +49,8 @@ pub struct Group {
 pub struct Built {
     pub rows: Vec<Row>,
     pub groups: Vec<Group>,
+    /// Live processes the filters keep; None without a filter.
+    pub matched: Option<usize>,
 }
 
 pub type Details = HashMap<ProcKey, Arc<ProcessDetails>>;
@@ -63,6 +65,124 @@ pub struct BuildInput<'a> {
     pub expanded_groups: &'a HashSet<Arc<str>>,
     /// Lowercase; empty for no filter.
     pub filter: &'a str,
+    /// One-click filters, on top of the text.
+    pub quick: QuickSet,
+    /// Only the processes of this program (its name, any case).
+    pub app: Option<&'a str>,
+    /// FILETIME now, for "New".
+    pub now: i64,
+}
+
+/// A one-click filter of the process list; several narrow it together.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Quick {
+    Cpu,
+    Memory,
+    Disk,
+    Network,
+    Gpu,
+    New,
+    Services,
+}
+
+/// "Memory" keeps the processes with at least this much of their own.
+const QUICK_MEMORY: u64 = 500 << 20;
+/// "New" keeps the processes started this recently.
+pub const QUICK_NEW_MINUTES: i64 = 10;
+
+impl Quick {
+    pub const ALL: [Quick; 7] = [
+        Quick::Cpu,
+        Quick::Memory,
+        Quick::Disk,
+        Quick::Network,
+        Quick::Gpu,
+        Quick::New,
+        Quick::Services,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Quick::Cpu => "CPU",
+            Quick::Memory => "Memory",
+            Quick::Disk => "Disk",
+            Quick::Network => "Network",
+            Quick::Gpu => "GPU",
+            Quick::New => "New",
+            Quick::Services => "Services",
+        }
+    }
+
+    pub fn tip(self) -> &'static str {
+        match self {
+            Quick::Cpu => "Using at least 1 % of the CPU",
+            Quick::Memory => "Using at least 500 MB of memory of their own",
+            Quick::Disk => "Reading or writing the disk",
+            Quick::Network => "Receiving or sending on the network",
+            Quick::Gpu => "Using at least 1 % of a GPU",
+            Quick::New => "Started in the last 10 minutes",
+            Quick::Services => {
+                if cfg!(windows) {
+                    "Services and the other processes outside your session"
+                } else {
+                    "System services: the processes outside every login session"
+                }
+            }
+        }
+    }
+
+    /// The name `--quick` takes.
+    pub fn parse(name: &str) -> Option<Quick> {
+        Quick::ALL
+            .into_iter()
+            .find(|q| q.label().eq_ignore_ascii_case(name.trim()))
+    }
+
+    fn keeps(self, p: &ProcessInfo, now: i64) -> bool {
+        match self {
+            Quick::Cpu => p.cpu >= 1.0,
+            Quick::Memory => p.private_working_set >= QUICK_MEMORY,
+            Quick::Disk => p.disk_total_rate() > 0.0,
+            Quick::Network => p.net_total_rate() > 0.0,
+            Quick::Gpu => p.gpu >= 1.0,
+            Quick::New => {
+                p.key.create_time > 0
+                    && now - p.key.create_time < QUICK_NEW_MINUTES * 60 * 10_000_000
+            }
+            Quick::Services => {
+                p.session_id == 0 && !crate::platform::system_pid(p.pid) && !p.is_pseudo()
+            }
+        }
+    }
+}
+
+/// The quick filters turned on.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct QuickSet(u8);
+
+impl QuickSet {
+    pub fn contains(self, q: Quick) -> bool {
+        self.0 & (1 << q as u8) != 0
+    }
+
+    pub fn toggle(&mut self, q: Quick) {
+        self.0 ^= 1 << q as u8;
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.0 = 0;
+    }
+
+    /// Every one turned on keeps it.
+    pub fn keeps(self, p: &ProcessInfo, now: i64) -> bool {
+        Quick::ALL
+            .into_iter()
+            .all(|q| !self.contains(q) || q.keeps(p, now))
+    }
 }
 
 const MAX_DEPTH: u16 = 256;
@@ -82,11 +202,16 @@ fn row(idx: u32, depth: u16) -> Row {
 
 pub fn build(input: &BuildInput<'_>) -> Built {
     let procs = input.procs;
-    let filtering = !input.filter.is_empty();
+    let filtering = !input.filter.is_empty() || !input.quick.is_empty() || input.app.is_some();
     let matched: Vec<bool> = if filtering {
         procs
             .iter()
-            .map(|p| matches(p, input.details.get(&p.key), input.filter))
+            .map(|p| {
+                input.quick.keeps(p, input.now)
+                    && input.app.is_none_or(|app| p.name.eq_ignore_ascii_case(app))
+                    && (input.filter.is_empty()
+                        || matches(p, input.details.get(&p.key), input.filter))
+            })
             .collect()
     } else {
         Vec::new()
@@ -94,18 +219,26 @@ pub fn build(input: &BuildInput<'_>) -> Built {
     let shown = |i: u32| !filtering || matched[i as usize];
     let cmp = |&a: &u32, &b: &u32| compare(&procs[a as usize], &procs[b as usize], input);
 
-    match input.view {
+    let mut built = match input.view {
         View::List => {
             let mut idx: Vec<u32> = (0..procs.len() as u32).filter(|&i| shown(i)).collect();
             idx.sort_by(cmp);
             Built {
                 rows: idx.into_iter().map(|i| row(i, 0)).collect(),
-                groups: Vec::new(),
+                ..Default::default()
             }
         }
         View::Apps => build_apps(input, &shown, filtering),
         View::Tree => build_tree(input, &matched, filtering),
-    }
+    };
+    built.matched = filtering.then(|| {
+        procs
+            .iter()
+            .zip(&matched)
+            .filter(|(p, m)| **m && p.state != ProcState::Exited && !p.is_pseudo())
+            .count()
+    });
+    built
 }
 
 fn build_tree(input: &BuildInput<'_>, matched: &[bool], filtering: bool) -> Built {
@@ -149,7 +282,7 @@ fn build_tree(input: &BuildInput<'_>, matched: &[bool], filtering: bool) -> Buil
     }
     Built {
         rows,
-        groups: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -219,7 +352,11 @@ fn build_apps(input: &BuildInput<'_>, shown: &dyn Fn(u32) -> bool, filtering: bo
             }
         }
     }
-    Built { rows, groups }
+    Built {
+        rows,
+        groups,
+        matched: None,
+    }
 }
 
 /// Sums the live members' counters into one synthetic process.
@@ -509,6 +646,9 @@ mod tests {
                 collapsed: &self.collapsed,
                 expanded_groups: &self.expanded,
                 filter,
+                quick: QuickSet::default(),
+                app: None,
+                now: 0,
             }
         }
     }
@@ -592,6 +732,64 @@ mod tests {
         let built = build(&f.input(&procs, View::Tree, "note"));
         assert_eq!(names(&procs, &built), ["explorer", " notepad"]);
         assert!(built.rows[0].dim && !built.rows[1].dim);
+    }
+
+    #[test]
+    fn quick_filters_narrow_together_and_with_the_text() {
+        const MINUTE: i64 = 60 * 10_000_000;
+        let now = 100 * MINUTE;
+        let mut procs = vec![
+            p(10, 1, now - 60 * MINUTE, "explorer", 0.0),
+            p(11, 10, now - 2 * MINUTE, "cargo", 12.0),
+            p(12, 10, now - 3 * MINUTE, "rustc", 0.2),
+            p(13, 10, now - 30 * MINUTE, "code", 4.0),
+        ];
+        procs[2].private_working_set = 2 << 30;
+        let f = Fixture::new();
+        let mut quick = QuickSet::default();
+        quick.toggle(Quick::New);
+        let input = |quick, filter| BuildInput {
+            quick,
+            now,
+            ..f.input(&procs, View::List, filter)
+        };
+        assert_eq!(names(&procs, &build(&input(quick, ""))), ["cargo", "rustc"]);
+        quick.toggle(Quick::Cpu);
+        assert_eq!(names(&procs, &build(&input(quick, ""))), ["cargo"]);
+        assert!(build(&input(quick, "rust")).rows.is_empty());
+        quick.toggle(Quick::Cpu);
+        quick.toggle(Quick::Memory);
+        assert_eq!(names(&procs, &build(&input(quick, "rust"))), ["rustc"]);
+        // In the tree the parent stays, dimmed, for context.
+        let built = build(&BuildInput {
+            view: View::Tree,
+            ..input(quick, "")
+        });
+        assert_eq!(names(&procs, &built), ["explorer", " rustc"]);
+        assert!(built.rows[0].dim);
+        assert_eq!(Quick::parse("gpu"), Some(Quick::Gpu));
+    }
+
+    #[test]
+    fn one_program_only() {
+        let procs = vec![
+            p(10, 1, 1, "explorer.exe", 0.0),
+            p(11, 10, 2, "Node.exe", 0.0),
+            p(12, 11, 3, "node.exe", 0.0),
+            p(13, 10, 4, "code.exe", 0.0),
+        ];
+        let f = Fixture::new();
+        let built = build(&BuildInput {
+            app: Some("node.exe"),
+            ..f.input(&procs, View::Tree, "")
+        });
+        // Who started them stays, dimmed.
+        assert_eq!(
+            names(&procs, &built),
+            ["explorer.exe", " Node.exe", "  node.exe"]
+        );
+        assert!(built.rows[0].dim && !built.rows[1].dim);
+        assert_eq!(built.matched, Some(2));
     }
 
     #[test]

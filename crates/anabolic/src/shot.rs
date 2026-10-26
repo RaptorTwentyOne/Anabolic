@@ -38,23 +38,105 @@ pub fn frame(ctx: &egui::Context) {
         }
         Instant::now()
     });
+    ctx.input(|i| {
+        for event in &i.raw.events {
+            if let egui::Event::Screenshot {
+                image, user_data, ..
+            } = event
+            {
+                // One a script asked for: its number beside the name.
+                let path = match user_data
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.downcast_ref::<usize>())
+                {
+                    Some(n) => {
+                        let path = std::path::Path::new(&path);
+                        path.with_file_name(format!(
+                            "{}-{n}.bmp",
+                            path.file_stem().unwrap_or_default().to_string_lossy()
+                        ))
+                    }
+                    None => path.clone().into(),
+                };
+                if let Err(e) = std::fs::write(&path, bmp(image)) {
+                    eprintln!("anabolic: screenshot: {e}");
+                }
+            }
+        }
+    });
     if !REQUESTED.load(Ordering::Relaxed) {
         if started.elapsed() >= after() {
             REQUESTED.store(true, Ordering::Relaxed);
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         ctx.request_repaint_after(Duration::from_millis(250));
-        return;
     }
-    ctx.input(|i| {
-        for event in &i.raw.events {
-            if let egui::Event::Screenshot { image, .. } = event
-                && let Err(e) = std::fs::write(&path, bmp(image))
-            {
-                eprintln!("anabolic: screenshot: {e}");
-            }
-        }
+}
+
+/// A step of ANABOLIC_SCRIPT.
+struct Step {
+    at: f32,
+    what: String,
+    pos: egui::Pos2,
+}
+
+/// ANABOLIC_SCRIPT=<steps>: pointer input played into the window as the
+/// mouse would give it, to try what takes a click or a drag. The steps,
+/// separated by ';', are `seconds:what:x,y`; `what` is `move`, `down` or `up`
+/// (the left button), `right` (a right click) or `shot` (a picture saved as
+/// `<ANABOLIC_SCREENSHOT's name>-<n>.bmp`).
+pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    static STEPS: OnceLock<std::sync::Mutex<(Instant, Vec<Step>, usize)>> = OnceLock::new();
+    let steps = STEPS.get_or_init(|| {
+        let steps = std::env::var("ANABOLIC_SCRIPT")
+            .unwrap_or_default()
+            .split(';')
+            .filter_map(|step| {
+                let mut parts = step.trim().splitn(3, ':');
+                let at = parts.next()?.parse().ok()?;
+                let what = parts.next()?.to_string();
+                let (x, y) = parts.next().unwrap_or("0,0").split_once(',')?;
+                Some(Step {
+                    at,
+                    what,
+                    pos: egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?),
+                })
+            })
+            .collect();
+        std::sync::Mutex::new((Instant::now(), steps, 0))
     });
+    let Ok(mut state) = steps.lock() else { return };
+    let (started, steps, next) = &mut *state;
+    let now = started.elapsed().as_secs_f32();
+    while let Some(step) = steps.get(*next).filter(|s| s.at <= now) {
+        let button = |pressed, button| egui::Event::PointerButton {
+            pos: step.pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        match step.what.as_str() {
+            "move" => raw.events.push(egui::Event::PointerMoved(step.pos)),
+            "down" => raw.events.push(button(true, egui::PointerButton::Primary)),
+            "up" => raw.events.push(button(false, egui::PointerButton::Primary)),
+            "right" => {
+                raw.events.push(egui::Event::PointerMoved(step.pos));
+                raw.events
+                    .push(button(true, egui::PointerButton::Secondary));
+                raw.events
+                    .push(button(false, egui::PointerButton::Secondary));
+            }
+            "shot" => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                egui::UserData::new(*next),
+            )),
+            _ => {}
+        }
+        *next += 1;
+    }
+    if let Some(step) = steps.get(*next) {
+        ctx.request_repaint_after(Duration::from_secs_f32((step.at - now).max(0.0)));
+    }
 }
 
 /// A 24-bit bottom-up BMP.

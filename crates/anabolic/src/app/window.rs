@@ -12,7 +12,10 @@ impl App {
     /// The notification area icon: there while it is wanted, its clicks,
     /// its tooltip, and what a closed window should not keep running.
     pub(super) fn tray_logic(&mut self, ctx: &egui::Context) {
-        let want = self.settings.close_to_tray || self.start_in_tray;
+        // Notifications come from the icon: there while an exit is awaited,
+        // and for a moment after one is told.
+        let want =
+            self.settings.close_to_tray || self.start_in_tray || self.exit_watch.needs_icon();
         if !want {
             self.tray_failed = false;
             if !self.hidden {
@@ -49,6 +52,11 @@ impl App {
             tray.notify(title, text, true);
         }
         self.alert_seen = alert.is_some();
+        tray.cpu(
+            self.settings
+                .tray_cpu
+                .then_some(self.snapshot.system.cpu.total),
+        );
         if self.tip_at.elapsed() >= Duration::from_secs(2) {
             self.tip_at = Instant::now();
             let s = &self.snapshot.system;
@@ -178,42 +186,48 @@ impl App {
                 )
                 .on_hover_text(skipped.join("\n"));
                 let matches = &report.matches;
-                egui_extras::TableBuilder::new(ui)
-                    .id_salt("find-results")
+                const TITLES: [&str; 5] = ["Process", "PID", "Type", "Handle", "Name"];
+                const COLUMNS: [crate::table::Spec; 5] = [
+                    crate::table::Spec::new(170.0).clip(),
+                    crate::table::Spec::new(60.0),
+                    crate::table::Spec::new(90.0),
+                    crate::table::Spec::new(80.0),
+                    crate::table::Spec::new(300.0).clip(),
+                ];
+                crate::table::Columns::load(ui.ctx(), "find-results", &COLUMNS).show(ui, |table, columns| {
+                    table
                     .striped(true)
                     .resizable(true)
                     .sense(egui::Sense::click())
                     .auto_shrink([false, false])
                     .cell_layout(Layout::left_to_right(Align::Center))
-                    .column(egui_extras::Column::initial(170.0).clip(true))
-                    .column(egui_extras::Column::initial(60.0))
-                    .column(egui_extras::Column::initial(90.0))
-                    .column(egui_extras::Column::initial(80.0))
-                    .column(egui_extras::Column::remainder().clip(true))
                     .header(22.0, |mut h| {
-                        for t in ["Process", "PID", "Type", "Handle", "Name"] {
-                            h.col(|ui| widgets::column_header(ui, t, false));
-                        }
+                        columns.titles(&mut h, |ui, c| widgets::column_header(ui, TITLES[c], false));
                     })
                     .body(|body| {
+                        columns.keep(body.widths());
                         body.rows(18.0, matches.len(), |mut row| {
                             let m = &matches[row.index()];
                             let key = snapshot.processes.iter().find(|p| p.pid == m.pid && p.state != ProcState::Exited).map(|p| p.key);
-                            row.col(|ui| {
-                                ui.add(egui::Label::new(&*m.process).truncate());
-                            });
-                            row.col(|ui| {
-                                ui.label(RichText::new(m.pid.to_string()).color(theme::TEXT_WEAK));
-                            });
-                            row.col(|ui| {
-                                ui.label(&*m.type_name);
-                            });
-                            row.col(|ui| {
-                                ui.label(RichText::new(format!("0x{:X}", m.handle)).monospace().color(theme::TEXT_WEAK));
-                            });
-                            row.col(|ui| {
-                                ui.add(egui::Label::new(&m.name).truncate());
-                            });
+                            for &c in columns.order() {
+                                row.col(|ui| match c {
+                                    0 => {
+                                        ui.add(egui::Label::new(&*m.process).truncate());
+                                    }
+                                    1 => {
+                                        ui.label(RichText::new(m.pid.to_string()).color(theme::TEXT_WEAK));
+                                    }
+                                    2 => {
+                                        ui.label(&*m.type_name);
+                                    }
+                                    3 => {
+                                        ui.label(RichText::new(format!("0x{:X}", m.handle)).monospace().color(theme::TEXT_WEAK));
+                                    }
+                                    _ => {
+                                        ui.add(egui::Label::new(&m.name).truncate());
+                                    }
+                                });
+                            }
                             let response = row.response();
                             if response.double_clicked()
                                 && let Some(key) = key
@@ -238,7 +252,8 @@ impl App {
                                 }
                             });
                         });
-                    });
+                    })
+                });
             });
         self.find.open = open;
     }
@@ -332,6 +347,30 @@ impl App {
                     self.kill_dialog = None;
                 }
                 KillChoice::Cancel => self.kill_dialog = None,
+            }
+        }
+        if let Some(dialog) = &mut self.run_dialog {
+            match dialog.show(ctx, &self.settings.run_history, self.elevated) {
+                crate::dialogs::RunChoice::Pending => {}
+                crate::dialogs::RunChoice::Browse => {
+                    dialog.browsing = true;
+                    self.actions.run(Action::BrowseProgram);
+                }
+                crate::dialogs::RunChoice::Run => {
+                    let line = dialog.line.trim().to_string();
+                    let elevated = cfg!(windows) && dialog.elevated;
+                    self.settings.run_elevated = dialog.elevated;
+                    let history = &mut self.settings.run_history;
+                    history.retain(|h| h != &line);
+                    history.insert(0, line.clone());
+                    history.truncate(crate::settings::RUN_HISTORY);
+                    self.actions.run(Action::Run {
+                        command: line,
+                        elevated,
+                    });
+                    self.run_dialog = None;
+                }
+                crate::dialogs::RunChoice::Cancel => self.run_dialog = None,
             }
         }
         if let Some(dialog) = &mut self.affinity_dialog {

@@ -19,13 +19,12 @@ use anabolic_core::{ProcKey, ProcState, ProcessInfo, Snapshot, ThreadInfo};
 use eframe::egui::{
     self, Align, Frame, Grid, Label, Layout, Margin, RichText, ScrollArea, Sense, Stroke, Ui, vec2,
 };
-use egui_extras::{Column, TableBuilder};
 
 use crate::fmt;
 use crate::icons::IconCache;
 use crate::panes::Panes;
 use crate::proc_table::UiCmd;
-use crate::table::{DetailTables, TableView, text_cmp};
+use crate::table::{Columns, DetailTables, Spec, TableView, text_cmp};
 use crate::theme;
 use crate::tree::{Details, Group};
 use crate::widgets;
@@ -207,6 +206,14 @@ impl HandleView {
     }
 }
 
+/// The panel's close button, at its top right: true when clicked.
+fn close_button(ui: &mut Ui) -> bool {
+    ui.add(egui::Button::new(widgets::icon(theme::icon::CLOSE, 11.0)).frame(false))
+        .on_hover_text("Close the details (Esc)")
+        .clicked()
+}
+
+/// The panel's title row; true when its close button was clicked.
 fn header(
     ui: &mut Ui,
     icon: Option<egui::TextureId>,
@@ -214,7 +221,8 @@ fn header(
     badge: Option<String>,
     sub: &str,
     right: impl FnOnce(&mut Ui),
-) {
+) -> bool {
+    let mut closed = false;
     ui.horizontal(|ui| {
         if let Some(id) = icon {
             ui.image((id, vec2(28.0, 28.0)));
@@ -230,9 +238,14 @@ fn header(
                 ui.label(RichText::new(sub).color(theme::TEXT_WEAK));
             }
         });
-        ui.with_layout(Layout::right_to_left(Align::Center), right);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            closed = close_button(ui);
+            ui.add_space(6.0);
+            right(ui);
+        });
     });
     ui.separator();
+    closed
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -257,7 +270,14 @@ pub fn show(
     out: &mut Vec<UiCmd>,
 ) {
     let Some(p) = snap.find(key) else {
-        ui.label(RichText::new("The process has exited.").color(theme::TEXT_WEAK));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("The process has exited.").color(theme::TEXT_WEAK));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if close_button(ui) {
+                    out.push(UiCmd::Select(None));
+                }
+            });
+        });
         return;
     };
     let d = details.get(&key);
@@ -289,7 +309,7 @@ pub fn show(
     .flatten()
     .collect::<Vec<_>>()
     .join("  ·  ");
-    header(ui, icon, &p.name, Some(badge), &sub, |ui| {
+    let closed = header(ui, icon, &p.name, Some(badge), &sub, |ui| {
         ui.selectable_value(
             tab,
             DetailTab::Handles,
@@ -364,6 +384,9 @@ pub fn show(
             }
         }
     });
+    if closed {
+        out.push(UiCmd::Select(None));
+    }
 
     match tab {
         DetailTab::General => {
@@ -865,94 +888,98 @@ fn threads(
         });
     }
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        let mut table = TableBuilder::new(ui);
-        if let Some((tid, scrolled)) = focus
-            && !*scrolled
-            && let Some(row) = list.iter().position(|r| r.t.tid == *tid)
-        {
-            table = table.scroll_to_row(row, Some(Align::Center));
-            *scrolled = true;
-        }
-        table
-            .id_salt("threads")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(70.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(100.0))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(280.0).clip(true))
-            .column(Column::initial(70.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::remainder())
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("TID", true),
-                    ("CPU", true),
-                    ("CPU time", true),
-                    ("Name", false),
-                    ("Start address", false),
-                    ("Priority", true),
-                    ("Ctx sw/s", true),
-                    ("State", false),
-                    ("Wait reason", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 9] = [
+            ("TID", true),
+            ("CPU", true),
+            ("CPU time", true),
+            ("Name", false),
+            ("Start address", false),
+            ("Priority", true),
+            ("Ctx sw/s", true),
+            ("State", false),
+            ("Wait reason", false),
+        ];
+        const COLUMNS: [Spec; 9] = [
+            Spec::new(70.0),
+            Spec::new(60.0),
+            Spec::new(100.0),
+            Spec::new(150.0).clip(),
+            Spec::new(280.0).clip(),
+            Spec::new(70.0),
+            Spec::new(90.0),
+            Spec::new(90.0),
+            Spec::new(160.0),
+        ];
+        Columns::load(ui.ctx(), "threads", &COLUMNS).show(ui, |mut table, columns| {
+            if let Some((tid, scrolled)) = focus
+                && !*scrolled
+                && let Some(row) = list.iter().position(|r| r.t.tid == *tid)
+            {
+                table = table.scroll_to_row(row, Some(Align::Center));
+                *scrolled = true;
+            }
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, list.len(), |mut row| {
-                    let r = &list[row.index()];
-                    let t = r.t;
-                    row.set_selected(focus_tid == Some(t.tid));
-                    row.col(|ui| right(ui, r.tid.clone()));
-                    row.col(|ui| right(ui, fmt::cpu(t.cpu)));
-                    row.col(|ui| right(ui, fmt::cpu_time(t.kernel_time + t.user_time)));
-                    row.col(|ui| {
-                        ui.add(Label::new(r.name).truncate());
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, list.len(), |mut row| {
+                        let r = &list[row.index()];
+                        let t = r.t;
+                        row.set_selected(focus_tid == Some(t.tid));
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => right(ui, r.tid.clone()),
+                                1 => right(ui, fmt::cpu(t.cpu)),
+                                2 => right(ui, fmt::cpu_time(t.kernel_time + t.user_time)),
+                                3 => {
+                                    ui.add(Label::new(r.name).truncate());
+                                }
+                                4 => {
+                                    let address = start_of(t);
+                                    let known = report.is_some() && !r.start.starts_with("0x");
+                                    let text = RichText::new(&r.start).monospace();
+                                    let text = if known {
+                                        text
+                                    } else {
+                                        text.color(theme::TEXT_WEAK)
+                                    };
+                                    ui.add(Label::new(text).truncate())
+                                        .on_hover_text(format!("0x{address:X}"));
+                                }
+                                5 => right(ui, format!("{} / {}", t.priority, t.base_priority)),
+                                6 => right(ui, fmt::count(t.context_switches_delta as u64)),
+                                7 => {
+                                    ui.label(thread_state_name(t.state));
+                                }
+                                _ => {
+                                    ui.label(RichText::new(r.wait).color(theme::TEXT_WEAK));
+                                }
+                            });
+                        }
+                        let response = row.response();
+                        if response.clicked() {
+                            *focus = if focus_tid == Some(t.tid) {
+                                None
+                            } else {
+                                Some((t.tid, true))
+                            };
+                        }
+                        widgets::row_menu(&response, "threads", t.tid, |ui| {
+                            crate::panes::thread_menu(ui, p, t, &r.start, out);
+                        });
                     });
-                    row.col(|ui| {
-                        let address = start_of(t);
-                        let known = report.is_some() && !r.start.starts_with("0x");
-                        let text = RichText::new(&r.start).monospace();
-                        let text = if known {
-                            text
-                        } else {
-                            text.color(theme::TEXT_WEAK)
-                        };
-                        ui.add(Label::new(text).truncate())
-                            .on_hover_text(format!("0x{address:X}"));
-                    });
-                    row.col(|ui| right(ui, format!("{} / {}", t.priority, t.base_priority)));
-                    row.col(|ui| right(ui, fmt::count(t.context_switches_delta as u64)));
-                    row.col(|ui| {
-                        ui.label(thread_state_name(t.state));
-                    });
-                    row.col(|ui| {
-                        ui.label(RichText::new(r.wait).color(theme::TEXT_WEAK));
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        *focus = if focus_tid == Some(t.tid) {
-                            None
-                        } else {
-                            Some((t.tid, true))
-                        };
-                    }
-                    response.context_menu(|ui| {
-                        crate::panes::thread_menu(ui, p, t, &r.start, out);
-                    });
-                });
-            });
+                })
+        });
     });
 }
 
@@ -978,7 +1005,7 @@ pub fn show_group(
     .flatten()
     .collect::<Vec<_>>()
     .join("  ·  ");
-    header(
+    let closed = header(
         ui,
         icon,
         &group.agg.name,
@@ -1011,6 +1038,9 @@ pub fn show_group(
             }
         },
     );
+    if closed {
+        out.push(UiCmd::Select(None));
+    }
 
     ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1152,97 +1182,109 @@ fn modules_tab(
         });
     }
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("modules")
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, false])
-            .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::initial(170.0).clip(true))
-            .column(Column::initial(150.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(220.0).clip(true))
-            .column(Column::initial(150.0).clip(true))
-            .column(Column::initial(110.0).clip(true))
-            .column(Column::remainder().clip(true))
-            .header(20.0, |mut h| {
-                for (i, (t, numeric)) in [
-                    ("Name", false),
-                    ("Base", false),
-                    ("Size", true),
-                    ("Description", false),
-                    (if cfg!(windows) { "Company" } else { "Package" }, false),
-                    ("Version", false),
-                    ("Path", false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    h.col(|ui| {
-                        view.header(ui, i, t, numeric);
+        const TITLES: [(&str, bool); 7] = [
+            ("Name", false),
+            ("Base", false),
+            ("Size", true),
+            ("Description", false),
+            (if cfg!(windows) { "Company" } else { "Package" }, false),
+            ("Version", false),
+            ("Path", false),
+        ];
+        const COLUMNS: [Spec; 7] = [
+            Spec::new(170.0).clip(),
+            Spec::new(150.0),
+            Spec::new(80.0),
+            Spec::new(220.0).clip(),
+            Spec::new(150.0).clip(),
+            Spec::new(110.0).clip(),
+            Spec::new(320.0).clip(),
+        ];
+        Columns::load(ui.ctx(), "modules", &COLUMNS).show(ui, |table, columns| {
+            table
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, false])
+                .sense(Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .header(20.0, |mut h| {
+                    columns.titles(&mut h, |ui, c| {
+                        let (title, numeric) = TITLES[c];
+                        view.header(ui, c, title, numeric);
                     });
-                }
-            })
-            .body(|body| {
-                body.rows(18.0, rows.len(), |mut row| {
-                    let m = rows[row.index()];
-                    row.set_selected(selected == Some(m.info.base));
-                    row.col(|ui| {
-                        ui.add(Label::new(&*m.info.name).truncate());
+                })
+                .body(|body| {
+                    columns.keep(body.widths());
+                    body.rows(18.0, rows.len(), |mut row| {
+                        let m = rows[row.index()];
+                        row.set_selected(selected == Some(m.info.base));
+                        for &c in columns.order() {
+                            row.col(|ui| match c {
+                                0 => {
+                                    ui.add(Label::new(&*m.info.name).truncate());
+                                }
+                                1 => {
+                                    ui.label(
+                                        RichText::new(format!("0x{:X}", m.info.base))
+                                            .monospace()
+                                            .color(theme::TEXT_WEAK),
+                                    );
+                                }
+                                2 => right(ui, fmt::bytes(m.info.size)),
+                                3 => {
+                                    ui.add(
+                                        Label::new(m.description.clone().unwrap_or_default())
+                                            .truncate(),
+                                    );
+                                }
+                                4 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(m.company.clone().unwrap_or_default())
+                                                .color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                5 => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(m.version.clone().unwrap_or_default())
+                                                .color(theme::TEXT_WEAK),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                _ => {
+                                    ui.add(
+                                        Label::new(
+                                            RichText::new(&*m.info.path)
+                                                .small()
+                                                .color(theme::TEXT_DIM),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            });
+                        }
+                        let response = row.response();
+                        if response.clicked() {
+                            modules.selected = if selected == Some(m.info.base) {
+                                None
+                            } else {
+                                Some(m.info.base)
+                            };
+                        }
+                        response.context_menu(|ui| {
+                            let facts = panes
+                                .facts
+                                .get(&m.info.path)
+                                .and_then(|f| f.as_ref().ok())
+                                .map(|f| &**f);
+                            crate::panes::module_menu(ui, m, facts, out);
+                        });
                     });
-                    row.col(|ui| {
-                        ui.label(
-                            RichText::new(format!("0x{:X}", m.info.base))
-                                .monospace()
-                                .color(theme::TEXT_WEAK),
-                        );
-                    });
-                    row.col(|ui| right(ui, fmt::bytes(m.info.size)));
-                    row.col(|ui| {
-                        ui.add(Label::new(m.description.clone().unwrap_or_default()).truncate());
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(
-                                RichText::new(m.company.clone().unwrap_or_default())
-                                    .color(theme::TEXT_WEAK),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(
-                                RichText::new(m.version.clone().unwrap_or_default())
-                                    .color(theme::TEXT_WEAK),
-                            )
-                            .truncate(),
-                        );
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            Label::new(RichText::new(&*m.info.path).small().color(theme::TEXT_DIM))
-                                .truncate(),
-                        );
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        modules.selected = if selected == Some(m.info.base) {
-                            None
-                        } else {
-                            Some(m.info.base)
-                        };
-                    }
-                    response.context_menu(|ui| {
-                        let facts = panes
-                            .facts
-                            .get(&m.info.path)
-                            .and_then(|f| f.as_ref().ok())
-                            .map(|f| &**f);
-                        crate::panes::module_menu(ui, m, facts, out);
-                    });
-                });
-            });
+                })
+        });
     });
 }

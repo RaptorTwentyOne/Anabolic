@@ -96,6 +96,10 @@ pub fn perform(action: Action) -> Option<Outcome> {
             });
         }
         Action::Terminate(targets) => return Some(terminate(&targets)),
+        // A program that needs root asks for it itself (pkexec, sudo in a
+        // terminal): one started as root here would find no desktop.
+        Action::Run { command, .. } => run(&command),
+        Action::BrowseProgram => return Some(Outcome::Browsed(None)),
         // Run on their own thread by the runner.
         Action::Dump { .. } => return None,
         Action::Suspend(t) => signal(&t, libc::SIGSTOP).map(|_| format!("Suspended {}", t.label())),
@@ -395,6 +399,63 @@ fn open(target: &str) -> Result<String, String> {
         .spawn()
         .map(|_| String::new())
         .map_err(|e| format!("Could not open {target}: {e}"))
+}
+
+/// Starts what the line names: a web address, a document or a folder
+/// with the desktop's choice of program, anything else as the shell runs
+/// it. In a process group of its own, so it outlives Anabolic; waited for
+/// on a thread, so it leaves no zombie behind.
+fn run(line: &str) -> Result<String, String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let line = line.trim();
+    if line.is_empty() {
+        return Err("Nothing to run".into());
+    }
+    let path = std::path::Path::new(line);
+    let document = path.is_dir()
+        || std::fs::metadata(path)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 == 0);
+    let address = line.contains("://") || line.starts_with("mailto:");
+    let mut command = if document || address {
+        let mut c = Command::new("xdg-open");
+        c.arg(line);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(line);
+        c
+    };
+    if let Some(home) = std::env::var_os("HOME") {
+        command.current_dir(home);
+    }
+    let shown = line.split_whitespace().next().unwrap_or(line).to_string();
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("Could not start {shown}: {e}"))?;
+    // The shell says at once when there is no such program.
+    let until = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < until {
+        match child.try_wait() {
+            Ok(Some(status)) if status.code() == Some(127) => {
+                return Err(format!("Could not start {shown}: there is no such program"));
+            }
+            Ok(Some(status)) if status.code() == Some(126) => {
+                return Err(format!("Could not start {shown}: it cannot be run"));
+            }
+            Ok(Some(_)) => return Ok(format!("Started {shown}")),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => break,
+        }
+    }
+    let _ = std::thread::Builder::new()
+        .name("anabolic-run".into())
+        .spawn(move || child.wait());
+    Ok(format!("Started {shown}"))
 }
 
 /// Gives Anabolic's executable the capabilities it asks for (pkexec asks

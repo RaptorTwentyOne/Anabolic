@@ -9,6 +9,34 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped when stored settings need migrating.
 const VERSION: u32 = 4;
+/// Commands Run new task remembers.
+pub const RUN_HISTORY: usize = 20;
+/// Characters a watched port's name keeps.
+pub const PORT_NAME: usize = 40;
+
+/// A port kept an eye on: free, or who holds it. Its name says what it is
+/// for, when given ("my API").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortWatch {
+    pub port: u16,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// Tables whose columns the settings keep, at most, and columns each.
+const TABLES: usize = 64;
+const TABLE_COLUMNS: usize = 64;
+
+/// A table's columns as they were left (see `table::Columns`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TableLayout {
+    /// The table's column numbers in the order they show; empty: the usual
+    /// order.
+    pub order: Vec<u8>,
+    /// Each column's width, by its number; 0: as wide as it starts.
+    pub widths: Vec<f32>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Col {
@@ -217,6 +245,7 @@ impl GraphSpan {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Tab {
+    Overview,
     Processes,
     Performance,
     History,
@@ -520,6 +549,24 @@ pub struct Settings {
     /// The version that ran last: what changed since is shown once (see
     /// `whats_new`). None from before there was this.
     pub last_version: Option<String>,
+    /// Warn when one program runs in this many copies from one starter
+    /// (see `runaway`); 0 never.
+    pub runaway_at: u32,
+    /// Programs never warned about for that, by lowercase name.
+    pub runaway_ignored: Vec<String>,
+    /// Ports to keep an eye on (Network > Development ports, the Overview,
+    /// Settings): free, or who holds them.
+    pub watched_ports: Vec<PortWatch>,
+    /// The notification area icon shows how busy the CPU is.
+    pub tray_cpu: bool,
+    /// What Run new task ran lately, the latest first.
+    pub run_history: Vec<String>,
+    /// Run new task asks for administrator rights.
+    pub run_elevated: bool,
+    /// The tables' columns: the order their titles were dragged into and
+    /// the widths they were given, by table. The process list keeps its
+    /// order in `columns`, and its widths here.
+    pub tables: std::collections::BTreeMap<String, TableLayout>,
 }
 
 impl Default for Settings {
@@ -562,6 +609,13 @@ impl Default for Settings {
             blocked: Vec::new(),
             updates: Updates::default(),
             last_version: None,
+            runaway_at: crate::runaway::DEFAULT_AT,
+            runaway_ignored: Vec::new(),
+            watched_ports: Vec::new(),
+            tray_cpu: true,
+            run_history: Vec::new(),
+            run_elevated: false,
+            tables: Default::default(),
         }
     }
 }
@@ -594,7 +648,34 @@ impl Settings {
         self.interval_ms = self.interval_ms.clamp(100, 60_000);
         self.memory_alert_pct = self.memory_alert_pct.clamp(50.0, 99.0);
         self.history_days = self.history_days.clamp(1, 90);
-        self.columns.dedup();
+        if self.runaway_at != 0 {
+            self.runaway_at = self.runaway_at.clamp(10, 1000);
+        }
+        self.watched_ports.retain(|w| w.port != 0);
+        self.watched_ports.sort_by_key(|w| w.port);
+        self.watched_ports.dedup_by_key(|w| w.port);
+        for w in &mut self.watched_ports {
+            w.name = w.name.trim().chars().take(PORT_NAME).collect();
+        }
+        self.run_history.truncate(RUN_HISTORY);
+        while self.tables.len() > TABLES {
+            self.tables.pop_last();
+        }
+        for t in self.tables.values_mut() {
+            t.order.truncate(TABLE_COLUMNS);
+            t.widths.truncate(TABLE_COLUMNS);
+            for w in &mut t.widths {
+                *w = if w.is_finite() {
+                    w.clamp(0.0, 4000.0)
+                } else {
+                    0.0
+                };
+            }
+        }
+        // Columns dragged into another order: a column twice is not
+        // necessarily next to itself.
+        let mut seen = std::collections::HashSet::new();
+        self.columns.retain(|&c| seen.insert(c));
         if !self.columns.contains(&Col::Name) {
             self.columns.insert(0, Col::Name);
         }

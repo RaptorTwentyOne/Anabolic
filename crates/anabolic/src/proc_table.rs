@@ -12,11 +12,12 @@ use std::sync::Arc;
 use anabolic_core::actions::Priority;
 use anabolic_core::{InfoLevel, ProcKey, ProcState, ProcessDetails, ProcessInfo, Snapshot};
 use eframe::egui::{self, Align, Color32, Label, Layout, RichText, Sense, Shape, Stroke, Ui, vec2};
-use egui_extras::{Column, TableBuilder};
+use egui_extras::TableBuilder;
 
 use crate::fmt;
 use crate::icons::IconCache;
 use crate::settings::{Col, Settings};
+use crate::table;
 use crate::theme;
 use crate::tree::{self, BuildInput, Details, Group, Row};
 use crate::widgets;
@@ -93,6 +94,8 @@ pub enum UiCmd {
     Copy(String),
     Sort(Col),
     ToggleColumn(Col),
+    /// These columns of the process list, in this order.
+    Columns(Vec<Col>),
     ResetColumns,
     InspectHandles {
         key: ProcKey,
@@ -166,6 +169,47 @@ pub enum UiCmd {
     },
     ConfirmCloseHandle(anabolic_core::handles::FoundHandle),
     FindZombies,
+    /// Open a page.
+    ShowTab(crate::settings::Tab),
+    /// Open a view of the Performance page.
+    ShowPerf(crate::perf::PerfView),
+    /// Show every process of a program (by name) in the Apps view.
+    ShowApp(Arc<str>),
+    /// A program's copies alone in the tree, under the program that started
+    /// them.
+    ShowCopies {
+        name: Arc<str>,
+        starter: Option<ProcKey>,
+    },
+    /// The process list, only what started in the last minutes.
+    ShowNew,
+    /// Switch to the Apps view, biggest memory first: RAM (true) or commit.
+    AppsByMemory(bool),
+    /// Ask before ending these processes.
+    KillMany {
+        title: String,
+        subject: String,
+        keys: Vec<ProcKey>,
+    },
+    /// No more warnings about this program running in many copies.
+    IgnoreRunaway(Arc<str>),
+    /// The Run new task window.
+    RunTask,
+    /// Tell when this process exits (true), or no longer.
+    NotifyExit(ProcKey, bool),
+    /// The listening ports on the Network page.
+    ShowListening,
+    /// The development ports on the Network page.
+    ShowDevPorts,
+    /// Watch a port, or give a watched one another name.
+    WatchPort(crate::settings::PortWatch),
+    /// No longer watch a port.
+    UnwatchPort(u16),
+    /// Ask before ending the process that holds a port.
+    FreePort {
+        port: u16,
+        pid: u32,
+    },
 }
 
 #[derive(Default)]
@@ -177,6 +221,13 @@ pub struct ProcTable {
     pub selected: Option<ProcKey>,
     pub selected_group: Option<Arc<str>>,
     pub filter: String,
+    /// The one-click filters turned on.
+    pub quick: tree::QuickSet,
+    /// Only the processes of this program (lowercase name), as "show them
+    /// all" left it.
+    pub only_app: Option<Arc<str>>,
+    /// Live processes the filters keep; None without a filter.
+    pub matched: Option<usize>,
     pub dirty: bool,
     pub scroll_to_selected: bool,
     /// Shift+F10: open the selected row's menu once the row is drawn.
@@ -184,6 +235,19 @@ pub struct ProcTable {
 }
 
 impl ProcTable {
+    /// Any filter at all: the text, the quick ones, one program.
+    pub fn filtered(&self) -> bool {
+        !self.filter.trim().is_empty() || !self.quick.is_empty() || self.only_app.is_some()
+    }
+
+    /// Drops every filter.
+    pub fn unfilter(&mut self) {
+        self.filter.clear();
+        self.quick.clear();
+        self.only_app = None;
+        self.dirty = true;
+    }
+
     pub fn rebuild(&mut self, snap: &Snapshot, details: &Details, settings: &Settings) {
         let filter = self.filter.trim().to_lowercase();
         let built = tree::build(&BuildInput {
@@ -195,9 +259,13 @@ impl ProcTable {
             collapsed: &self.collapsed,
             expanded_groups: &self.expanded_groups,
             filter: &filter,
+            quick: self.quick,
+            app: self.only_app.as_deref(),
+            now: anabolic_core::sysinfo::now_filetime(),
         });
         self.rows = built.rows;
         self.groups = built.groups;
+        self.matched = built.matched;
         self.dirty = false;
     }
 
@@ -222,6 +290,7 @@ struct Ctx<'a> {
     total_memory: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     table: &mut ProcTable,
@@ -229,63 +298,116 @@ pub fn show(
     details: &Details,
     icons: &mut IconCache,
     settings: &Settings,
+    exit_watched: &[ProcKey],
     out: &mut Vec<UiCmd>,
 ) {
     if table.rows.is_empty() {
         ui.add_space(40.0);
         ui.vertical_centered(|ui| {
-            let msg = if table.filter.trim().is_empty() {
-                "Waiting for the first sample…".to_string()
-            } else {
+            let msg = if !table.filter.trim().is_empty() {
                 format!("No process matches “{}”", table.filter.trim())
+            } else if let Some(app) = &table.only_app
+                && table.quick.is_empty()
+            {
+                format!("No {app} is running")
+            } else if !table.quick.is_empty() {
+                "No process matches the filters above".to_string()
+            } else {
+                "Waiting for the first sample…".to_string()
             };
             ui.label(RichText::new(msg).color(theme::TEXT_WEAK));
         });
         return;
     }
 
+    // Columns by their place in `Col::ALL`.
+    let spec: Vec<table::Spec> = Col::ALL
+        .iter()
+        .map(|c| table::Spec::new(c.initial_width()).clip().at_least(36.0))
+        .collect();
+    let number = |c: Col| Col::ALL.iter().position(|&x| x == c).unwrap_or(0);
+    let order = settings.columns.iter().map(|&c| number(c)).collect();
+    // Short of room, the list scrolls sideways rather than squeeze the
+    // last column to nothing.
+    let mut columns =
+        table::Columns::ordered(ui.ctx(), "processes", &spec, order).filling_at_least(160.0);
+    let scroll_to = std::mem::take(&mut table.scroll_to_selected)
+        .then(|| table.selected_row(snap))
+        .flatten();
+    let table = &*table;
+    columns.show(ui, |builder, columns| {
+        let mut builder = builder
+            .striped(true)
+            .resizable(true)
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .auto_shrink([false, false])
+            .max_scroll_height(f32::INFINITY);
+        if let Some(row) = scroll_to {
+            builder = builder.scroll_to_row(row, None);
+        }
+        show_rows(
+            builder,
+            columns,
+            table,
+            snap,
+            details,
+            icons,
+            settings,
+            exit_watched,
+            out,
+        )
+    });
+    if let Some(order) = columns.moved() {
+        out.push(UiCmd::Columns(order.iter().map(|&c| Col::ALL[c]).collect()));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_rows(
+    builder: TableBuilder<'_>,
+    columns: &mut table::Columns<'_>,
+    table: &ProcTable,
+    snap: &Snapshot,
+    details: &Details,
+    icons: &mut IconCache,
+    settings: &Settings,
+    exit_watched: &[ProcKey],
+    out: &mut Vec<UiCmd>,
+) -> egui::scroll_area::ScrollAreaOutput<()> {
     let ctx = Ctx {
         snap,
         cores: snap.system.cores.len().max(1) as f32,
         total_memory: snap.system.memory.total.max(1) as f64,
     };
-    let cols = &settings.columns;
-    let mut builder = TableBuilder::new(ui)
-        .id_salt("processes")
-        .striped(true)
-        .resizable(true)
-        .sense(Sense::click())
-        .cell_layout(Layout::left_to_right(Align::Center))
-        .auto_shrink([false, false])
-        .max_scroll_height(f32::INFINITY);
-    for (i, c) in cols.iter().enumerate() {
-        builder = builder.column(if i + 1 == cols.len() {
-            Column::remainder().at_least(60.0).clip(true)
-        } else {
-            Column::initial(c.initial_width()).at_least(36.0).clip(true)
-        });
-    }
-    if std::mem::take(&mut table.scroll_to_selected)
-        && let Some(row) = table.selected_row(snap)
-    {
-        builder = builder.scroll_to_row(row, None);
-    }
-    let table = &*table;
-
+    // Away from the left edge, the names keep off the number before them.
+    let name_inset = if columns.order().first() == Some(&0) {
+        0.0
+    } else {
+        TEXT_INSET
+    };
     builder
         .header(ROW_HEIGHT + 2.0, |mut header| {
-            for &c in cols {
-                let (_, response) = header.col(|ui| header_cell(ui, c, settings));
+            let titles = columns.header(&mut header, |ui, c| {
+                header_cell(ui, Col::ALL[c], settings, name_inset)
+            });
+            for (c, response) in &titles {
+                let c = Col::ALL[*c];
                 if response.clicked() {
                     out.push(UiCmd::Sort(c));
                 }
-                response.context_menu(|ui| column_chooser(ui, settings, out));
                 if !c.tooltip().is_empty() {
-                    response.on_hover_text(c.tooltip());
+                    response.clone().on_hover_text(c.tooltip());
                 }
             }
+            columns.menu(&titles, |ui, columns| {
+                column_chooser(ui, settings, columns, out)
+            });
         })
         .body(|body| {
+            columns.keep(body.widths());
+            let cols: Vec<Col> = columns.order().iter().map(|&c| Col::ALL[c]).collect();
+            let cols = &cols;
             body.rows(ROW_HEIGHT, table.rows.len(), |mut row| {
                 let r = table.rows[row.index()];
                 let group = r.group.map(|g| &table.groups[g as usize]);
@@ -312,7 +434,7 @@ pub fn show(
                             );
                         }
                         if c == Col::Name {
-                            name_cell(ui, p, d, r, group, icons, out);
+                            name_cell(ui, p, d, r, name_inset, group, icons, out);
                         } else {
                             value_cell(ui, c, p, d, group.is_some(), selected, &ctx);
                         }
@@ -333,9 +455,12 @@ pub fn show(
                         if response.double_clicked() {
                             out.push(UiCmd::ToggleGroup(g.id.clone()));
                         }
-                        response.context_menu(|ui| group_menu(ui, g, d, out));
+                        let what = ("group", &*g.id);
+                        widgets::row_menu(&response, "processes", what, |ui| {
+                            group_menu(ui, g, d, out)
+                        });
                         let open = selected && table.open_menu.replace(false);
-                        keyboard_menu(&response, open, |ui| group_menu(ui, g, d, out));
+                        keyboard_menu(&response, what, open, |ui| group_menu(ui, g, d, out));
                     }
                     None => {
                         if response.clicked() || response.secondary_clicked() {
@@ -344,23 +469,98 @@ pub fn show(
                         if response.double_clicked() && r.has_children {
                             out.push(UiCmd::ToggleCollapse(p.key));
                         }
-                        let blocked = &settings.blocked;
-                        let secrets = settings.dump_sign_in_secrets;
-                        response.context_menu(|ui| context_menu(ui, p, d, blocked, secrets, out));
+                        let menu = Menu {
+                            blocked: &settings.blocked,
+                            secrets: settings.dump_sign_in_secrets,
+                            exit_watched: exit_watched.contains(&p.key),
+                        };
+                        widgets::row_menu(&response, "processes", p.key, |ui| {
+                            context_menu(ui, p, d, &menu, out)
+                        });
                         let open = selected && table.open_menu.replace(false);
-                        keyboard_menu(&response, open, |ui| {
-                            context_menu(ui, p, d, blocked, secrets, out)
+                        keyboard_menu(&response, p.key, open, |ui| {
+                            context_menu(ui, p, d, &menu, out)
                         });
                     }
                 }
             });
-        });
+        })
+}
+
+/// The one-click filters above the list, and how many processes they keep.
+pub fn quick_bar(ui: &mut Ui, table: &mut ProcTable, snap: &Snapshot) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if let Some(app) = table.only_app.clone() {
+            let chip =
+                egui::Button::new(widgets::icon_text(ui, theme::icon::CLOSE, &app)).selected(true);
+            if ui
+                .add(chip)
+                .on_hover_text(format!("Only {app}: click to show every process again"))
+                .clicked()
+            {
+                table.only_app = None;
+                table.dirty = true;
+            }
+            ui.add_space(8.0);
+        }
+        ui.label(
+            RichText::new("Only")
+                .size(theme::META)
+                .color(theme::TEXT_WEAK),
+        );
+        for q in tree::Quick::ALL {
+            // What they use, then what they are.
+            if q == tree::Quick::New {
+                ui.add_space(8.0);
+            }
+            let unread = q == tree::Quick::Disk && snap.info_level != InfoLevel::Full;
+            let chip = egui::Button::selectable(table.quick.contains(q), q.label());
+            let response = ui
+                .add_enabled(!unread, chip)
+                .on_hover_text(q.tip())
+                .on_disabled_hover_text(if cfg!(windows) {
+                    "Disk counters need administrator rights"
+                } else {
+                    "Other users' disk counters need full access"
+                });
+            if response.clicked() {
+                table.quick.toggle(q);
+                table.dirty = true;
+            }
+        }
+        if !table.quick.is_empty() || table.only_app.is_some() {
+            ui.add_space(8.0);
+            if let Some(n) = table.matched {
+                ui.label(
+                    RichText::new(format!(
+                        "{} of {}",
+                        fmt::count(n as u64),
+                        fmt::count(snap.system.processes as u64)
+                    ))
+                    .size(theme::META)
+                    .color(theme::TEXT_WEAK),
+                );
+            }
+            if ui.small_button("Clear").clicked() {
+                table.quick.clear();
+                table.only_app = None;
+                table.dirty = true;
+            }
+        }
+    });
 }
 
 /// The row's menu opened from the keyboard (Shift+F10): under the row, with
-/// its first item focused so the arrows and Enter work from there.
-fn keyboard_menu(response: &egui::Response, open: bool, add_contents: impl FnOnce(&mut Ui)) {
-    let id = response.id.with("keyboard menu");
+/// its first item focused so the arrows and Enter work from there. Kept
+/// with what the row shows (`what`), as `widgets::row_menu` is.
+fn keyboard_menu(
+    response: &egui::Response,
+    what: impl std::hash::Hash + std::fmt::Debug,
+    open: bool,
+    add_contents: impl FnOnce(&mut Ui),
+) {
+    let id = egui::Id::new(("keyboard menu", what));
     if open {
         egui::Popup::open_id(&response.ctx, id);
     }
@@ -383,7 +583,7 @@ fn keyboard_menu(response: &egui::Response, open: bool, add_contents: impl FnOnc
         });
 }
 
-fn header_cell(ui: &mut Ui, c: Col, settings: &Settings) {
+fn header_cell(ui: &mut Ui, c: Col, settings: &Settings, name_inset: f32) {
     let sorted = settings.sort == c;
     let text = widgets::strong(c.title(), theme::META).color(if sorted {
         theme::TEXT
@@ -408,9 +608,11 @@ fn header_cell(ui: &mut Ui, c: Col, settings: &Settings) {
             }
         });
     } else {
-        if c != Col::Name {
-            ui.add_space(TEXT_INSET);
-        }
+        ui.add_space(if c == Col::Name {
+            name_inset
+        } else {
+            TEXT_INSET
+        });
         ui.add(Label::new(text).truncate());
         if let Some(arrow) = arrow {
             ui.label(arrow);
@@ -421,7 +623,13 @@ fn header_cell(ui: &mut Ui, c: Col, settings: &Settings) {
 /// Left inset of text columns, so they do not touch a right-aligned number.
 const TEXT_INSET: f32 = 8.0;
 
-fn column_chooser(ui: &mut Ui, settings: &Settings, out: &mut Vec<UiCmd>) {
+/// The titles' menu: it stays open while columns are turned on and off.
+fn column_chooser(
+    ui: &mut Ui,
+    settings: &Settings,
+    columns: &mut table::Columns<'_>,
+    out: &mut Vec<UiCmd>,
+) {
     ui.label(widgets::strong("Columns", theme::BODY));
     for c in Col::ALL {
         if c == Col::Name {
@@ -433,8 +641,14 @@ fn column_chooser(ui: &mut Ui, settings: &Settings, out: &mut Vec<UiCmd>) {
         }
     }
     ui.separator();
+    ui.label(
+        RichText::new("Drag a title to move its column")
+            .size(theme::META)
+            .color(theme::TEXT_WEAK),
+    );
     if ui.button("Reset columns").clicked() {
         out.push(UiCmd::ResetColumns);
+        columns.forget();
         ui.close();
     }
 }
@@ -462,12 +676,13 @@ fn text_color(p: &ProcessInfo, d: Option<&Arc<ProcessDetails>>) -> Color32 {
 }
 
 /// Tree lines: from each parent's toggle down to its children, ending at
-/// the last one.
-fn guides(ui: &Ui, r: Row) {
+/// the last one. The cell's content starts `inset` from its left.
+fn guides(ui: &Ui, r: Row, inset: f32) {
     if r.depth == 0 {
         return;
     }
-    let cell = ui.max_rect();
+    let mut cell = ui.max_rect();
+    cell.min.x += inset;
     let painter = ui.painter();
     let stroke = Stroke::new(1.0, theme::BORDER_STRONG);
     // A level's line runs under the toggle of the parent at that depth.
@@ -487,18 +702,20 @@ fn guides(ui: &Ui, r: Row) {
     painter.hline(x..=end, painter.round_to_pixel_center(mid), stroke);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn name_cell(
     ui: &mut Ui,
     p: &ProcessInfo,
     d: Option<&Arc<ProcessDetails>>,
     r: Row,
+    inset: f32,
     group: Option<&Group>,
     icons: &mut IconCache,
     out: &mut Vec<UiCmd>,
 ) {
     ui.spacing_mut().item_spacing.x = 4.0;
-    guides(ui, r);
-    ui.add_space(r.depth as f32 * INDENT);
+    guides(ui, r, inset);
+    ui.add_space(inset + r.depth as f32 * INDENT);
     let (rect, toggle) = ui.allocate_exact_size(vec2(12.0, ROW_HEIGHT), Sense::click());
     if r.has_children {
         let c = rect.center();
@@ -807,12 +1024,22 @@ pub(crate) fn item(ui: &mut Ui, out: &mut Vec<UiCmd>, text: &str, shortcut: &str
     }
 }
 
+/// What a process' menu needs to know besides the process.
+pub struct Menu<'a> {
+    /// Programs blocked from the network.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub blocked: &'a [String],
+    /// lsass may be dumped.
+    pub secrets: bool,
+    /// Its exit is waited for, to tell about.
+    pub exit_watched: bool,
+}
+
 pub fn context_menu(
     ui: &mut Ui,
     p: &ProcessInfo,
     d: Option<&Arc<ProcessDetails>>,
-    #[cfg_attr(not(windows), allow(unused_variables))] blocked: &[String],
-    secrets: bool,
+    menu: &Menu<'_>,
     out: &mut Vec<UiCmd>,
 ) {
     ui.set_min_width(220.0);
@@ -897,7 +1124,18 @@ pub fn context_menu(
         },
     );
     item(ui, out, "Live activity", "", UiCmd::LiveActivity(p.key));
-    if !anabolic_core::dump::refused(&p.name, secrets) {
+    item(
+        ui,
+        out,
+        if menu.exit_watched {
+            "Don't notify me when it exits"
+        } else {
+            "Notify me when it exits"
+        },
+        "",
+        UiCmd::NotifyExit(p.key, !menu.exit_watched),
+    );
+    if !anabolic_core::dump::refused(&p.name, menu.secrets) {
         ui.menu_button("Create dump file", |ui| {
             item(
                 ui,
@@ -920,7 +1158,7 @@ pub fn context_menu(
     // Linux firewalls do not filter by program.
     #[cfg(windows)]
     if let Some(path) = &path {
-        network_item(ui, p, path, blocked, out);
+        network_item(ui, p, path, menu.blocked, out);
     }
     ui.separator();
     if let Some(path) = &path {
