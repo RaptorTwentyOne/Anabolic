@@ -434,6 +434,14 @@ mod tests {
         let package = release.package.unwrap();
         assert!(package.url.ends_with("-windows-x64.msi"));
         assert_eq!((package.size, package.sha256.as_deref()), (2, Some("bb")));
+        // Saved under the release's name for it, if that is a plain one.
+        assert_eq!(
+            package_name(&package.name),
+            "anabolic-v0.3.0-windows-x64.msi"
+        );
+        for odd in ["", "..\\x.msi", "a/b.msi", "a b.msi", ".msi", "x.exe"] {
+            assert_eq!(package_name(odd), "anabolic.msi", "{odd}");
+        }
         assert!(from_answer(all.as_bytes(), "0.3.0").unwrap().is_none());
         // A release from before the installer: the zip for every copy.
         let zip_only = answer(&[asset("anabolic-v0.3.0-windows-x64.zip", 3, "CC")]);
@@ -555,8 +563,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("anabolic.exe");
         std::fs::write(&exe, b"MZ old").unwrap();
-        let want = Some("0".repeat(64));
-        let e = install_package(b"not the installer", &want, &exe).unwrap_err();
+        let package = Download {
+            name: "anabolic-v9.9.9-windows-x64.msi".into(),
+            url: String::new(),
+            size: 17,
+            sha256: Some("0".repeat(64)),
+        };
+        let e = install_package(b"not the installer", &package, &exe).unwrap_err();
         assert!(e.contains("changed after it was checked"), "{e}");
         assert_eq!(std::fs::read(&exe).unwrap(), b"MZ old");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
@@ -581,8 +594,13 @@ mod tests {
         let module =
             unsafe { LoadLibraryExW(PCWSTR(path.as_ptr()), None, DONT_RESOLVE_DLL_REFERENCES) }
                 .unwrap();
-        let sha = crate::filefacts::sha256_of(&msi[..]);
-        install_package(&msi, &sha, &exe).unwrap();
+        let package = Download {
+            name: "anabolic-test-windows-x64.msi".into(),
+            url: String::new(),
+            size: msi.len() as u64,
+            sha256: crate::filefacts::sha256_of(&msi[..]),
+        };
+        install_package(&msi, &package, &exe).unwrap();
         assert_ne!(std::fs::read(&exe).unwrap(), before);
         assert_eq!(
             std::fs::read(exe.with_extension("exe.old")).unwrap(),

@@ -4,6 +4,17 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
+## 0.4.1 (2026-10-26)
+
+An installed Anabolic that updated itself can be installed again, or
+repaired, from the release's installer.
+
+- **Updates through the installer** keep the installer's name from the
+  release. Windows remembers the file a program was installed from, and
+  installing the same version again (as winget does) looked for a file of
+  that name and failed. This holds from the next update on: 0.4.0 installs
+  this one the old way.
+
 ## 0.4.0 (2026-10-26)
 
 A page that says how the machine is doing, quicker ways to act on what it

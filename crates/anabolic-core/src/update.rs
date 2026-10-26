@@ -38,6 +38,8 @@ pub struct Release {
 /// One of a release's files.
 #[derive(Clone, Debug)]
 struct Download {
+    /// Its name on the release ("anabolic-v0.4.0-windows-x64.msi").
+    name: String,
     url: String,
     size: u64,
     /// As GitHub lists it; releases from before it did have none.
@@ -47,6 +49,7 @@ struct Download {
 impl From<ApiAsset> for Download {
     fn from(asset: ApiAsset) -> Self {
         Self {
+            name: asset.name,
             url: asset.browser_download_url,
             size: asset.size,
             sha256: asset
@@ -301,7 +304,7 @@ fn install(release: &Release, exe: &Path, progress: impl FnMut(u64, u64)) -> Res
     {
         imp::may_install_package()?;
         let data = fetch(package, progress)?;
-        return install_package(&data, &package.sha256, exe);
+        return install_package(&data, package, exe);
     }
     let zip = fetch(&release.zip, progress)?;
     let files = unzip(&zip)?;
@@ -352,17 +355,27 @@ fn fetch(file: &Download, mut progress: impl FnMut(u64, u64)) -> Result<Vec<u8>,
     Ok(data)
 }
 
-/// Runs the release's installer over the installed copy `exe`. The
-/// installer runs elevated, so the file it reads is held against changes
-/// from the moment it is checked until the installer is done with it. The
-/// running program's file is moved aside first, as for a zip: the
-/// installer then finds nothing in use to close or to replace at the next
-/// restart of Windows.
-fn install_package(data: &[u8], want: &Option<String>, exe: &Path) -> Result<(), String> {
-    let path = std::env::temp_dir().join(format!("anabolic-update-{}.msi", crate::random_hex(8)));
+/// Runs the release's installer (`data`, downloaded as `package`) over the
+/// installed copy `exe`. The installer runs elevated, so the file it reads
+/// is held against changes from the moment it is checked until the
+/// installer is done with it. The running program's file is moved aside
+/// first, as for a zip: the installer then finds nothing in use to close or
+/// to replace at the next restart of Windows.
+fn install_package(data: &[u8], package: &Download, exe: &Path) -> Result<(), String> {
+    let want = &package.sha256;
+    // Under the name it has on the release, in a folder of its own: Windows
+    // keeps the name the product was installed from, and a later repair or
+    // reinstall from the release's file (winget's, say) finds only a file
+    // of that name.
+    let dir = std::env::temp_dir().join(format!("anabolic-update-{}", crate::random_hex(8)));
+    let path = dir.join(package_name(&package.name));
     let log = std::env::temp_dir().join("anabolic-update.log");
     let written = |e: std::io::Error| format!("the installer could not be saved: {e}");
-    write_all(&path, data).map_err(written)?;
+    std::fs::create_dir(&dir).map_err(written)?;
+    if let Err(e) = write_all(&path, data) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(written(e));
+    }
     let result = (|| {
         let held = imp::hold(&path).map_err(written)?;
         let have =
@@ -386,11 +399,23 @@ fn install_package(data: &[u8], want: &Option<String>, exe: &Path) -> Result<(),
         drop(held);
         ran
     })();
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&dir);
     if result.is_ok() {
         let _ = std::fs::remove_file(&log);
     }
     result
+}
+
+/// A release file's name as a file name of its own: GitHub's word for it,
+/// unless that is no plain installer name.
+fn package_name(name: &str) -> &str {
+    let plain = !name.is_empty()
+        && name.ends_with(".msi")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !name.starts_with('.');
+    if plain { name } else { "anabolic.msi" }
 }
 
 /// Puts `data` in place of `exe`, running or not.
