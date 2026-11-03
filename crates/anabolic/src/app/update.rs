@@ -200,7 +200,7 @@ impl App {
                     u.available = None;
                     u.dismissed = false;
                     if self.hidden
-                        && let Some(tray) = &self.tray
+                        && let Some(tray) = self.tray.as_ref().filter(|t| t.present())
                     {
                         tray.notify(
                             &format!("Anabolic {} is installed", release.version),

@@ -164,7 +164,7 @@ impl App {
             // Seen in the window when it is in front; otherwise from the
             // notification area, which needs its icon.
             let in_front = !self.hidden && ctx.input(|i| i.viewport().focused.unwrap_or(false));
-            match &self.tray {
+            match self.tray.as_ref().filter(|t| t.present()) {
                 Some(tray) if !in_front => {
                     tray.notify(&title, &text, false);
                     self.exit_watch.told_at = Some(Instant::now());

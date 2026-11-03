@@ -137,8 +137,13 @@ fn main() -> eframe::Result {
             .with_min_inner_size([760.0, 420.0])
             .with_icon(app_icon())
             // Benchmarks and self-screenshots run beside someone's work: do
-            // not take the focus from them.
-            .with_active(!(bench::enabled() || std::env::var_os("ANABOLIC_SCREENSHOT").is_some())),
+            // not take the focus from them. Nor `--tray`, whose window is
+            // shown for the moment of its first frame (see `hide_first_frame`).
+            .with_active(
+                !(bench::enabled()
+                    || std::env::var_os("ANABOLIC_SCREENSHOT").is_some()
+                    || std::env::args().any(|a| a == "--tray")),
+            ),
         renderer: draw.renderer(),
         wgpu_options: wgpu_options(),
         // Test instances keep their state elsewhere, away from the user's.

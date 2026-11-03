@@ -27,14 +27,15 @@ use windows::Win32::UI::Shell::{
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetIconInfo, GetMessageW,
-    GetSystemMetrics, GetWindowLongPtrW, HICON, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
-    MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow, SetMenuDefaultItem,
-    SetWindowLongPtrW, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP,
-    WM_NULL, WNDCLASSW, WS_OVERLAPPED,
+    AppendMenuW, ChangeWindowMessageFilterEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetCursorPos,
+    GetIconInfo, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, HICON, ICONINFO, IMAGE_ICON,
+    KillTimer, LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
+    SM_CYSMICON, SetForegroundWindow, SetMenuDefaultItem, SetTimer, SetWindowLongPtrW,
+    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_TIMER,
+    WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -49,6 +50,8 @@ pub struct Tray {
     events: Receiver<TrayEvent>,
     meter: RefCell<Meter>,
     readded: Arc<AtomicBool>,
+    /// The icon is in the notification area (see `present`).
+    present: Arc<AtomicBool>,
 }
 
 /// The CPU meter drawn into the icon (see `meter`).
@@ -70,6 +73,10 @@ const QUIT: usize = 2;
 const NIN_KEYSELECT: u32 = 0x401;
 /// A click on one of the icon's notifications.
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
+/// While the icon is not in the notification area, it is tried again this
+/// often.
+const RETRY: usize = 1;
+const RETRY_MS: u32 = 2000;
 
 struct State {
     events: Sender<TrayEvent>,
@@ -81,6 +88,7 @@ struct State {
     /// The icon was added again with the plain logo: the meter has to be
     /// drawn again.
     readded: Arc<AtomicBool>,
+    present: Arc<AtomicBool>,
 }
 
 /// Copies `text` into a fixed, nul-terminated buffer, cut to fit.
@@ -215,13 +223,33 @@ fn add_icon(hwnd: HWND, icon: HICON) -> bool {
     d.hIcon = icon;
     fill(&mut d.szTip, "Anabolic");
     unsafe {
-        if !Shell_NotifyIconW(NIM_ADD, &d).as_bool() {
+        // An add can fail while Explorer is too busy to answer in time and
+        // still happen: then the icon is there to change.
+        if !Shell_NotifyIconW(NIM_ADD, &d).as_bool() && !Shell_NotifyIconW(NIM_MODIFY, &d).as_bool()
+        {
             return false;
         }
         d.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         let _ = Shell_NotifyIconW(NIM_SETVERSION, &d);
     }
     true
+}
+
+/// Puts the icon back into a notification area made anew, or tries again
+/// in a moment when there is none yet.
+fn put_back(hwnd: HWND, state: &State) {
+    let added = add_icon(hwnd, state.icon);
+    state.present.store(added, Ordering::Relaxed);
+    unsafe {
+        if added {
+            let _ = KillTimer(Some(hwnd), RETRY);
+            // Drawn with the plain logo: the meter has to be drawn again.
+            state.readded.store(true, Ordering::Relaxed);
+        } else {
+            SetTimer(Some(hwnd), RETRY, RETRY_MS, None);
+        }
+    }
+    state.ctx.request_repaint();
 }
 
 fn open(state: &State) {
@@ -292,9 +320,12 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == RETRY => {
+            put_back(hwnd, state);
+            LRESULT(0)
+        }
         m if m == state.taskbar_created => {
-            add_icon(hwnd, state.icon);
-            state.readded.store(true, Ordering::Relaxed);
+            put_back(hwnd, state);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -302,14 +333,18 @@ unsafe extern "system" fn window_proc(
 }
 
 impl Tray {
-    /// Puts the icon in the notification area. None when there is no
-    /// notification area to put it in (no Explorer on this desktop): then
-    /// closing the window must not hide it.
+    /// Puts the icon in the notification area, now or as soon as there is
+    /// one: started as Windows signs in, Anabolic can be there before
+    /// Explorer has its taskbar. Until then, and with no Explorer on this
+    /// desktop, `present` is false and closing the window must not hide it.
+    /// None when the icon's window could not be made.
     pub fn start(ctx: egui::Context) -> Option<Tray> {
         let (events, rx) = mpsc::channel();
         let (ready, ready_rx) = mpsc::channel::<Option<isize>>();
         let readded = Arc::new(AtomicBool::new(false));
         let readded_too = readded.clone();
+        let present = Arc::new(AtomicBool::new(false));
+        let present_too = present.clone();
         let spawned = std::thread::Builder::new()
             .name("anabolic-tray".into())
             .spawn(move || unsafe {
@@ -358,20 +393,24 @@ impl Tray {
                 )
                 .map(|h| HICON(h.0))
                 .unwrap_or_default();
+                let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
+                // Explorer runs unelevated, and Windows keeps its messages
+                // from an elevated Anabolic's windows unless they take them.
+                let _ = ChangeWindowMessageFilterEx(hwnd, taskbar_created, MSGFLT_ALLOW, None);
                 let state = Box::into_raw(Box::new(State {
                     events,
                     ctx,
                     icon,
-                    taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+                    taskbar_created,
                     readded: readded_too,
+                    present: present_too,
                 }));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
-                if !add_icon(hwnd, icon) {
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                    let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
-                    drop(Box::from_raw(state));
-                    let _ = ready.send(None);
-                    return;
+                if add_icon(hwnd, icon) {
+                    (*state).present.store(true, Ordering::Relaxed);
+                } else {
+                    // No taskbar yet: tried again until there is one.
+                    SetTimer(Some(hwnd), RETRY, RETRY_MS, None);
                 }
                 let _ = ready.send(Some(hwnd.0 as isize));
                 let mut msg = MSG::default();
@@ -397,7 +436,14 @@ impl Tray {
                 icon: HICON::default(),
             }),
             readded,
+            present,
         })
+    }
+
+    /// The icon is in the notification area: a closed window can be
+    /// brought back from it, and its notifications are seen.
+    pub fn present(&self) -> bool {
+        self.present.load(Ordering::Relaxed)
     }
 
     /// The CPU meter at `cpu` percent, or the plain logo for None. Redrawn

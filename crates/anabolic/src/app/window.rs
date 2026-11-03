@@ -8,6 +8,24 @@
 
 use super::*;
 
+/// How long a hidden window waits for its notification area icon before
+/// it shows itself.
+const ICON_WAIT: Duration = Duration::from_secs(60);
+
+/// The window is on screen (not hidden, minimized or not).
+#[cfg(windows)]
+pub(super) fn on_screen(frame: &eframe::Frame) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    match frame.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => unsafe {
+            windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(HWND(h.hwnd.get() as *mut _))
+        }
+        .as_bool(),
+        _ => true,
+    }
+}
+
 impl App {
     /// The notification area icon: there while it is wanted, its clicks,
     /// its tooltip, and what a closed window should not keep running.
@@ -20,17 +38,29 @@ impl App {
             self.tray_failed = false;
             if !self.hidden {
                 self.tray = None;
+                self.icon_away = None;
             }
         } else if self.tray.is_none() && !self.tray_failed {
             self.tray = crate::tray::Tray::start(ctx.clone());
             self.tray_failed = self.tray.is_none();
         }
+        // The icon can come after Anabolic does: started as Windows signs
+        // in, Anabolic may be there before Explorer has a taskbar. A hidden
+        // window waits a while for it; past that, or with no icon at all,
+        // nothing could bring the window back, so it shows.
+        let present = self.tray.as_ref().is_some_and(|t| t.present());
+        let away = if present {
+            self.icon_away = None;
+            false
+        } else {
+            self.tray.is_none()
+                || self.icon_away.get_or_insert_with(Instant::now).elapsed() >= ICON_WAIT
+        };
+        if self.hidden && away {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            self.hidden = false;
+        }
         let Some(tray) = &self.tray else {
-            // Nothing could bring a hidden window back: show it.
-            if self.hidden {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                self.hidden = false;
-            }
             return;
         };
         let events: Vec<crate::tray::TrayEvent> = tray.events().collect();
@@ -46,12 +76,16 @@ impl App {
             (format!("{} at {:.0} %", a.what, a.pct), who)
         });
         if self.hidden
+            && present
             && !self.alert_seen
             && let Some((title, text)) = &alert
         {
             tray.notify(title, text, true);
         }
-        self.alert_seen = alert.is_some();
+        // Told once the icon can tell it.
+        if present || !self.hidden {
+            self.alert_seen = alert.is_some();
+        }
         tray.cpu(
             self.settings
                 .tray_cpu

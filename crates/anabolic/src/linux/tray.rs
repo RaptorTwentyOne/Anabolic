@@ -10,6 +10,7 @@
 //! zbus's own, so clicks work while the UI thread sleeps.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -312,12 +313,17 @@ pub struct Tray {
     events: Receiver<TrayEvent>,
     /// The notifications shown, so a click on one of ours opens the window.
     shown: Arc<Mutex<Vec<u32>>>,
+    /// A StatusNotifierWatcher took the icon (see `present`).
+    present: Arc<AtomicBool>,
 }
 
 impl Tray {
-    /// Puts the icon in the notification area. None when there is none (no
-    /// StatusNotifierWatcher: GNOME without its AppIndicator extension):
-    /// then closing the window must not hide it.
+    /// Puts the icon in the notification area, now or as soon as there is
+    /// one: started as the session begins, Anabolic can be there before the
+    /// panel is. Until then, and where there is none (no
+    /// StatusNotifierWatcher: GNOME without its AppIndicator extension),
+    /// `present` is false and closing the window must not hide it. None
+    /// without a session bus.
     pub fn start(ctx: egui::Context) -> Option<Tray> {
         let (events, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
@@ -347,11 +353,13 @@ impl Tray {
             .ok()?
             .build()
             .ok()?;
-        register(&conn, &name).ok()?;
+        let present = Arc::new(AtomicBool::new(register(&conn, &name).is_ok()));
         let shown = Arc::new(Mutex::new(Vec::new()));
-        // Plasma restarted: the new watcher knows nothing of the icon.
+        // The panel came, or Plasma restarted: a new watcher knows nothing
+        // of the icon.
         {
             let (conn, name) = (conn.clone(), name.clone());
+            let (shared, present) = (shared.clone(), present.clone());
             let _ = std::thread::Builder::new()
                 .name("anabolic-tray-watcher".into())
                 .spawn(move || {
@@ -362,11 +370,15 @@ impl Tray {
                     else {
                         return;
                     };
+                    // One may have come since the first try.
+                    if !present.load(Ordering::Relaxed) && register(&conn, &name).is_ok() {
+                        present.store(true, Ordering::Relaxed);
+                        crate::repaint(&shared.ctx);
+                    }
                     for change in changes {
                         let back = change.args().is_ok_and(|a| a.new_owner().is_some());
-                        if back {
-                            let _ = register(&conn, &name);
-                        }
+                        present.store(back && register(&conn, &name).is_ok(), Ordering::Relaxed);
+                        crate::repaint(&shared.ctx);
                     }
                 });
         }
@@ -404,7 +416,14 @@ impl Tray {
             shared,
             events: rx,
             shown,
+            present,
         })
+    }
+
+    /// The icon is in the notification area: a closed window can be
+    /// brought back from it.
+    pub fn present(&self) -> bool {
+        self.present.load(Ordering::Relaxed)
     }
 
     pub fn events(&self) -> impl Iterator<Item = TrayEvent> + '_ {

@@ -259,8 +259,10 @@ pub struct App {
     whats_new: Vec<crate::whats_new::Release>,
     /// The notification area icon, while closing hides the window.
     tray: Option<crate::tray::Tray>,
-    /// There is no notification area (no Explorer on this desktop).
+    /// The icon could not be made at all.
     tray_failed: bool,
+    /// Since when the icon has not been in the notification area.
+    icon_away: Option<Instant>,
     /// Whether Anabolic starts at sign-in; None until known, and while a
     /// change is on its way.
     sign_in: Option<anabolic_core::signin::SignIn>,
@@ -268,6 +270,10 @@ pub struct App {
     start_in_tray: bool,
     /// The window is closed into the notification area.
     hidden: bool,
+    /// `--tray`: the first frame hides the window again. eframe shows it
+    /// once that frame is drawn, however it was built, and carries out the
+    /// frame's commands after that, before anything reaches the screen.
+    hide_first_frame: bool,
     /// Quit was chosen: let the close through.
     quitting: bool,
     /// The first hide this session explained itself.
@@ -695,9 +701,16 @@ impl App {
             whats_new,
             tray: None,
             tray_failed: false,
+            icon_away: None,
             sign_in: None,
             start_in_tray: args.iter().any(|a| a == "--tray"),
             hidden: args.iter().any(|a| a == "--tray"),
+            #[cfg(windows)]
+            hide_first_frame: args.iter().any(|a| a == "--tray"),
+            // A Wayland window cannot be hidden: it closes (see `logic`).
+            #[cfg(target_os = "linux")]
+            hide_first_frame: args.iter().any(|a| a == "--tray")
+                && !crate::windowless::on_wayland(cc),
             quitting: false,
             told_hidden: false,
             alert_seen: false,
@@ -1151,7 +1164,9 @@ impl App {
             self.runaways_told.clone_from(&self.runaways);
             return;
         }
-        let Some(tray) = &self.tray else { return };
+        let Some(tray) = self.tray.as_ref().filter(|t| t.present()) else {
+            return;
+        };
         for runaway in &self.runaways {
             if !self.runaways_told.iter().any(|t| t.same(runaway)) {
                 tray.notify(
@@ -1246,14 +1261,31 @@ impl eframe::App for App {
             self.renderer = Some(renderer);
         }
         let ctx = ui.ctx().clone();
-        // `ui` runs only while the window is on screen (`logic` has pumped),
-        // unless `logic` has just hidden it on a close.
+        if std::mem::take(&mut self.hide_first_frame) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            return;
+        }
+        // eframe runs a hidden window's frames too on Windows, to carry out
+        // its commands: nothing is drawn for nobody. (The process list, for
+        // one, is not kept up to date then.) A window about to show for the
+        // first time is drawn first.
+        #[cfg(windows)]
+        if self.hidden && !window::on_screen(frame) {
+            return;
+        }
+        // On screen: no longer hidden, unless `logic` has just hidden it on
+        // a close.
         #[cfg(target_os = "linux")]
         let closing = self.away;
         #[cfg(windows)]
         let closing = false;
         if !(self.hidden && (closing || ctx.input(|i| i.viewport().close_requested()))) {
             self.hidden = false;
+        }
+        // Just back on screen: the table catches up before it is drawn.
+        if self.table.dirty && !self.hidden {
+            self.table
+                .rebuild(&self.snapshot, &self.details, &self.settings);
         }
         // Names for addresses: what programs looked up, as it comes in.
         self.tables
@@ -1665,7 +1697,7 @@ impl App {
             self.actions.run(Action::Quiet(Box::new(action)));
         }
         for alert in alerts {
-            match &self.tray {
+            match self.tray.as_ref().filter(|t| t.present()) {
                 Some(tray) if self.hidden => tray.notify("Anabolic rule", &alert, true),
                 _ => self.toasts.error(alert),
             }
@@ -1688,7 +1720,7 @@ impl App {
         // ends Anabolic, icon and all.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quitting
-            && self.tray.is_some()
+            && self.tray.as_ref().is_some_and(|t| t.present())
             && (self.settings.close_to_tray || self.start_in_tray)
         {
             // Wayland cannot hide a window, only close it: then Anabolic
@@ -1733,7 +1765,11 @@ impl App {
         // `--tray` on Wayland: a window cannot start hidden there, so the
         // first closes at once and Anabolic goes on without it.
         #[cfg(target_os = "linux")]
-        if self.wayland && self.hidden && !self.away && self.tray.is_some() {
+        if self.wayland
+            && self.hidden
+            && !self.away
+            && self.tray.as_ref().is_some_and(|t| t.present())
+        {
             self.away = true;
             self.told_hidden = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

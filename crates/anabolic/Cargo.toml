@@ -25,6 +25,9 @@ serde_json = "1"
 # what draws on Linux (see renderer() in main.rs).
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wgpu_no_default_features"] }
 egui_extras = { version = "0.36", default-features = false }
+# Which window is ours: whether it is on screen, and on Linux which display
+# it is on.
+raw-window-handle = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 # Direct3D 12 only: see wgpu_options in main.rs.
@@ -36,9 +39,8 @@ eframe = { version = "0.36", default-features = false, features = ["wayland", "x
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 libc = "0.2"
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
-# Without a window on Wayland (see linux/windowless.rs): which display the
-# window is on, and eframe's saved state written without it.
-raw-window-handle = "0.6"
+# Without a window on Wayland (see linux/windowless.rs): eframe's saved
+# state written without it.
 ron = "0.12"
 
 [target.'cfg(windows)'.dependencies.windows]

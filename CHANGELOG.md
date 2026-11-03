@@ -4,6 +4,20 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
+## Unreleased
+
+- **Starting as you sign in** puts Anabolic in the notification area again,
+  without its window. Windows can start it before the taskbar is there:
+  the icon used to give up and show the window, and closing that window
+  quit. Now the icon waits for the taskbar, and the window shows itself
+  only when no taskbar comes within a minute.
+- **The icon comes back** when Explorer restarts, for an Anabolic running
+  as administrator too.
+- **Closed into the notification area,** Anabolic no longer draws its
+  window for nobody, and the icon tells of rule and memory alerts, a
+  program in many copies and an installed update again: they had gone to
+  the hidden window instead.
+
 ## 0.4.1 (2026-10-26)
 
 An installed Anabolic that updated itself can be installed again, or

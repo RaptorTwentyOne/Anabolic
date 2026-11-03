@@ -146,7 +146,8 @@ impl App {
              it to quit.",
             |ui| {
                 ui.checkbox(&mut self.settings.close_to_tray, "");
-                if self.settings.close_to_tray && self.tray_failed {
+                let away = self.tray_failed || self.tray.as_ref().is_some_and(|t| !t.present());
+                if self.settings.close_to_tray && away {
                     caution(
                         ui,
                         "There is no notification area here, so closing still quits.",
