@@ -4,15 +4,13 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
-## Unreleased
+## 0.5.0 (2026-11-03)
 
-- **Starting as you sign in** puts Anabolic in the notification area again,
-  without its window. Windows can start it before the taskbar is there:
-  the icon used to give up and show the window, and closing that window
-  quit. Now the icon waits for the taskbar, and the window shows itself
-  only when no taskbar comes within a minute.
-- **The icon comes back** when Explorer restarts, for an Anabolic running
-  as administrator too.
+Limits Windows keeps on a program's processor and memory, rules that wait
+for a program to be busy or in the background and act when something goes
+wrong, and Anabolic in the notification area again from the moment you
+sign in.
+
 - **CPU and memory limits** (a process' menu, and rules): a process, with
   what it starts, held to a share of the whole machine's processor and to
   an amount of private memory. Windows keeps the cap however busy the
@@ -38,11 +36,18 @@ new since the one before.
   joins the columns shown, and the column menu takes it away. A process'
   menu now offers to leave efficiency mode by what Windows says of it,
   rather than by its priority.
+- **Game mode without a game:** lowering busy background programs can go
+  on all the time, sparing the program in front.
 - **Quitting puts things back:** what a rule's condition or game mode
   changed (a priority, efficiency mode) goes back as Anabolic quits, as
   limits are lifted.
-- **Game mode without a game:** lowering busy background programs can go
-  on all the time, sparing the program in front.
+- **Starting as you sign in** puts Anabolic in the notification area again,
+  without its window. Windows can start it before the taskbar is there:
+  the icon used to give up and show the window, and closing that window
+  quit. Now the icon waits for the taskbar, and the window shows itself
+  only when no taskbar comes within a minute.
+- **The icon comes back** when Explorer restarts, for an Anabolic running
+  as administrator too.
 - **Closed into the notification area,** Anabolic no longer draws its
   window for nobody, and the icon tells of rule and memory alerts, a
   program in many copies and an installed update again: they had gone to
