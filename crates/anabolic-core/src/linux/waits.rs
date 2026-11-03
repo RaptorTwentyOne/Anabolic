@@ -578,9 +578,11 @@ mod tests {
     }
 
     /// A child reads a pipe this process writes to: its chain leads here.
+    /// The shell's own read, not cat: some cats (uutils') wait elsewhere.
     #[test]
     fn follows_a_pipe_to_its_writer() {
-        let mut child = Command::new("cat")
+        let mut child = Command::new("sh")
+            .args(["-c", "read line"])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()

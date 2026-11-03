@@ -474,11 +474,10 @@ mod tests {
         );
         assert!(ls.name.contains("coreutils"), "{}", ls.name);
         assert!(!ls.version.is_empty());
-        // Through the /bin link too.
-        assert_eq!(
-            owner("/bin/ls").map(|p| p.name.clone()),
-            Some(ls.name.clone())
-        );
+        // Through the /bin link too. Where ls is a link itself (uutils'
+        // coreutils), that leads on to the package of the file it names.
+        let through = owner("/bin/ls").expect("/bin/ls belongs to a package");
+        assert!(through.name.contains("coreutils"), "{}", through.name);
         assert!(owner("/tmp/no-such-file").is_none());
         let started = Instant::now();
         for _ in 0..1000 {
