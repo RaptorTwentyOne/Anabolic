@@ -38,7 +38,8 @@ impl Priority {
 pub fn perform(action: Action) -> Option<Outcome> {
     let result = match action {
         Action::Quiet(action) => {
-            return perform(*action).filter(|o| matches!(o, Outcome::Error(_)));
+            return perform(*action)
+                .filter(|o| matches!(o, Outcome::Error(_) | Outcome::Limits(_)));
         }
         Action::Silent(action) => {
             perform(*action);
@@ -100,6 +101,16 @@ pub fn perform(action: Action) -> Option<Outcome> {
         // terminal): one started as root here would find no desktop.
         Action::Run { command, .. } => run(&command),
         Action::BrowseProgram => return Some(Outcome::Browsed(None)),
+        Action::Limit {
+            group,
+            targets,
+            limits,
+        } => {
+            return Some(Outcome::Limits(crate::limits::limit(
+                &group, &targets, limits,
+            )));
+        }
+        Action::Lift(group) => return Some(Outcome::Limits(crate::limits::lift(&group))),
         // Run on their own thread by the runner.
         Action::Dump { .. } => return None,
         Action::Suspend(t) => signal(&t, libc::SIGSTOP).map(|_| format!("Suspended {}", t.label())),
@@ -292,6 +303,13 @@ fn set_priority(t: &Target, priority: Priority) -> Result<(), String> {
 
 /// Efficiency mode on Linux: the idle scheduling class (it runs when no
 /// one else wants the processor) and the idle I/O class.
+/// Whether a process runs in efficiency mode: its main thread in the idle
+/// scheduling class. Asked of the kernel, nothing opened.
+pub fn efficiency_mode(key: crate::model::ProcKey) -> Option<bool> {
+    let policy = unsafe { libc::sched_getscheduler(key.pid as i32) };
+    (policy >= 0).then_some(policy == libc::SCHED_IDLE)
+}
+
 fn set_efficiency_mode(t: &Target, on: bool) -> Result<String, String> {
     const IOPRIO_WHO_PROCESS: i32 = 1;
     const IOPRIO_CLASS_IDLE: i32 = 3;

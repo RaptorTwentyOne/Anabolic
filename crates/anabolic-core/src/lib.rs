@@ -41,6 +41,7 @@ pub mod hotkey;
 pub mod hwinfo;
 pub mod instance;
 pub mod latency;
+pub mod limits;
 pub mod lineage;
 pub mod memory;
 pub mod model;

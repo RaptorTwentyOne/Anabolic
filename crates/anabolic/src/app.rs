@@ -210,6 +210,10 @@ pub struct App {
     zombie_view: ZombieView,
     kill_dialog: Option<KillDialog>,
     affinity_dialog: Option<AffinityDialog>,
+    /// The CPU and memory limits as last shown (see `limits::publish`),
+    /// and the one being set.
+    limits_seen: Option<u64>,
+    limit_dialog: Option<crate::limits::LimitDialog>,
     /// A question waiting for an answer, and what to do on yes.
     confirm: Option<(ConfirmDialog, Pending)>,
     module_view: ModuleView,
@@ -247,6 +251,8 @@ pub struct App {
     pending_waits: bool,
     /// `--notify-exit`: tell when `--pid` exits (tests).
     pending_notify_exit: bool,
+    /// `--limit`: open the limit dialog on `--pid` (tests).
+    pending_limit: bool,
     /// `--pane [NAME]`: once `--pid` is selected, open the side pane of the
     /// detail tab on its first thread, the module NAME, or the first handle
     /// of type NAME. `--stack` also reads that thread's call stack. Both
@@ -364,6 +370,7 @@ impl App {
                     | "--tab"
                     | "--find"
                     | "--filter"
+                    | "--search"
                     | "--quick"
                     | "--app"
                     | "--detail-sort"
@@ -619,6 +626,8 @@ impl App {
                 dirty: true,
                 quick,
                 only_app,
+                // `--search TEXT`: the process list's filter, as typed.
+                filter: value("--search").unwrap_or_default().to_string(),
                 ..Default::default()
             },
             settings,
@@ -661,6 +670,8 @@ impl App {
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
+            limits_seen: None,
+            limit_dialog: None,
             confirm: None,
             module_view: ModuleView::default(),
             find: FindView {
@@ -690,6 +701,7 @@ impl App {
             pending_pid,
             pending_waits: args.iter().any(|a| a == "--waits"),
             pending_notify_exit: args.iter().any(|a| a == "--notify-exit"),
+            pending_limit: args.iter().any(|a| a == "--limit"),
             pending_pane: args.iter().any(|a| a == "--pane").then(|| {
                 value("--pane")
                     .filter(|v| !v.starts_with("--"))
@@ -815,6 +827,17 @@ impl App {
                     }
                 }
                 Outcome::StillBlocked(paths) => self.settings.blocked = paths,
+                Outcome::Limits(applied) => {
+                    let snap = &self.snapshot;
+                    let names = |k| snap.find(k).map(|p| p.name.clone());
+                    for (text, failed) in crate::limits::told(&applied, names) {
+                        if failed {
+                            self.toasts.error(text);
+                        } else {
+                            self.toasts.info(text);
+                        }
+                    }
+                }
                 Outcome::Browsed(path) => {
                     if let Some(dialog) = &mut self.run_dialog {
                         dialog.browsing = false;
@@ -1070,6 +1093,9 @@ impl App {
                     if std::mem::take(&mut self.pending_notify_exit) {
                         self.notify_exit(key, true);
                     }
+                    if std::mem::take(&mut self.pending_limit) {
+                        self.handle(vec![UiCmd::LimitDialog(key)]);
+                    }
                 }
             }
         }
@@ -1080,6 +1106,32 @@ impl App {
         if self.table.dirty && !self.hidden {
             self.table
                 .rebuild(&self.snapshot, &self.details, &self.settings);
+        }
+    }
+
+    /// Does what a rule's watch that fired asks for.
+    fn respond(&mut self, f: crate::rules::Fired) {
+        use crate::rules::Response;
+        let dump = |kind: crate::rules::Dump, then_end: bool| {
+            crate::data_dir().map(|d| Action::Dump {
+                target: f.target.clone(),
+                kind: kind.kind(),
+                dir: d.join("dumps"),
+                secrets: self.settings.dump_sign_in_secrets,
+                then_end,
+            })
+        };
+        let action = match f.response {
+            Response::Tell => None,
+            Response::End => Some(Action::Terminate(vec![f.target.clone()])),
+            Response::Dump(kind) => dump(kind, false),
+            // Nowhere to write it: ended all the same.
+            Response::DumpThenEnd(kind) => {
+                dump(kind, true).or_else(|| Some(Action::Terminate(vec![f.target.clone()])))
+            }
+        };
+        if let Some(action) = action {
+            self.actions.run(action);
         }
     }
 
@@ -1094,6 +1146,10 @@ impl App {
             .filter_map(|d| d.icon.as_ref().map(|i| i.id))
             .collect();
         self.icons.retain(|id| live.contains(&id));
+        // A process' own limit goes with it.
+        anabolic_core::limits::forget_gone(|k| {
+            snap.find(k).is_some_and(|p| p.state != ProcState::Exited)
+        });
     }
 
     fn update_alert(&mut self) {
@@ -1672,6 +1728,19 @@ impl eframe::App for App {
         }
         // Stops the ETW session before the process goes away.
         self.collector.shutdown();
+        // Limits last while Anabolic runs, and so do what rules' conditions
+        // and game mode changed: put back before it goes, here and now.
+        anabolic_core::limits::lift_all();
+        let snap = &self.snapshot;
+        let back: Vec<Action> = self
+            .rule_engine
+            .release(snap)
+            .into_iter()
+            .chain(self.game_mode.release(snap))
+            .collect();
+        for action in back {
+            anabolic_core::actions::perform(action);
+        }
         #[cfg(windows)]
         crate::session::done();
     }
@@ -1690,17 +1759,20 @@ impl App {
     /// then): what must go on without a window lives here.
     fn tick(&mut self, ctx: &egui::Context) {
         self.pump(ctx);
-        // Rules: standing orders go to the action thread quietly; alerts
-        // become toasts, or notifications while the window is closed.
-        let (actions, alerts) = self.rule_engine.step(&self.settings.rules, &self.snapshot);
+        crate::limits::publish(ctx, &mut self.limits_seen);
+        // Rules: standing orders go to the action thread quietly; watches
+        // that fire become toasts, or notifications while the window is
+        // closed, and may write a dump or end the process.
+        let (actions, fired) = self.rule_engine.step(&self.settings.rules, &self.snapshot);
         for action in actions {
             self.actions.run(Action::Quiet(Box::new(action)));
         }
-        for alert in alerts {
+        for f in fired {
             match self.tray.as_ref().filter(|t| t.present()) {
-                Some(tray) if self.hidden => tray.notify("Anabolic rule", &alert, true),
-                _ => self.toasts.error(alert),
+                Some(tray) if self.hidden => tray.notify("Anabolic rule", &f.text, true),
+                _ => self.toasts.error(f.text.clone()),
             }
+            self.respond(f);
         }
         // Windows signing out or shutting down: a real quit, from the
         // notification area too.

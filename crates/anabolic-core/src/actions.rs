@@ -153,6 +153,9 @@ pub enum Action {
         dir: std::path::PathBuf,
         /// lsass too (the user's setting).
         secrets: bool,
+        /// End it once the dump is written, or could not be (a rule's
+        /// order): only then, so the dump sees it as it was.
+        then_end: bool,
     },
     /// Start something the way the Run box does: a program with its
     /// arguments, a document, a folder or a web address. `elevated` asks
@@ -164,6 +167,15 @@ pub enum Action {
     },
     /// Pick a program file for Run new task, in the system's Open dialog.
     BrowseProgram,
+    /// Hold a group of processes to CPU and memory limits (see `limits`);
+    /// those it already holds stay in it.
+    Limit {
+        group: String,
+        targets: Vec<Target>,
+        limits: crate::limits::Limits,
+    },
+    /// Stop limiting a group.
+    Lift(String),
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +219,9 @@ pub enum Outcome {
     },
     /// The file picked for Run new task; None when the dialog was cancelled.
     Browsed(Option<String>),
+    /// What a limit, or lifting one, came to: told even for a rule's, so
+    /// the window knows which processes are held.
+    Limits(crate::limits::Applied),
 }
 
 pub struct ActionRunner {
@@ -228,8 +243,10 @@ impl ActionRunner {
                         kind,
                         dir,
                         secrets,
+                        then_end,
                     } = action
                     {
+                        let end = then_end.then(|| Action::Terminate(vec![target.clone()]));
                         let (out_tx, notify) = (out_tx.clone(), notify.clone());
                         let _ =
                             thread::Builder::new()
@@ -250,6 +267,9 @@ impl ActionRunner {
                                         Err(e) => Outcome::Error(e),
                                     };
                                     let _ = out_tx.send(outcome);
+                                    if let Some(ended) = end.and_then(perform) {
+                                        let _ = out_tx.send(ended);
+                                    }
                                     notify();
                                 });
                         continue;

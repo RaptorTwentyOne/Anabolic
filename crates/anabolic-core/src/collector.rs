@@ -281,6 +281,9 @@ struct State {
     thread_prev_for: Option<ProcKey>,
     enrich: Sender<EnrichRequest>,
     recorder: Option<Recorder>,
+    /// Efficiency mode as last asked, with the base priority it was asked
+    /// at.
+    efficiency: HashMap<ProcKey, (i32, bool)>,
 }
 
 impl State {
@@ -358,6 +361,7 @@ impl State {
             enrich,
             cpu,
             recorder: config.recorder.clone().map(Recorder::start),
+            efficiency: HashMap::new(),
             config,
         }
     }
@@ -945,6 +949,7 @@ impl State {
                 net_tx_total: tracked.net_tx_total,
                 user_sid: tracked.sid.clone(),
                 not_responding: false,
+                efficiency: false,
                 ending: sample.ending,
             };
 
@@ -986,6 +991,24 @@ impl State {
             .filter(|p| p.state != ProcState::Exited)
         {
             p.not_responding = hung.iter().any(|h| h.pid == p.pid);
+        }
+        // Efficiency mode. Windows tells it only to whoever opens the
+        // process, so it is asked as a process appears and again when its
+        // priority changes: turning efficiency mode on or off changes that
+        // too. Linux tells it without opening anything, every time.
+        let asked = std::mem::take(&mut self.efficiency);
+        for p in processes
+            .iter_mut()
+            .filter(|p| p.state != ProcState::Exited && !p.is_pseudo())
+        {
+            let known = asked
+                .get(&p.key)
+                .filter(|(base, _)| cfg!(windows) && *base == p.base_priority)
+                .map(|&(_, on)| on);
+            p.efficiency =
+                known.unwrap_or_else(|| crate::actions::efficiency_mode(p.key).unwrap_or(false));
+            self.efficiency
+                .insert(p.key, (p.base_priority, p.efficiency));
         }
         let mut system = SystemStats {
             cpu: cpu.total,

@@ -351,6 +351,7 @@ impl App {
                                         kind,
                                         dir,
                                         secrets: self.settings.dump_sign_in_secrets,
+                                        then_end: false,
                                     });
                                     self.toasts.info(format!(
                                         "Writing a {} dump of {}\u{2026}",
@@ -416,6 +417,26 @@ impl App {
                     self.affinity_dialog = None;
                 }
                 AffinityChoice::Cancel => self.affinity_dialog = None,
+            }
+        }
+        if let Some(dialog) = &mut self.limit_dialog {
+            use crate::limits::LimitChoice;
+            let group = anabolic_core::limits::process_group(dialog.target.key);
+            match dialog.show(ctx) {
+                LimitChoice::Pending => {}
+                LimitChoice::Apply(limits) => {
+                    self.actions.run(Action::Limit {
+                        group,
+                        targets: vec![dialog.target.clone()],
+                        limits,
+                    });
+                    self.limit_dialog = None;
+                }
+                LimitChoice::Lift => {
+                    self.actions.run(Action::Lift(group));
+                    self.limit_dialog = None;
+                }
+                LimitChoice::Cancel => self.limit_dialog = None,
             }
         }
     }

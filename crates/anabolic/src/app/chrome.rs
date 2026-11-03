@@ -12,6 +12,7 @@ impl App {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context, out: &mut Vec<UiCmd>) {
         if self.kill_dialog.is_some()
             || self.affinity_dialog.is_some()
+            || self.limit_dialog.is_some()
             || self.confirm.is_some()
             || self.run_dialog.is_some()
         {

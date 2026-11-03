@@ -88,6 +88,8 @@ pub enum UiCmd {
     SetPriority(ProcKey, Priority),
     Efficiency(ProcKey, bool),
     AffinityDialog(ProcKey),
+    /// Limit CPU and memory, or change or lift a limit.
+    LimitDialog(ProcKey),
     OpenLocation(String),
     Properties(String),
     SearchOnline(String),
@@ -868,6 +870,12 @@ fn value_cell(
         });
         return;
     }
+    if c == Col::Status {
+        if !is_group {
+            status_cell(ui, p);
+        }
+        return;
+    }
     let text = cell_text(c, p, d, is_group, ctx);
     if text.is_empty() {
         if let Some(why) = unreadable(c, p, d, is_group) {
@@ -958,6 +966,59 @@ fn rate_heat(rate: f64) -> f32 {
     }
 }
 
+/// What a process' state says beside it, in its colours.
+fn status_cell(ui: &mut Ui, p: &ProcessInfo) {
+    let mut parts: Vec<(&str, egui::Color32, &str)> = Vec::new();
+    if p.state == ProcState::Suspended {
+        parts.push((
+            "Suspended",
+            theme::SUSPENDED_TEXT,
+            "Its threads are all suspended.",
+        ));
+    }
+    if p.not_responding {
+        parts.push((
+            "Not responding",
+            theme::ELEVATED_TEXT,
+            "One of its windows has taken no message for five seconds.",
+        ));
+    }
+    if p.efficiency {
+        parts.push((
+            "Efficiency mode",
+            theme::GOOD,
+            "It runs at low priority on efficient cores and clocks, as Task Manager's efficiency \
+             mode does.",
+        ));
+    }
+    let held = crate::limits::holder(ui.ctx(), p.key);
+    let limit_tip = held.as_ref().map(|h| {
+        format!(
+            "Held to {} by {}.",
+            crate::limits::text(&h.limits),
+            match h.rule() {
+                Some(image) => format!("its rule for {image}"),
+                None => "a limit set by hand".into(),
+            }
+        )
+    });
+    if let Some(tip) = &limit_tip {
+        parts.push(("Limited", theme::ACCENT, tip));
+    }
+    if parts.is_empty() {
+        return;
+    }
+    ui.add_space(TEXT_INSET);
+    ui.spacing_mut().item_spacing.x = 0.0;
+    for (i, (text, color, tip)) in parts.into_iter().enumerate() {
+        if i > 0 {
+            ui.label(RichText::new(" · ").color(theme::TEXT_DIM));
+        }
+        ui.add(Label::new(RichText::new(text).color(color)).truncate())
+            .on_hover_text(tip);
+    }
+}
+
 fn cell_text(
     c: Col,
     p: &ProcessInfo,
@@ -971,6 +1032,8 @@ fn cell_text(
     };
     match c {
         Col::Name => p.name.to_string(),
+        Col::Status if is_group => String::new(),
+        Col::Status => crate::tree::status_text(p),
         Col::Pid | Col::Session | Col::Priority if is_group => String::new(),
         Col::Pid if p.pid == anabolic_core::INTERRUPTS_PID => String::new(),
         Col::Pid => p.pid.to_string(),
@@ -1100,7 +1163,7 @@ pub fn context_menu(
             }
         }
     });
-    let efficient = current == Some(Priority::Idle);
+    let efficient = p.efficiency;
     item(
         ui,
         out,
@@ -1113,6 +1176,19 @@ pub fn context_menu(
         UiCmd::Efficiency(p.key, !efficient),
     );
     item(ui, out, "Affinity…", "", UiCmd::AffinityDialog(p.key));
+    let own_limit = crate::limits::holder(ui.ctx(), p.key).filter(|h| h.rule().is_none());
+    let label = if own_limit.is_some() {
+        "Change the limit…"
+    } else {
+        "Limit CPU and memory…"
+    };
+    match crate::limits::refused(&p.name, p.pid == std::process::id()) {
+        None => item(ui, out, label, "", UiCmd::LimitDialog(p.key)),
+        Some(why) => {
+            ui.add_enabled(false, egui::Button::new(label))
+                .on_disabled_hover_text(why);
+        }
+    }
     item(
         ui,
         out,

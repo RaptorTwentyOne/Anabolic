@@ -63,10 +63,10 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 | Page | |
 |---|---|
 | **Overview** | The machine at a glance: a tile for CPU, memory, disk, network and GPU, each with the app behind most of it; what needs attention (memory running out, a full or overworked disk, a hung or stuck program, one that keeps growing, a hot sensor, a program in many copies) with a button for what can be done; the busiest apps; development servers listening; what started in the last ten minutes; and this PC in a few lines. |
-| **Processes** | A tree, a flat list or grouped by app, with CPU, memory, disk, network, GPU, handles, user and command line. Quick filters narrow it to what uses CPU, memory, disk, network or a GPU, what started in the last ten minutes, or the services. End, end tree, suspend, priority, cores, efficiency mode, and a notification when a process exits, with its exit code. Run new task starts a program with administrator rights or without, as Task Manager does. Details show threads with their call stacks, modules with their signatures and hashes, handles in words, network connections, the services a process hosts and the chain of processes that started it, including parents that already exited. |
+| **Processes** | A tree, a flat list or grouped by app, with CPU, memory, disk, network, GPU, handles, user, command line and status (efficiency mode, suspended, not responding, limited). Quick filters narrow it to what uses CPU, memory, disk, network or a GPU, what started in the last ten minutes, or the services. End, end tree, suspend, priority, cores, efficiency mode, and a notification when a process exits, with its exit code. Run new task starts a program with administrator rights or without, as Task Manager does. Details show threads with their call stacks, modules with their signatures and hashes, handles in words, network connections, the services a process hosts and the chain of processes that started it, including parents that already exited. |
 | **Performance** | CPU with who ran on each core, memory and its modules, each physical disk with its partitions and the processes and files it serves, network adapters, GPUs, process I/O, temperatures and fans, and every monitor on a map of the desktop. Windows lets only drivers read the processor's own temperature sensors, so there Anabolic shows the processor's power from its energy meter, the firmware's thermal zones where it has any, the GPU's temperature, fan and (NVIDIA) power, and the disks' temperatures. |
 | **History** | Every 10 seconds, the machine's totals and the processes that led, kept for 7 days by default: a day strip, an hour graph and a range picker answer "what happened at 14:32". |
-| **Rules** | Per program, in the manner of Process Lasso: priority, cores and efficiency mode applied to every new process, plus memory, CPU and handle alerts. A rule can mark a program as a game. |
+| **Rules** | Per program, in the manner of Process Lasso: priority, cores, efficiency mode and CPU and memory limits applied to every new process, plus memory, CPU and handle alerts. Priority, efficiency mode and the CPU limit can wait until the program is busy or in the background, and go back when that passes. A watch that fires (memory, CPU, handles, a window not responding) can also write a dump of the process or end it. A rule can mark a program as a game. |
 | **Services** | Every service with its state, startup type, account and the process it runs in, with that process' CPU and memory; start, stop (asking about dependents), restart, pause, startup type. |
 | **Startup** | Run keys, Startup folders and sign-in or boot tasks with their publisher and what they cost right now; turned on and off the way Task Manager does it. Nothing is deleted. |
 | **Stutters** | Frame rate, 1 % lows and frame times of every program that draws, each stutter with what else happened at that moment, and DPC/ISR time per driver, in the manner of LatencyMon. No game is opened to measure it. |
@@ -91,9 +91,15 @@ And across the pages:
   processes by design, are left out; the number is in Settings.
 - **Memory dumps**, small or full, taken from a snapshot so the process
   pauses only for a moment.
+- **CPU and memory limits** (Windows): a process, or a rule's program, held
+  to a share of the processor and an amount of memory with what it starts,
+  by a job object: a cap Windows keeps whatever the priority, not a hint.
+  They last while Anabolic runs. Windows' core processes and anti-cheat
+  software are left alone.
 - **Game mode** (optional): while a game is in front, busy background
-  programs run at below normal priority until it ends. The game, Windows'
-  core processes, audio and anti-cheat software are never touched.
+  programs run at below normal priority until it ends; asked to, without a
+  game too, sparing the program in front. The game, Windows' core
+  processes, audio and anti-cheat software are never touched.
 - **Notification area** (optional): closing the window leaves Anabolic
   running, recording the history and applying rules; alerts become
   notifications, and the icon shows how busy the CPU is.
@@ -262,7 +268,7 @@ that is off is refused and says where to turn it on:
 | Write memory dumps | small or full dumps (never of lsass, or on Linux of the keyrings) |
 | Record what processes do | Process Monitor style recordings, of a process, a name or the whole machine; on Linux, a process' system calls too |
 | End processes | end a process or a tree |
-| Suspend, resume and reprioritise | suspend, resume, priority, cores, efficiency mode |
+| Suspend, resume, reprioritise and limit | suspend, resume, priority, cores, efficiency mode, CPU and memory limits |
 | Control services | start, stop, restart, pause, startup type |
 | Close connections, block programs | close a TCP connection; Windows Firewall block and unblock (Windows) |
 | Turn startup programs on and off | the way Task Manager does |

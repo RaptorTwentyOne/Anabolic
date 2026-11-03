@@ -300,6 +300,16 @@ impl App {
                     self.run_on(key, |t| Action::SetEfficiencyMode(t, on))
                 }
                 UiCmd::AffinityDialog(key) => self.run_on(key, Action::QueryAffinity),
+                UiCmd::LimitDialog(key) => {
+                    if let (Some(target), Some(p)) = (self.target(key), self.snapshot.find(key)) {
+                        self.limit_dialog = Some(crate::limits::LimitDialog::new(
+                            target,
+                            crate::limits::holder_now(key),
+                            p.private_bytes,
+                            self.snapshot.system.cores.len().max(1),
+                        ));
+                    }
+                }
                 UiCmd::OpenLocation(path) => self.actions.run(Action::OpenFileLocation(path)),
                 UiCmd::Properties(path) => self.actions.run(Action::FileProperties(path)),
                 UiCmd::SearchOnline(query) => self.actions.run(Action::SearchOnline(query)),

@@ -556,6 +556,30 @@ fn text<'a>(details: &'a Details, p: &ProcessInfo, col: Col) -> Option<&'a str> 
     }
 }
 
+/// A process' state in words, as the Status column says it (its limit
+/// aside).
+pub fn status_text(p: &ProcessInfo) -> String {
+    let mut parts = Vec::new();
+    if p.state == ProcState::Suspended {
+        parts.push("Suspended");
+    }
+    if p.not_responding {
+        parts.push("Not responding");
+    }
+    if p.efficiency {
+        parts.push("Efficiency mode");
+    }
+    parts.join(" · ")
+}
+
+/// How much a process' state asks for a look: suspended or not responding
+/// first, then efficiency mode.
+fn status_rank(p: &ProcessInfo) -> u8 {
+    (p.not_responding as u8) << 2
+        | ((p.state == ProcState::Suspended) as u8) << 1
+        | p.efficiency as u8
+}
+
 fn ci_cmp(a: &str, b: &str) -> Ordering {
     a.bytes()
         .map(|c| c.to_ascii_lowercase())
@@ -566,6 +590,7 @@ pub fn compare(a: &ProcessInfo, b: &ProcessInfo, input: &BuildInput<'_>) -> Orde
     let f = |x: f64, y: f64| x.partial_cmp(&y).unwrap_or(Ordering::Equal);
     let primary = match input.sort {
         Col::Name => ci_cmp(&a.name, &b.name),
+        Col::Status => status_rank(a).cmp(&status_rank(b)),
         Col::Pid => a.pid.cmp(&b.pid),
         Col::Cpu => f(a.cpu as f64, b.cpu as f64),
         Col::CpuTime => a.cpu_time.cmp(&b.cpu_time),

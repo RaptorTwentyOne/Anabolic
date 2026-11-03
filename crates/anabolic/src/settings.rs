@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped when stored settings need migrating.
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 /// Commands Run new task remembers.
 pub const RUN_HISTORY: usize = 20;
 /// Characters a watched port's name keeps.
@@ -41,6 +41,8 @@ pub struct TableLayout {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Col {
     Name,
+    /// Efficiency mode, suspended, not responding, limited.
+    Status,
     Pid,
     Cpu,
     CpuTime,
@@ -67,8 +69,9 @@ pub enum Col {
 }
 
 impl Col {
-    pub const ALL: [Col; 24] = [
+    pub const ALL: [Col; 25] = [
         Col::Name,
+        Col::Status,
         Col::Pid,
         Col::Cpu,
         Col::CpuTime,
@@ -97,6 +100,7 @@ impl Col {
     pub fn title(self) -> &'static str {
         match self {
             Col::Name => "Name",
+            Col::Status => "Status",
             Col::Pid => "PID",
             Col::Cpu => "CPU",
             Col::CpuTime => "CPU time",
@@ -133,6 +137,10 @@ impl Col {
     pub fn tooltip(self) -> &'static str {
         match self {
             Col::Cpu => "Share of the whole machine. One saturated core is 100 / logical CPUs.",
+            Col::Status => {
+                "Efficiency mode, suspended, not responding, or held to a CPU and memory limit, as \
+                 Task Manager's Status column tells the first three."
+            }
             Col::PrivateWs => {
                 "Private working set: physical RAM only this process uses. Task Manager calls this \"Memory\"."
             }
@@ -195,6 +203,7 @@ impl Col {
             | Col::Io
             | Col::CpuTime => 92.0,
             Col::Priority | Col::Integrity => 90.0,
+            Col::Status => 120.0,
             Col::Version => 110.0,
             Col::User => 170.0,
             Col::Company => 170.0,
@@ -423,7 +432,7 @@ impl McpKind {
             McpKind::Dump => "Write memory dumps",
             McpKind::Record => "Record what processes do",
             McpKind::End => "End processes",
-            McpKind::Control => "Suspend, resume and reprioritise processes",
+            McpKind::Control => "Suspend, resume, reprioritise and limit processes",
             McpKind::Services => "Control services",
             McpKind::Network => "Close connections, block programs",
             McpKind::Startup => "Turn startup programs on and off",
@@ -455,7 +464,7 @@ impl McpKind {
             }
             McpKind::End => "Ends processes, and the processes under them when asked.",
             McpKind::Control => {
-                "Suspends and resumes processes, sets priority, cores and efficiency mode."
+                "Suspends and resumes processes, sets priority, cores and efficiency mode, and CPU and memory limits."
             }
             McpKind::Services => {
                 "Starts, stops, pauses and restarts services; sets their startup type."
@@ -579,6 +588,7 @@ impl Default for Settings {
             descending: true,
             columns: vec![
                 Col::Name,
+                Col::Status,
                 Col::Pid,
                 Col::Cpu,
                 Col::PrivateWs,
@@ -644,6 +654,15 @@ impl Settings {
                 .map_or(self.columns.len(), |i| i + 1);
             self.columns.insert(at, Col::Net);
         }
+        if self.version < 5 && !self.columns.contains(&Col::Status) {
+            // v5 added the status column, beside the name as in Task Manager.
+            let at = self
+                .columns
+                .iter()
+                .position(|&c| c == Col::Name)
+                .map_or(0, |i| i + 1);
+            self.columns.insert(at, Col::Status);
+        }
         self.version = VERSION;
         self.interval_ms = self.interval_ms.clamp(100, 60_000);
         self.memory_alert_pct = self.memory_alert_pct.clamp(50.0, 99.0);
@@ -679,5 +698,26 @@ impl Settings {
         if !self.columns.contains(&Col::Name) {
             self.columns.insert(0, Col::Name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_status_column_comes_in_beside_the_name_once() {
+        let mut s = Settings {
+            version: 4,
+            columns: vec![Col::Pid, Col::Name, Col::Cpu],
+            ..Settings::default()
+        };
+        s.sanitize();
+        assert_eq!(s.columns, [Col::Pid, Col::Name, Col::Status, Col::Cpu]);
+        // Taken away afterwards, it stays away.
+        s.columns.retain(|&c| c != Col::Status);
+        s.sanitize();
+        assert!(!s.columns.contains(&Col::Status));
+        assert_eq!(Settings::default().columns[1], Col::Status);
     }
 }

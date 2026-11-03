@@ -13,6 +13,36 @@ new since the one before.
   only when no taskbar comes within a minute.
 - **The icon comes back** when Explorer restarts, for an Anabolic running
   as administrator too.
+- **CPU and memory limits** (a process' menu, and rules): a process, with
+  what it starts, held to a share of the whole machine's processor and to
+  an amount of private memory. Windows keeps the cap however busy the
+  machine is and whatever the priority. Past the memory limit a program's
+  requests for more fail, and most then stop with an error. A rule's limit
+  holds all of the program's processes together. Limits last while
+  Anabolic runs, and leave Windows' core processes and anti-cheat programs
+  alone. On Linux, where systemd holds such limits per service, Anabolic
+  says how to set them there.
+- **Rules that wait:** a rule's priority, efficiency mode and CPU limit can
+  apply only while the program is busy (over a share of the CPU for a
+  while) or in the background, and go back when that passes: once it has
+  calmed down, or as one of its windows comes to the front. A priority you
+  changed meanwhile stands.
+- **Rules that act:** each of a rule's watches (private memory, CPU,
+  handles, and now a window that stops responding for a while) can write a
+  small or full dump, end the process, or write the dump and then end it,
+  besides telling you. The dump comes first, so it shows the process as it
+  was. A rule writes at most one dump every ten minutes, and Windows' core
+  processes and anti-cheat programs are only told about.
+- **A Status column** in the process list, beside the name as in Task
+  Manager: efficiency mode, suspended, not responding, and limited. It
+  joins the columns shown, and the column menu takes it away. A process'
+  menu now offers to leave efficiency mode by what Windows says of it,
+  rather than by its priority.
+- **Quitting puts things back:** what a rule's condition or game mode
+  changed (a priority, efficiency mode) goes back as Anabolic quits, as
+  limits are lifted.
+- **Game mode without a game:** lowering busy background programs can go
+  on all the time, sparing the program in front.
 - **Closed into the notification area,** Anabolic no longer draws its
   window for nobody, and the icon tells of rule and memory alerts, a
   program in many copies and an installed update again: they had gone to

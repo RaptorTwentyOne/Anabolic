@@ -124,6 +124,9 @@ pub struct ProcessInfo {
     pub user_sid: Option<Arc<[u8]>>,
     /// One of its windows has taken no message for five seconds.
     pub not_responding: bool,
+    /// In efficiency mode: Windows' EcoQoS (Task Manager's leaf), on Linux
+    /// the idle scheduling class.
+    pub efficiency: bool,
     /// Ending has begun and not finished: it has no threads left and
     /// stays while something holds it (see `ending::why_alive`).
     pub ending: bool,
@@ -175,6 +178,7 @@ impl ProcessInfo {
             net_tx_total: 0,
             user_sid: None,
             not_responding: false,
+            efficiency: false,
             ending: false,
         }
     }

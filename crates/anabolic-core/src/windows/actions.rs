@@ -15,11 +15,12 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::{
     ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, GetProcessAffinityMask,
-    HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, PROCESS_CREATION_FLAGS,
-    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-    PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-    PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE, ProcessPowerThrottling, REALTIME_PRIORITY_CLASS,
-    SetPriorityClass, SetProcessAffinityMask, SetProcessInformation, TerminateProcess,
+    GetProcessInformation, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+    PROCESS_CREATION_FLAGS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SUSPEND_RESUME,
+    PROCESS_TERMINATE, ProcessPowerThrottling, REALTIME_PRIORITY_CLASS, SetPriorityClass,
+    SetProcessAffinityMask, SetProcessInformation, TerminateProcess,
 };
 use windows::Win32::UI::Shell::{
     ILCreateFromPathW, ILFree, SHOP_FILEPATH, SHObjectProperties, SHOpenFolderAndSelectItems,
@@ -58,7 +59,8 @@ impl Priority {
 pub fn perform(action: Action) -> Option<Outcome> {
     let result = match action {
         Action::Quiet(action) => {
-            return perform(*action).filter(|o| matches!(o, Outcome::Error(_)));
+            return perform(*action)
+                .filter(|o| matches!(o, Outcome::Error(_) | Outcome::Limits(_)));
         }
         Action::Silent(action) => {
             perform(*action);
@@ -130,6 +132,16 @@ pub fn perform(action: Action) -> Option<Outcome> {
         Action::Terminate(targets) => return Some(terminate(&targets)),
         Action::Run { command, elevated } => run(&command, elevated),
         Action::BrowseProgram => return Some(Outcome::Browsed(browse_program())),
+        Action::Limit {
+            group,
+            targets,
+            limits,
+        } => {
+            return Some(Outcome::Limits(crate::limits::limit(
+                &group, &targets, limits,
+            )));
+        }
+        Action::Lift(group) => return Some(Outcome::Limits(crate::limits::lift(&group))),
         // Run on their own thread by the runner.
         Action::Dump { .. } => return None,
         Action::Suspend(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtSuspendProcess)
@@ -307,6 +319,27 @@ fn nt_call(
 }
 
 /// The same thing Task Manager's "Efficiency mode" does: EcoQoS + idle priority.
+/// Whether a process runs in efficiency mode (EcoQoS); None when it could
+/// not be opened to ask.
+pub fn efficiency_mode(key: ProcKey) -> Option<bool> {
+    let h = open_process(key, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+    let mut state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ..Default::default()
+    };
+    unsafe {
+        GetProcessInformation(
+            h.raw(),
+            ProcessPowerThrottling,
+            (&raw mut state).cast::<c_void>(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    }
+    .ok()?;
+    let speed = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    Some(state.ControlMask & speed != 0 && state.StateMask & speed != 0)
+}
+
 fn set_efficiency_mode(t: &Target, on: bool) -> Result<String, String> {
     let h = open_process(t.key, PROCESS_SET_INFORMATION)
         .map_err(|e| format!("{}: {}", t.label(), error_text(&e)))?;
@@ -568,6 +601,31 @@ fn close_remote_handle(pid: u32, handle: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn efficiency_mode_reads_back_what_was_set() {
+        let mut c = std::process::Command::new("cmd.exe")
+            .args(["/c", "more"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("cmd starts");
+        let key = ProcKey {
+            pid: c.id(),
+            create_time: 0,
+        };
+        let t = Target {
+            key,
+            name: "cmd.exe".into(),
+        };
+        assert_eq!(efficiency_mode(key), Some(false));
+        set_efficiency_mode(&t, true).expect("on");
+        assert_eq!(efficiency_mode(key), Some(true));
+        set_efficiency_mode(&t, false).expect("off");
+        assert_eq!(efficiency_mode(key), Some(false));
+        let _ = c.kill();
+        let _ = c.wait();
+    }
 
     /// Runs a windowless script that writes the groups of the token it got,
     /// and answers whether that token was elevated (High integrity).

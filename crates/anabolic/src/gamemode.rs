@@ -6,9 +6,10 @@
 //! Game mode: while a game is in front, background programs that take a
 //! real share of the processor are lowered to below normal priority, and
 //! put back once they calm down or the game ends (Process Lasso calls this
-//! ProBalance). Optionally the power plan goes to High performance while
-//! the game runs. The game, its helpers, Windows' own core processes and
-//! anti-cheat software are never touched.
+//! ProBalance). Asked to, it does so without a game too, sparing the
+//! program in front. Optionally the power plan goes to High performance
+//! while the game runs. The game, its helpers, Windows' own core processes
+//! and anti-cheat software are never touched.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -31,6 +32,8 @@ pub struct GameModeSettings {
     pub restrain: bool,
     /// …when one takes more than this share of the machine, percent.
     pub cpu_pct: f32,
+    /// …without a game in front too, sparing the program in front.
+    pub restrain_always: bool,
     /// High performance power plan while a game runs.
     pub power: bool,
     /// The plan game mode replaced, to put back when the game ends (or on
@@ -44,6 +47,7 @@ impl Default for GameModeSettings {
             enabled: false,
             restrain: true,
             cpu_pct: 10.0,
+            restrain_always: false,
             power: false,
             replaced_plan: None,
         }
@@ -176,6 +180,19 @@ impl GameMode {
         }
     }
 
+    /// Anabolic is quitting: what was lowered goes back.
+    pub fn release(&mut self, snap: &Snapshot) -> Vec<Action> {
+        let mut out = Vec::new();
+        let lowered: Vec<ProcKey> = self.restrained.keys().copied().collect();
+        for key in lowered {
+            if let Some(p) = snap.find(key).filter(|p| p.state != ProcState::Exited) {
+                self.put_back(key, p, &mut out);
+            }
+        }
+        self.restrained.clear();
+        out
+    }
+
     /// Once per snapshot: what to change.
     pub fn step(
         &mut self,
@@ -267,20 +284,40 @@ impl GameMode {
             });
         }
 
-        let Some(game) = &self.game else {
-            return out;
+        // Spared: the game, or without one the program in front.
+        let always = s.enabled && s.restrain && s.restrain_always;
+        let spared = match &self.game {
+            Some(game) => Some(game.key.pid),
+            None if always => front.map(|f| f.pid),
+            None => {
+                // No game, and not asked to go on without one: what was
+                // lowered goes back.
+                let lowered: Vec<ProcKey> = self.restrained.keys().copied().collect();
+                for key in lowered {
+                    if let Some(p) = snap.find(key) {
+                        self.put_back(key, p, &mut out);
+                    }
+                }
+                self.restrained.clear();
+                self.hog_since.clear();
+                self.refused.clear();
+                return out;
+            }
         };
-        let game_pid = game.key.pid;
         let ruled = |name: &str| {
             rules
                 .iter()
                 .any(|r| r.priority.is_some() && r.matches(name))
         };
+        // Not known what is in front: nobody new is lowered.
+        let spared = spared.unwrap_or(snap.own_pid);
+        let known = self.game.is_some() || front.is_some();
         for p in snap.processes.iter().filter(|p| {
-            p.state != ProcState::Exited
+            known
+                && p.state != ProcState::Exited
                 && !p.is_pseudo()
-                && p.pid != game_pid
-                && p.ppid != game_pid
+                && p.pid != spared
+                && p.ppid != spared
                 && p.pid != snap.own_pid
         }) {
             let candidate = s.restrain
@@ -397,6 +434,9 @@ pub fn card(ui: &mut Ui, s: &mut GameModeSettings, mode: &GameMode) {
                             crate::fmt::clock(g.since, false),
                             mode.lowered()
                         ),
+                        None if s.restrain && s.restrain_always => {
+                            format!("No game in front  ·  {} lowered", mode.lowered())
+                        }
                         None => "No game in front".into(),
                     };
                     let color = if mode.game.is_some() {
@@ -411,9 +451,9 @@ pub fn card(ui: &mut Ui, s: &mut GameModeSettings, mode: &GameMode) {
                 RichText::new(
                     "While a game is in front (its window fills the screen, or a rule says it is \
                      a game), programs in the background that take a real share of the processor \
-                     run at below normal priority until they calm down or the game ends. The game \
-                     itself, the system's core processes, audio and anti-cheat software are never \
-                     touched.",
+                     run at below normal priority until they calm down or the game ends. Without a \
+                     game too, if you ask: then the program in front is spared. The game itself, \
+                     the system's core processes, audio and anti-cheat software are never touched.",
                 )
                 .size(theme::META)
                 .color(theme::TEXT_WEAK),
@@ -431,6 +471,13 @@ pub fn card(ui: &mut Ui, s: &mut GameModeSettings, mode: &GameMode) {
                     );
                     ui.label("of the machine");
                 });
+                ui.add_enabled(
+                    s.restrain,
+                    egui::Checkbox::new(
+                        &mut s.restrain_always,
+                        "Also when no game is in front, sparing the program in front",
+                    ),
+                );
                 ui.checkbox(
                     &mut s.power,
                     "Switch to the High performance power plan while playing",
@@ -536,6 +583,75 @@ mod tests {
         mode.step_at(&mut s, &busy(5, 1.0, 6), &[], front, at(5));
         let a = mode.step_at(&mut s, &busy(6, 1.0, 6), &[], front, at(16));
         assert_eq!(lowered(&a), [("indexer.exe".into(), Priority::Normal)]);
+        assert_eq!(mode.lowered(), 0);
+    }
+
+    #[test]
+    fn asked_to_it_restrains_without_a_game_sparing_the_program_in_front() {
+        let mut s = GameModeSettings {
+            enabled: true,
+            restrain_always: true,
+            ..Default::default()
+        };
+        let mut mode = GameMode::default();
+        // A window that does not fill the screen: no game.
+        let editor = Some(Front {
+            pid: 100,
+            fullscreen: false,
+        });
+        let t0 = Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let busy = |seq, base| {
+            snapshot(
+                seq,
+                vec![
+                    process(100, "editor.exe", 60.0, 8),
+                    process(200, "indexer.exe", 30.0, base),
+                ],
+            )
+        };
+        mode.step_at(&mut s, &busy(2, 8), &[], editor, at(0));
+        let a = mode.step_at(&mut s, &busy(3, 8), &[], editor, at(3));
+        assert!(mode.game.is_none());
+        // The busy one in front is spared; the one behind it is lowered.
+        assert_eq!(lowered(&a), [("indexer.exe".into(), Priority::BelowNormal)]);
+        mode.step_at(&mut s, &busy(4, 6), &[], editor, at(4));
+        assert_eq!(mode.lowered(), 1);
+        // Turned off: it goes back at once.
+        s.restrain_always = false;
+        let a = mode.step_at(&mut s, &busy(5, 6), &[], editor, at(5));
+        assert_eq!(lowered(&a), [("indexer.exe".into(), Priority::Normal)]);
+        assert_eq!(mode.lowered(), 0);
+    }
+
+    #[test]
+    fn quitting_puts_back_what_was_lowered() {
+        let mut s = GameModeSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut mode = GameMode::default();
+        let front = Some(Front {
+            pid: 100,
+            fullscreen: true,
+        });
+        let t0 = Instant::now();
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        let busy = |seq, base| {
+            snapshot(
+                seq,
+                vec![
+                    process(100, "game.exe", 60.0, 8),
+                    process(200, "indexer.exe", 30.0, base),
+                ],
+            )
+        };
+        mode.step_at(&mut s, &busy(2, 8), &[], front, at(0));
+        mode.step_at(&mut s, &busy(3, 8), &[], front, at(3));
+        mode.step_at(&mut s, &busy(4, 6), &[], front, at(4));
+        assert_eq!(mode.lowered(), 1);
+        let back = mode.release(&busy(5, 6));
+        assert_eq!(lowered(&back), [("indexer.exe".into(), Priority::Normal)]);
         assert_eq!(mode.lowered(), 0);
     }
 

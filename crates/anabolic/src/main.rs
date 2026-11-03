@@ -28,6 +28,7 @@ mod graph;
 mod help;
 mod history_page;
 mod icons;
+mod limits;
 mod mcp;
 mod mcp_page;
 mod meter;
@@ -69,6 +70,12 @@ use eframe::egui;
 fn main() -> eframe::Result {
     #[cfg(windows)]
     attach_parent_console();
+    // CPU and memory limits do not outlive Anabolic, a failing one either.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        anabolic_core::limits::lift_all();
+        report(info);
+    }));
     let args: Vec<String> = std::env::args().collect();
     // The installer, as it removes Anabolic: every user's sign-in task
     // goes with it. Nothing else starts.

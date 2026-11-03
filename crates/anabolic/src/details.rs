@@ -539,13 +539,32 @@ fn general(
                             ui,
                             "Priority",
                             format!(
-                                "{} (base {})  ·  session {}",
+                                "{} (base {})  ·  session {}{}",
                                 Priority::from_base(p.base_priority)
                                     .map_or("Custom", |x| x.label()),
                                 p.base_priority,
-                                p.session_id
+                                p.session_id,
+                                if p.efficiency {
+                                    "  ·  efficiency mode"
+                                } else {
+                                    ""
+                                }
                             ),
                         );
+                        if let Some(held) = crate::limits::holder(ui.ctx(), p.key) {
+                            row(
+                                ui,
+                                "Limited to",
+                                format!(
+                                    "{}  ·  {}",
+                                    crate::limits::text(&held.limits),
+                                    match held.rule() {
+                                        Some(image) => format!("its rule for {image}"),
+                                        None => "set by hand, until it exits".into(),
+                                    }
+                                ),
+                            );
+                        }
                         if let Some(e) = d.and_then(|d| d.open_error.as_ref()) {
                             row(ui, "Access", e.clone());
                         }

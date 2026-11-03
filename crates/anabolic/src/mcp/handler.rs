@@ -357,6 +357,8 @@ mod tests {
                 "get_system_overview",
                 "get_thread_stacks",
                 "get_wait_chain",
+                "lift_limit",
+                "limit_process",
                 "list_connections",
                 "list_dns_lookups",
                 "list_handles",

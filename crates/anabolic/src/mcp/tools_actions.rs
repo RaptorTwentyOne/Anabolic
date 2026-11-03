@@ -75,6 +75,18 @@ pub struct EfficiencyArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct LimitArgs {
+    pub pid: u32,
+    /// The most of the whole machine's CPU it may use, percent (1 to 99),
+    /// as list_processes counts it.
+    pub cpu_percent: Option<f32>,
+    /// The most private memory it may commit, GB, with what it starts.
+    pub memory_gb: Option<f32>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ServiceControl {
     /// The service's name (as in `sc query`).
     pub name: String,
@@ -145,6 +157,16 @@ fn outcome(result: Option<Outcome>) -> Result<CallToolResult, ErrorData> {
         Some(Outcome::Firewall { path, blocked }) => ok(json!({
             "done": true, "program": path, "blocked": blocked,
         })),
+        Some(Outcome::Limits(a)) => match (&a.error, a.failed.first()) {
+            (Some(e), _) => fail(e.clone()),
+            (None, Some((_, why))) => fail(why.clone()),
+            (None, None) => ok(json!({
+                "done": true,
+                "cpu_percent": a.limits.cpu_pct,
+                "memory_bytes": a.limits.memory,
+                "lifted": a.limits.is_empty(),
+            })),
+        },
         Some(other) => ok(json!({ "done": true, "result": format!("{other:?}") })),
     }
 }
@@ -448,6 +470,97 @@ impl AnabolicMcp {
             Ok((_, p)) => {
                 self.act(Action::SetEfficiencyMode(target(&p), args.on))
                     .await
+            }
+            Err(refused) => refused,
+        }
+    }
+
+    #[tool(
+        description = "Holds a process, and the processes it starts from now on, to a share \
+                       of the machine's CPU and to an amount of private memory (Windows job \
+                       objects: a cap the scheduler keeps, whatever the priority). Past the \
+                       memory limit its requests for more fail, and most programs then stop \
+                       with an error. Lasts until it exits or Anabolic quits; lift_limit takes it \
+                       away. Windows' core processes and anti-cheat programs are refused.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn limit_process(
+        &self,
+        Parameters(args): Parameters<LimitArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let limits = anabolic_core::limits::Limits {
+            cpu_pct: args.cpu_percent,
+            memory: args
+                .memory_gb
+                .map(|gb| (gb as f64 * 1024.0 * 1024.0 * 1024.0) as u64),
+        };
+        if limits.is_empty() {
+            return fail("Give cpu_percent, memory_gb or both.");
+        }
+        if args.cpu_percent.is_some_and(|c| !(1.0..=99.0).contains(&c)) {
+            return fail("cpu_percent goes from 1 to 99.");
+        }
+        if args.memory_gb.is_some_and(|gb| gb < 0.01) {
+            return fail("memory_gb must be at least 0.01.");
+        }
+        if let Some(refused) = self.refuse(McpKind::Control) {
+            return refused;
+        }
+        // Never limited, agreed to or not: said before any question.
+        let snap = self.snapshot_with(args.pid).await;
+        if let Some(p) = json::find(&snap, args.pid)
+            && let Some(why) = crate::limits::refused(&p.name, p.pid == snap.own_pid)
+        {
+            return fail(format!("{} ({}): {why}", p.name, p.pid));
+        }
+        match self
+            .actionable(McpKind::Control, args.pid, args.force, "limit")
+            .await
+        {
+            Ok((_, p)) => {
+                self.act(Action::Limit {
+                    group: anabolic_core::limits::process_group(p.key),
+                    targets: vec![target(&p)],
+                    limits,
+                })
+                .await
+            }
+            Err(refused) => refused,
+        }
+    }
+
+    #[tool(
+        description = "Takes away the CPU and memory limit limit_process (or the user, by hand) \
+                       put on a process. A rule's limit stays: the rule is the user's.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn lift_limit(
+        &self,
+        Parameters(args): Parameters<PidForce>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self
+            .actionable(McpKind::Control, args.pid, args.force, "lift the limit of")
+            .await
+        {
+            Ok((_, p)) => {
+                let group = anabolic_core::limits::process_group(p.key);
+                if !anabolic_core::limits::held()
+                    .iter()
+                    .any(|h| h.group == group)
+                {
+                    return fail(format!("{} ({}) has no limit of its own.", p.name, p.pid));
+                }
+                self.act(Action::Lift(group)).await
             }
             Err(refused) => refused,
         }
