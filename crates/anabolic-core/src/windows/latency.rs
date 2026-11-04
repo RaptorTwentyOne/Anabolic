@@ -443,7 +443,9 @@ mod tests {
             .iter()
             .map(|d| d.dpc.count + d.isr.count)
             .sum();
-        assert!(total > 100, "only {total} DPCs and ISRs in 2.5 s");
+        // A desktop gives thousands; an idle CI machine has given as few as
+        // 82. A few dozen show the trace sees them.
+        assert!(total > 20, "only {total} DPCs and ISRs in 2.5 s");
         assert!(
             stats
                 .drivers
