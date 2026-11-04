@@ -22,6 +22,11 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    # Its refs name the Rust to install (stable, 1.95), not releases of the
+    # action: moved on, the check that the oldest Rust claimed still builds
+    # would quietly test a newer one.
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ["*"]
