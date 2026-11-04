@@ -55,6 +55,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 - [Games and anti-cheat](#games-and-anti-cheat)
 - [Privacy](#privacy)
 - [Building from source](#building-from-source)
+- [Contributing](#contributing)
 - [Reusing the code](#reusing-the-code)
 - [License](#license)
 
@@ -141,7 +142,10 @@ Everything is on the
 Windows an installer and a zip, for Linux a zip. A zip holds a single
 executable with nothing to install: unpack it anywhere. Each file has its
 SHA-256 checksum beside it, as a `.sha256` file (`sha256sum -c` reads it;
-on Windows, compare it with `Get-FileHash`).
+on Windows, compare it with `Get-FileHash`). Releases after 0.5.0 also
+carry a build attestation, a signed record that this repository's release
+workflow built the file: `gh attestation verify <file> -R
+RaptorTwentyOne/Anabolic` checks it.
 
 ### Windows
 
@@ -351,6 +355,14 @@ beside it, in `windows/` and `linux/`.
 `installer/` holds the Windows installer: `dotnet build installer
 -p:ProductVersion=x.y.z -p:BinDir=<folder with anabolic.exe and
 THIRD-PARTY-NOTICES.html>` makes `anabolic.msi` with WiX.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome;
+[CONTRIBUTING.md](CONTRIBUTING.md) says where each goes and what the code
+holds to. Questions go to
+[Discussions](https://github.com/RaptorTwentyOne/Anabolic/discussions), and
+security problems, privately, as [SECURITY.md](SECURITY.md) says.
 
 ## Reusing the code
 

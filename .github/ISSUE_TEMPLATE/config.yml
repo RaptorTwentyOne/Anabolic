@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/RaptorTwentyOne/Anabolic/discussions
+    about: How something works, whether Anabolic can do something, an idea that is not a plan yet.
+  - name: A security problem
+    url: https://github.com/RaptorTwentyOne/Anabolic/security/advisories/new
+    about: Report it privately; see the security policy.

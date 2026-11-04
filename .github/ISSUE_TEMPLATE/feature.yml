@@ -1,0 +1,25 @@
+name: Feature request
+description: Something Anabolic could do, or do better.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Not sure yet, or only asking? [Discussions](https://github.com/RaptorTwentyOne/Anabolic/discussions) is the place for that.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to find out or do
+      description: The situation, not the solution yet. "My game stutters every few minutes and I cannot tell what causes it" says more than "add a graph".
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you picture it, if you do.
+  - type: textarea
+    id: today
+    attributes:
+      label: How you do it today
+      description: Another tool, a workaround, or not at all.

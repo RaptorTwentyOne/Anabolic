@@ -1,0 +1,67 @@
+name: Bug report
+description: Something does not work, or shows the wrong thing.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security problem goes to the [security policy](https://github.com/RaptorTwentyOne/Anabolic/security/policy), not here.
+        Screenshots and exports show process names, command lines and your user name: look at them before attaching.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: The steps, as far as you know them. "It happened once while a game was running" helps too.
+      placeholder: |
+        1. Open the Performance page
+        2. Click a disk
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: Anabolic version
+      description: Settings → About.
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: The Windows version and build (winver), or the Linux distribution and desktop.
+      placeholder: "Windows 11 24H2 (26100.4061) / Fedora 43, KDE Plasma on Wayland"
+    validations:
+      required: true
+  - type: dropdown
+    id: rights
+    attributes:
+      label: Rights
+      options:
+        - As an administrator (on Linux, with full access)
+        - Without
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - The installer (.msi)
+        - winget
+        - The zip
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything else
+      description: Screenshots, and for a window that froze or fell behind, the last lines of stalls.log in Anabolic's data folder (%LOCALAPPDATA%\Anabolic, or ~/.local/share/anabolic).

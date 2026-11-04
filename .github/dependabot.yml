@@ -1,0 +1,27 @@
+# Dependency updates once a month, one pull request per ecosystem, so CI
+# tries them together. Security fixes come on their own, as they appear.
+#
+# Cargo moves only within what Cargo.toml allows (lockfile-only): a version
+# that changes the API (each of egui's 0.x releases does) is taken by hand.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    versioning-strategy: lockfile-only
+    cooldown:
+      default-days: 7
+    groups:
+      crates:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

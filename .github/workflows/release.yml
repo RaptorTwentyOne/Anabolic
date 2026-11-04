@@ -7,8 +7,13 @@ on:
   push:
     tags: ["v*"]
 
+# id-token and attestations: each file also gets a build attestation, a
+# signed record that this workflow built it from this commit, which
+# `gh attestation verify <file> -R RaptorTwentyOne/Anabolic` checks.
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,6 +30,12 @@ jobs:
       - run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.html
       # Sign target/release/anabolic.exe here once there is a code signing
       # certificate: unsigned, SmartScreen warns on every download.
+      # The executable's own attestation (after signing, once there is),
+      # as it is the file that ends up in Program Files. The release job
+      # attests the installer and the zips.
+      - uses: actions/attest@v4
+        with:
+          subject-path: target/release/anabolic.exe
       - name: Package
         shell: pwsh
         run: |
@@ -63,6 +74,9 @@ jobs:
       - run: cargo build --release --locked
       - run: cargo install cargo-about --locked --features cli --version 0.9.2
       - run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.html
+      - uses: actions/attest@v4
+        with:
+          subject-path: target/release/anabolic
       # A zip like Windows', which the built-in updater unpacks; the
       # .desktop file and icon go in place with ./anabolic --install.
       - name: Package
@@ -117,6 +131,11 @@ jobs:
           for file in anabolic-*; do
             sha256sum "$file" > "$file.sha256"
           done
+      - uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/anabolic-*.msi
+            dist/anabolic-*.zip
       - uses: softprops/action-gh-release@v3
         with:
           draft: true
