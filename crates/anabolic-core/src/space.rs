@@ -15,7 +15,7 @@
 #[cfg_attr(windows, path = "windows/space.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/space.rs")]
 mod imp;
-pub use imp::{scan, targets};
+pub use imp::{delete, protected, scan, targets};
 
 pub mod treemap;
 
@@ -83,7 +83,7 @@ pub struct Target {
     pub fast: bool,
 }
 
-/// One file or folder.
+/// One file or folder, as [`Tree::node`] gives it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Node {
     /// Bytes of data: a file's length, a folder's everything below it.
@@ -99,10 +99,8 @@ pub struct Node {
     pub count: u32,
     /// Files below a folder; 1 for a file.
     pub files: u32,
-    name_at: u32,
-    name_len: u16,
     pub flags: u16,
-    /// Index into [`Tree::ext`]; 0 = none.
+    /// A file's extension, by number ([`Tree::ext_name`]); 0 = none.
     pub ext: u32,
 }
 
@@ -116,9 +114,41 @@ impl Node {
     }
 }
 
+/// How a node is kept: 40 bytes, since a drive can hold tens of millions.
+/// What only folders have is kept beside, in [`Dir`].
+#[derive(Clone, Copy)]
+struct Slot {
+    size: u64,
+    alloc: u64,
+    /// Unix seconds.
+    modified: u32,
+    parent: u32,
+    name_at: u32,
+    name_len: u16,
+    flags: u16,
+    /// A file's extension; a folder's place in `dirs`.
+    extra: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Dir {
+    first: u32,
+    count: u32,
+    files: u32,
+}
+
+/// What [`Builder::finish`] hands to [`Tree::assemble`].
+pub(crate) struct Parts {
+    slots: Vec<Slot>,
+    dirs: Vec<Dir>,
+    names: String,
+    exts: Vec<Box<str>>,
+}
+
 /// Everything under the scanned folder.
 pub struct Tree {
-    pub nodes: Vec<Node>,
+    slots: Vec<Slot>,
+    dirs: Vec<Dir>,
     names: String,
     exts: Vec<Box<str>>,
     /// What was scanned, as given.
@@ -135,14 +165,75 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// How many files and folders, the root included.
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
+    pub fn node(&self, i: u32) -> Node {
+        let s = &self.slots[i as usize];
+        let (ext, dir) = if s.flags & DIR != 0 {
+            (0, self.dirs[s.extra as usize])
+        } else {
+            let files = u32::from(s.flags & REMOVED == 0);
+            (
+                s.extra,
+                Dir {
+                    files,
+                    ..Dir::default()
+                },
+            )
+        };
+        Node {
+            size: s.size,
+            alloc: s.alloc,
+            modified: i64::from(s.modified),
+            parent: s.parent,
+            first: dir.first,
+            count: dir.count,
+            files: dir.files,
+            flags: s.flags,
+            ext,
+        }
+    }
+
+    pub fn size(&self, i: u32) -> u64 {
+        self.slots[i as usize].size
+    }
+
+    pub fn parent(&self, i: u32) -> u32 {
+        self.slots[i as usize].parent
+    }
+
+    pub fn flags(&self, i: u32) -> u16 {
+        self.slots[i as usize].flags
+    }
+
+    pub fn is_dir(&self, i: u32) -> bool {
+        self.flags(i) & DIR != 0
+    }
+
+    pub fn children(&self, i: u32) -> std::ops::Range<u32> {
+        let s = &self.slots[i as usize];
+        if s.flags & DIR == 0 {
+            return 0..0;
+        }
+        let d = self.dirs[s.extra as usize];
+        d.first..d.first + d.count
+    }
+
     pub fn name(&self, i: u32) -> &str {
-        let n = &self.nodes[i as usize];
-        &self.names[n.name_at as usize..n.name_at as usize + n.name_len as usize]
+        let s = &self.slots[i as usize];
+        &self.names[s.name_at as usize..s.name_at as usize + s.name_len as usize]
     }
 
     /// The extension, lower case, without the dot ("" for none).
     pub fn ext(&self, i: u32) -> &str {
-        &self.exts[self.nodes[i as usize].ext as usize]
+        &self.exts[self.node(i).ext as usize]
     }
 
     pub fn ext_name(&self, ext: u32) -> &str {
@@ -159,7 +250,7 @@ impl Tree {
         let mut at = i;
         while at != ROOT && at != NONE {
             parts.push(self.name(at));
-            at = self.nodes[at as usize].parent;
+            at = self.parent(at);
         }
         let mut path = self.path.clone();
         for part in parts.iter().rev() {
@@ -173,7 +264,7 @@ impl Tree {
         let mut chain = vec![i];
         let mut at = i;
         while at != ROOT {
-            at = self.nodes[at as usize].parent;
+            at = self.parent(at);
             if at == NONE {
                 break;
             }
@@ -183,17 +274,40 @@ impl Tree {
         chain
     }
 
-    /// Sizes per extension, largest first: (extension, size, alloc, files).
+    /// Whether a node, or a folder above it, was deleted since the scan.
+    pub fn is_gone(&self, i: u32) -> bool {
+        let mut at = i;
+        while at != NONE {
+            if self.flags(at) & REMOVED != 0 {
+                return true;
+            }
+            at = self.parent(at);
+        }
+        false
+    }
+
+    /// Which nodes are gone, each or with a folder above it. Parents come
+    /// before their children, so one pass does it.
+    fn gone(&self) -> Vec<bool> {
+        let mut gone = vec![false; self.slots.len()];
+        for (i, s) in self.slots.iter().enumerate() {
+            gone[i] = s.flags & REMOVED != 0 || (s.parent != NONE && gone[s.parent as usize]);
+        }
+        gone
+    }
+
+    /// Sizes per extension, largest first.
     pub fn by_extension(&self) -> Vec<ExtTotal> {
         let mut totals = vec![ExtTotal::default(); self.exts.len()];
         for (i, t) in totals.iter_mut().enumerate() {
             t.ext = i as u32;
         }
-        for n in &self.nodes {
-            if n.flags & (DIR | EXTRA_LINK | REMOVED) == 0 {
-                let t = &mut totals[n.ext as usize];
-                t.size += n.size;
-                t.alloc += n.alloc;
+        let gone = self.gone();
+        for (i, s) in self.slots.iter().enumerate() {
+            if s.flags & (DIR | EXTRA_LINK) == 0 && !gone[i] {
+                let t = &mut totals[s.extra as usize];
+                t.size += s.size;
+                t.alloc += s.alloc;
                 t.files += 1;
             }
         }
@@ -204,10 +318,11 @@ impl Tree {
 
     /// The largest files, largest first.
     pub fn largest_files(&self, limit: usize) -> Vec<u32> {
-        let mut files: Vec<u32> = (0..self.nodes.len() as u32)
-            .filter(|&i| self.nodes[i as usize].flags & (DIR | EXTRA_LINK | REMOVED) == 0)
+        let gone = self.gone();
+        let mut files: Vec<u32> = (0..self.slots.len() as u32)
+            .filter(|&i| self.flags(i) & (DIR | EXTRA_LINK) == 0 && !gone[i as usize])
             .collect();
-        let key = |i: &u32| std::cmp::Reverse(self.nodes[*i as usize].size);
+        let key = |i: &u32| std::cmp::Reverse(self.size(*i));
         if files.len() > limit {
             files.select_nth_unstable_by_key(limit, key);
             files.truncate(limit);
@@ -219,23 +334,28 @@ impl Tree {
     /// Takes a node out after its file or folder was deleted: its size
     /// leaves every folder above it. The node stays where it is, empty,
     /// childless and flagged, so indexes held elsewhere stay valid; the
-    /// treemap and the lists skip it.
+    /// treemap and the lists skip it and what was under it.
     pub fn remove(&mut self, i: u32) {
-        let gone = self.nodes[i as usize];
+        let gone = self.node(i);
         let mut at = gone.parent;
         while at != NONE {
-            let n = &mut self.nodes[at as usize];
-            n.size = n.size.saturating_sub(gone.size);
-            n.alloc = n.alloc.saturating_sub(gone.alloc);
-            n.files = n.files.saturating_sub(gone.files);
-            at = n.parent;
+            let s = &mut self.slots[at as usize];
+            s.size = s.size.saturating_sub(gone.size);
+            s.alloc = s.alloc.saturating_sub(gone.alloc);
+            let (extra, parent) = (s.extra, s.parent);
+            let d = &mut self.dirs[extra as usize];
+            d.files = d.files.saturating_sub(gone.files);
+            at = parent;
         }
-        let n = &mut self.nodes[i as usize];
-        n.size = 0;
-        n.alloc = 0;
-        n.files = 0;
-        n.count = 0;
-        n.flags |= REMOVED;
+        let s = &mut self.slots[i as usize];
+        s.size = 0;
+        s.alloc = 0;
+        s.flags |= REMOVED;
+        if s.flags & DIR != 0 {
+            let d = &mut self.dirs[s.extra as usize];
+            d.count = 0;
+            d.files = 0;
+        }
     }
 }
 
@@ -415,7 +535,7 @@ impl Builder {
     /// Sums every folder, sorts each folder's children largest first and
     /// lays the nodes out so siblings sit side by side. Nodes not under the
     /// root (a broken chain of parents) are left out.
-    pub fn finish(self, progress: &Progress) -> (Vec<Node>, String, Vec<Box<str>>) {
+    pub fn finish(self, progress: &Progress) -> Parts {
         progress.set_phase(Phase::Building);
         let raw = self.raw;
         let n = raw.len();
@@ -481,35 +601,47 @@ impl Builder {
         for (pos, &u) in order.iter().enumerate() {
             new_id[u as usize] = pos as u32;
         }
-        let mut nodes = Vec::with_capacity(order.len());
+        let mut slots = Vec::with_capacity(order.len());
+        let mut dirs = Vec::new();
         for &u in &order {
             let r = raw[u as usize];
             let u = u as usize;
-            let count = start[u + 1] - start[u];
-            let first = if count > 0 {
-                new_id[kids[start[u] as usize] as usize]
+            let extra = if r.flags & DIR != 0 {
+                let count = start[u + 1] - start[u];
+                dirs.push(Dir {
+                    first: if count > 0 {
+                        new_id[kids[start[u] as usize] as usize]
+                    } else {
+                        0
+                    },
+                    count,
+                    files: files[u],
+                });
+                (dirs.len() - 1) as u32
             } else {
-                0
+                r.ext
             };
-            nodes.push(Node {
+            slots.push(Slot {
                 size: size[u],
                 alloc: alloc[u],
-                modified: r.modified,
+                modified: r.modified.clamp(0, i64::from(u32::MAX)) as u32,
                 parent: if u == ROOT as usize {
                     NONE
                 } else {
                     new_id[r.parent as usize]
                 },
-                first,
-                count,
-                files: files[u],
                 name_at: r.name_at,
                 name_len: r.name_len,
                 flags: r.flags,
-                ext: r.ext,
+                extra,
             });
         }
-        (nodes, self.names, self.exts)
+        Parts {
+            slots,
+            dirs,
+            names: self.names,
+            exts: self.exts,
+        }
     }
 }
 
@@ -526,15 +658,12 @@ fn floor_char(s: &str, max: usize) -> usize {
 }
 
 impl Tree {
-    pub(crate) fn assemble(
-        (nodes, names, exts): (Vec<Node>, String, Vec<Box<str>>),
-        path: &Path,
-        method: Method,
-    ) -> Tree {
+    pub(crate) fn assemble(parts: Parts, path: &Path, method: Method) -> Tree {
         Tree {
-            nodes,
-            names,
-            exts,
+            slots: parts.slots,
+            dirs: parts.dirs,
+            names: parts.names,
+            exts: parts.exts,
             path: path.to_path_buf(),
             method,
             note: None,
@@ -683,26 +812,31 @@ mod tests {
     #[test]
     fn sums_sorts_and_keeps_siblings_together() {
         let t = sample();
-        assert_eq!(t.nodes.len(), 7, "the lost folder and its file are dropped");
-        let root = t.nodes[ROOT as usize];
+        assert_eq!(t.len(), 7, "the lost folder and its file are dropped");
+        let root = t.node(ROOT);
         assert_eq!(root.size, 66);
         assert_eq!(root.files, 4);
         let kids: Vec<&str> = root.children().map(|i| t.name(i)).collect();
         assert_eq!(kids, ["a", "b.bin", "c"], "largest first");
         let a = root.first;
-        let inside: Vec<&str> = t.nodes[a as usize].children().map(|i| t.name(i)).collect();
+        let inside: Vec<&str> = t.node(a).children().map(|i| t.name(i)).collect();
         assert_eq!(inside, ["y.txt", "x.TXT"]);
-        for i in 0..t.nodes.len() as u32 {
-            for c in t.nodes[i as usize].children() {
-                assert_eq!(t.nodes[c as usize].parent, i);
+        for i in 0..t.len() as u32 {
+            for c in t.node(i).children() {
+                assert_eq!(t.node(c).parent, i);
             }
         }
-        assert_eq!(t.path_of(t.nodes[a as usize].first), Path::new("R/a/y.txt"));
+        assert_eq!(t.path_of(t.node(a).first), Path::new("R/a/y.txt"));
         assert_eq!(
-            t.ext(t.nodes[a as usize].first + 1),
+            t.ext(t.node(a).first + 1),
             "txt",
             "extensions are lower case"
         );
+    }
+
+    #[test]
+    fn a_node_takes_forty_bytes() {
+        assert_eq!(size_of::<Slot>(), 40);
     }
 
     #[test]
@@ -715,20 +849,20 @@ mod tests {
         b.push(ROOT, "one", linked);
         b.push(ROOT, "two", linked);
         let t = Tree::assemble(b.finish(&Progress::default()), Path::new("R"), Method::Walk);
-        assert_eq!(t.nodes[ROOT as usize].size, 100);
-        assert_eq!(t.nodes[2].flags & EXTRA_LINK, EXTRA_LINK);
+        assert_eq!(t.node(ROOT).size, 100);
+        assert_eq!(t.node(2).flags & EXTRA_LINK, EXTRA_LINK);
     }
 
     #[test]
     fn removing_takes_the_size_out_of_every_folder_above() {
         let mut t = sample();
-        let a = t.nodes[ROOT as usize].first;
-        let y = t.nodes[a as usize].first;
+        let a = t.node(ROOT).first;
+        let y = t.node(a).first;
         t.remove(y);
-        assert_eq!(t.nodes[ROOT as usize].size, 36);
-        assert_eq!(t.nodes[ROOT as usize].files, 3);
-        assert_eq!(t.nodes[a as usize].size, 10);
-        assert_eq!(t.nodes[y as usize].flags & REMOVED, REMOVED);
+        assert_eq!(t.node(ROOT).size, 36);
+        assert_eq!(t.node(ROOT).files, 3);
+        assert_eq!(t.node(a).size, 10);
+        assert_eq!(t.node(y).flags & REMOVED, REMOVED);
         assert_eq!(t.name(y), "y.txt", "indexes stay valid");
     }
 
@@ -754,10 +888,10 @@ mod tests {
         let progress = Progress::default();
         let t = scan(&dir, &progress).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(t.nodes[ROOT as usize].size, 6300);
-        assert_eq!(t.nodes[ROOT as usize].files, 3);
-        let first = t.nodes[ROOT as usize].first;
+        assert_eq!(t.node(ROOT).size, 6300);
+        assert_eq!(t.node(ROOT).files, 3);
+        let first = t.node(ROOT).first;
         assert_eq!(t.name(first), "sub");
-        assert_eq!(t.nodes[first as usize].size, 5300);
+        assert_eq!(t.node(first).size, 5300);
     }
 }

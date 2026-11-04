@@ -260,6 +260,52 @@ const COMMANDS: &[Command] = &[
         plan: |a| Ok(tool("why_process_will_not_end", a.pid_only()?, View::Auto)),
     },
     Command {
+        name: "space",
+        usage: "[PATH] [--depth N] [--top N] [--files | --types] [--rescan]",
+        about: "What fills a drive or folder",
+        details: "  PATH       the drive or folder (default: the system drive on Windows, your home \
+                  folder on Linux)\n  --depth N  folder levels to show (1 to 4, default 2)\n  \
+                  --top N    the largest entries of each folder (default 8)\n  --files    the \
+                  largest files instead\n  --types    the file types taking the most room \
+                  instead\n  --rescan   read it again (a scan is kept for ten minutes)\n\nAn NTFS \
+                  drive is read from its master file table in seconds from an elevated terminal; \
+                  otherwise folder by folder.",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.word(0, "path", &mut args);
+            a.number("--depth", "depth", &mut args)?;
+            a.number("--top", "top", &mut args)?;
+            if a.flag("--rescan") {
+                args.insert("rescan".into(), json!(true));
+            }
+            let view = if a.flag("--files") {
+                args.insert("largest".into(), json!(40));
+                View::Table {
+                    list: "largest_files",
+                    columns: &["size_bytes=Size", "modified", "name", "path"],
+                }
+            } else if a.flag("--types") {
+                args.insert("types".into(), json!(30));
+                View::Table {
+                    list: "types",
+                    columns: &[
+                        "extension",
+                        "size_bytes=Size",
+                        "share_percent=Share %",
+                        "files",
+                    ],
+                }
+            } else {
+                View::Tree {
+                    list: "tree",
+                    columns: &["size_bytes", "share_percent", "name"],
+                }
+            };
+            Ok(tool("get_disk_usage", args, view))
+        },
+    },
+    Command {
         name: "services",
         usage: "[FILTER] [--state STATE] [--limit N]",
         about: "Services",
@@ -535,6 +581,9 @@ const FLAGS: &[&str] = &[
     "--all",
     "--dependents",
     "--http",
+    "--files",
+    "--types",
+    "--rescan",
     "--help",
 ];
 

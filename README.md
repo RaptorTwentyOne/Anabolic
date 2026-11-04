@@ -76,6 +76,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 | **Stutters** | Frame rate, 1 % lows and frame times of every program that draws, each stutter with what else happened at that moment, and DPC/ISR time per driver, in the manner of LatencyMon. No game is opened to measure it. |
 | **Network** | Traffic per program, every connection with its state and the other end's name, the ports open to others and who can reach them, and every DNS lookup with the program that made it. Development ports lists the dev servers, databases and debuggers listening, named by their tool (Vite, PostgreSQL, the Node.js debugger and more), with the ports you watch, free or with who holds each; a port is freed by ending what holds it. Close a TCP connection, or block a program in Windows Firewall and allow it again. |
 | **Activity** | Process Monitor style: every file, registry key, connection and program a process touches, in order, from a kernel trace. Start a program under recording, record a running one or its whole tree, or record the whole computer and filter afterwards. CSV export. |
+| **Disk space** | What fills a drive or a folder, in the manner of WinDirStat and WizTree: the folders as a tree with their size and share, the file types and the largest files, above a treemap of the whole, shaded so the folders show. On an NTFS drive, as administrator, Anabolic reads the master file table as WizTree does: seven million files in seconds. Point at a piece to see what it is, double-click to go into a folder, pick a file type to see where it lies. Move what you no longer need to the Recycle Bin, or delete it for good, after a question; Windows' own files and folders are refused. The map is drawn on a thread of its own, so the window never waits for it, however large the drive. |
 | **MCP** | A Model Context Protocol server for Claude and other AI assistants, off until you turn it on. See [below](#ai-assistants-mcp). |
 
 ![The Performance page's CPU view: ten minutes of total and kernel time with two earlier builds and the one running now, the busiest processes, and one graph per logical processor naming the process that ran on it](docs/screenshots/performance.png)
@@ -128,6 +129,7 @@ differently, the pages say how:
 | **Startup** | Autostart entries and systemd user units, turned off the way the desktop does it: a system-wide entry is hidden by a copy in your own folder. Nothing is deleted. |
 | **Stutters** | Interrupt and softirq time per handler, in the manner of LatencyMon. Linux reports no frame times to anyone outside a game, so frame times and 1 % lows are Windows only. |
 | **Network** | TCP traffic per program and per connection; Linux counts no UDP traffic per program. Its firewalls filter by address, port and user, not by program, so blocking a program is Windows only, as is the list of DNS lookups. |
+| **Disk space** | Folders are read on several threads at once. A scan stays on the file system it starts on (another one mounted inside is shown, not entered), and a file with several hard links is counted once. Deleting moves to the desktop's trash (through gio or KDE's kioclient), or deletes for good; the system's own folders are refused. |
 | **Activity** | Every file, program and connection a process touches. There is no registry; instead, a program, a process or the whole machine can be recorded with its system calls, as strace shows them, with a count, the failures and the time spent per call. They come from the kernel's tracepoints: the process is never stopped or read. |
 
 Around them: the notification area icon is a StatusNotifierItem (KDE has
@@ -246,6 +248,7 @@ one in KDE's shortcut settings.
 |---|---|
 | Alt+Home | Overview |
 | Ctrl+1 … Ctrl+9, Ctrl+0 | The pages below it, in the order of the rail; Ctrl+0 is MCP |
+| Ctrl+D | Disk space |
 | Ctrl+, | Settings |
 | Ctrl+N | Run new task |
 | Alt+←, Alt+→ | Back and forward through the pages and processes visited; the mouse's back and forward buttons too |
@@ -254,7 +257,7 @@ one in KDE's shortcut settings.
 | Ctrl+H | Find handle: who has this file or object open |
 | Space | Pause updates |
 | F5 | Refresh now |
-| Del, Shift+Del | End the selected process, or its whole tree |
+| Del, Shift+Del | End the selected process, or its whole tree; on Disk space, move the selected file or folder to the Recycle Bin, or delete it for good, after asking |
 | Shift+F10 | The selected process' menu |
 | F1 | Every shortcut and what the colours mean |
 
@@ -269,6 +272,7 @@ anabolic-cli ps chrome --sort memory    # processes, the busiest first
 anabolic-cli kill 1234 --tree           # end a process and what it started
 anabolic-cli service restart Spooler    # start, stop or restart a service
 anabolic-cli ports                      # who listens, and who can reach it
+anabolic-cli space D:\ --depth 3         # what fills a drive
 anabolic-cli ps --json                  # the same as JSON, for scripts
 ```
 
@@ -279,6 +283,7 @@ anabolic-cli ps --json                  # the same as JSON, for scripts
 | `tree [PID]`, `show PID`, `why PID` | Who started what; one process in full; why it will not end |
 | `services [FILTER]`, `service NAME` | Services, and one in full |
 | `ports`, `connections`, `startup` | Listening ports, connections, startup programs |
+| `space [PATH]` | What fills a drive or folder, as a tree (`--depth`, `--top`), or its largest files (`--files`) or file types (`--types`) |
 | `kill PID`, `suspend PID`, `resume PID`, `priority PID LEVEL` | Act on a process |
 | `service start\|stop\|restart\|pause\|continue NAME`, `service startup NAME TYPE` | Act on a service |
 | `mcp` | The MCP server without the window ([below](#without-the-window)) |
@@ -307,7 +312,7 @@ that is off is refused and says where to turn it on:
 
 | Kind | Tools |
 |---|---|
-| Read what the PC is doing (on by default) | overview, CPU, memory, disks and their partitions, GPUs, temperatures and fans, monitors, hardware, stutters, history, processes and their tree, one process in full (who started it, what it hosts, its connections), why a process will not end, leaks, connections, open ports, network usage, DNS lookups, services, startup programs |
+| Read what the PC is doing (on by default) | overview, CPU, memory, disks and their partitions, GPUs, temperatures and fans, monitors, hardware, stutters, history, processes and their tree, one process in full (who started it, what it hosts, its connections), why a process will not end, leaks, connections, open ports, network usage, DNS lookups, services, startup programs, what fills a drive or folder |
 | Turn kernel traces on for a while | who runs on each core, which files each disk serves, traffic per connection, frame times |
 | Look inside a process | handles, modules, thread stacks, wait chains |
 | Write memory dumps | small or full dumps (never of lsass, or on Linux of the keyrings) |

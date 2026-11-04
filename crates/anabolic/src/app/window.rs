@@ -26,6 +26,21 @@ pub(super) fn on_screen(frame: &eframe::Frame) -> bool {
     }
 }
 
+/// The window's handle, which owns the questions Windows asks for it.
+#[cfg(windows)]
+pub(super) fn handle(frame: &eframe::Frame) -> isize {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match frame.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
+        _ => 0,
+    }
+}
+
+#[cfg(not(windows))]
+pub(super) fn handle(_frame: &eframe::Frame) -> isize {
+    0
+}
+
 impl App {
     /// The notification area icon: there while it is wanted, its clicks,
     /// its tooltip, and what a closed window should not keep running.

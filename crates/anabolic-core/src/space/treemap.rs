@@ -137,7 +137,7 @@ impl Map {
             if at == self.root {
                 return None;
             }
-            at = tree.nodes.get(at as usize)?.parent;
+            at = tree.parent(at);
         }
         None
     }
@@ -212,7 +212,7 @@ fn layout(
             return None;
         }
         add_ridge(&mut surface, rect, style.height * style.scale.powi(depth));
-        let n = &tree.nodes[node as usize];
+        let n = &tree.node(node);
         let split = n.count > 0 && n.size > 0 && rect.w() >= MIN_SIDE && rect.h() >= MIN_SIDE;
         let me = cells.len() as u32;
         cells.push(Cell {
@@ -238,7 +238,7 @@ fn layout(
         items.clear();
         let mut shown = 0u64;
         for c in n.children() {
-            let size = tree.nodes[c as usize].size;
+            let size = tree.size(c);
             if size == 0 {
                 continue;
             }
@@ -587,8 +587,8 @@ mod tests {
         for &c in &map.hit {
             *count.entry(map.cells[c as usize].node).or_default() += 1;
         }
-        let games = tree.nodes[ROOT as usize].first;
-        let big = tree.nodes[games as usize].first;
+        let games = tree.node(ROOT).first;
+        let big = tree.node(games).first;
         let movie = games + 1;
         assert!(
             count[&big] > count[&movie],
@@ -603,7 +603,7 @@ mod tests {
             Some(big)
         );
         // A tiny file falls back to its folder's cell.
-        let tiny = tree.nodes[ROOT as usize].children().last().unwrap();
+        let tiny = tree.node(ROOT).children().last().unwrap();
         assert_eq!(
             map.cell_of(&tree, tiny).map(|c| map.cells[c as usize].node),
             Some(ROOT)

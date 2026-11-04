@@ -12,7 +12,14 @@ new since the one before.
   read from its master file table when Anabolic runs as administrator, a
   drive of seven million files in seconds; otherwise folders are read on
   several threads at once. The map is laid out and drawn on a thread of
-  its own, so the window never waits for it.
+  its own, so the window never waits for it. What is no longer needed goes
+  to the Recycle Bin (the trash on Linux) or is deleted for good, after a
+  question, and the sizes follow without scanning again; Windows' own
+  files and folders, and the system's on Linux, are refused.
+- `anabolic-cli space [PATH]` shows the same in a terminal: the folders as
+  a tree, or the largest files (`--files`) or file types (`--types`). MCP
+  clients get it as `get_disk_usage`, which keeps a scan for ten minutes so
+  questions about the folders inside it are answered at once.
 
 ## 0.6.0 (2026-11-04)
 

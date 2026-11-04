@@ -63,10 +63,10 @@ impl Lists {
         let mut stack = vec![(ROOT, 0u16)];
         while let Some((n, depth)) = stack.pop() {
             self.rows.push((n, depth));
-            let node = &tree.nodes[n as usize];
+            let node = &tree.node(n);
             if self.open.contains(&n) {
                 for c in node.children().rev() {
-                    if tree.nodes[c as usize].flags & REMOVED == 0 {
+                    if tree.node(c).flags & REMOVED == 0 {
                         stack.push((c, depth + 1));
                     }
                 }
@@ -164,7 +164,7 @@ fn modified(n: &Node) -> String {
 
 /// The row menu of a file or folder.
 pub fn node_menu(ui: &mut Ui, data: &mut Data, n: u32, out: &mut Vec<UiCmd>) {
-    let node = data.tree.nodes[n as usize];
+    let node = data.tree.node(n);
     if node.is_dir() && node.count > 0 && ui.button("Show in the map").clicked() {
         data.zoom = n;
         ui.close();
@@ -182,6 +182,26 @@ pub fn node_menu(ui: &mut Ui, data: &mut Data, n: u32, out: &mut Vec<UiCmd>) {
         UiCmd::OpenLocation(path.clone()),
     );
     item(ui, out, "Copy path", "", UiCmd::Copy(path));
+    ui.separator();
+    let trash = if cfg!(windows) {
+        "Move to the Recycle Bin…"
+    } else {
+        "Move to the trash…"
+    };
+    if ui
+        .add(egui::Button::new(trash).shortcut_text("Delete"))
+        .clicked()
+    {
+        data.ask_delete = Some((n, true));
+        ui.close();
+    }
+    if ui
+        .add(egui::Button::new("Delete for good…").shortcut_text("Shift+Delete"))
+        .clicked()
+    {
+        data.ask_delete = Some((n, false));
+        ui.close();
+    }
 }
 
 pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>) {
@@ -248,7 +268,7 @@ fn folders(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
                 columns.keep(body.widths());
                 body.rows(widgets::ROW, lists.rows.len(), |mut row| {
                     let (n, depth) = lists.rows[row.index()];
-                    let node = tree.nodes[n as usize];
+                    let node = tree.node(n);
                     row.set_selected(data.selected == Some(n));
                     for &c in columns.order() {
                         row.col(|ui| match c {
@@ -327,7 +347,7 @@ fn folders(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
 }
 
 fn types(ui: &mut Ui, data: &mut Data) {
-    let total = data.tree.nodes[ROOT as usize].size.max(1);
+    let total = data.tree.node(ROOT).size.max(1);
     let mut pick = None;
     Columns::load(ui.ctx(), "space-types", &TYPE_COLUMNS).show(ui, |table, columns| {
         table
@@ -393,7 +413,7 @@ fn largest(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
         .largest
         .iter()
         .copied()
-        .filter(|&n| tree.nodes[n as usize].flags & REMOVED == 0)
+        .filter(|&n| !tree.is_gone(n))
         .collect();
     let mut reveal = None;
     Columns::load(ui.ctx(), "space-largest", &LARGEST_COLUMNS).show(ui, |table, columns| {
@@ -413,7 +433,7 @@ fn largest(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
                 columns.keep(body.widths());
                 body.rows(widgets::ROW, files.len(), |mut row| {
                     let n = files[row.index()];
-                    let node = tree.nodes[n as usize];
+                    let node = tree.node(n);
                     row.set_selected(data.selected == Some(n));
                     for &c in columns.order() {
                         row.col(|ui| match c {

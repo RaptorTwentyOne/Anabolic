@@ -28,6 +28,7 @@ mod tools_inspect;
 mod tools_network;
 mod tools_process;
 mod tools_services;
+mod tools_space;
 mod tools_system;
 
 use std::net::SocketAddr;
@@ -66,6 +67,8 @@ pub struct Shared {
     pub elevated: bool,
     /// Activity recordings made for MCP clients (server threads only).
     pub recordings: Mutex<tools_activity::Recordings>,
+    /// The last disk space scan a client asked for, kept a while.
+    pub space: Mutex<Option<tools_space::Kept>>,
     /// Serving without a window (`anabolic mcp`, the terminal commands):
     /// whoever started this process may end it at any moment.
     pub headless: bool,

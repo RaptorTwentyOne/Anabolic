@@ -54,6 +54,7 @@ impl Headless {
             data_dir: crate::data_dir(),
             elevated: anabolic_core::hardening::is_elevated(),
             recordings: Mutex::new(Default::default()),
+            space: Mutex::new(None),
             headless: true,
         });
         let stop = Arc::new(AtomicBool::new(false));

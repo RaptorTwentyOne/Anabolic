@@ -12,7 +12,7 @@ use eframe::egui::{
 
 use crate::{theme, widgets};
 
-const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
+const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
     (
         "Everywhere",
         &[
@@ -31,6 +31,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
                 "Ctrl+N",
                 "Run new task: a program, folder, document or web address",
             ),
+            ("Ctrl+D", "Disk space: what fills a drive"),
             ("Ctrl+H", "Find which process holds a file or handle"),
             ("Space", "Pause or resume the view"),
             ("F5", "Refresh now"),
@@ -53,6 +54,22 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 3] = [
             ("Del", "End the process (or the app)"),
             ("Shift+Del", "End the process and its children"),
             ("Shift+F10", "The row's menu"),
+        ],
+    ),
+    (
+        "Disk space",
+        &[
+            (
+                "Click",
+                "Select the piece of the map, and show it in the list",
+            ),
+            ("Double-click", "Go into the folder under the mouse"),
+            ("Backspace", "Back up a folder; the mouse's back button too"),
+            (
+                "Del",
+                "Move the selected file or folder to the Recycle Bin (the trash on Linux), after asking",
+            ),
+            ("Shift+Del", "Delete it for good, after asking"),
         ],
     ),
     (

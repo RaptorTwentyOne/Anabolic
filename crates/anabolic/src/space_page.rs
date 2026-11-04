@@ -13,6 +13,7 @@
 //! points at is looked up in the picture's index, one entry per pixel, so
 //! a frame costs the same for ten files and ten million.
 
+mod delete;
 mod lists;
 mod map;
 
@@ -67,6 +68,8 @@ pub struct Data {
     pub selected: Option<u32>,
     /// An extension whose files the map picks out.
     pub highlight: Option<u32>,
+    /// A menu or key asked to delete: (node, to the Recycle Bin).
+    pub ask_delete: Option<(u32, bool)>,
 }
 
 impl Data {
@@ -80,16 +83,17 @@ impl Data {
             zoom: ROOT,
             selected: None,
             highlight: None,
+            ask_delete: None,
         }
     }
 
     /// The share of `n`'s folder (or of everything for the root).
     fn share(&self, n: u32) -> f32 {
-        let node = &self.tree.nodes[n as usize];
+        let node = &self.tree.node(n);
         let whole = if node.parent == space::NONE {
             node.size
         } else {
-            self.tree.nodes[node.parent as usize].size
+            self.tree.node(node.parent).size
         };
         if whole == 0 {
             0.0
@@ -149,6 +153,7 @@ pub struct SpacePage {
     map: map::MapView,
     /// From `--space PATH`: scan it when the page first shows.
     pub start: Option<PathBuf>,
+    pub deleter: delete::Deleter,
 }
 
 impl SpacePage {
@@ -254,8 +259,19 @@ pub fn show(ui: &mut Ui, page: &mut SpacePage, elevated: bool, out: &mut Vec<UiC
         return;
     }
     summary(ui, page, &ctx);
+    page.deleter.status(ui);
     ui.add_space(4.0);
     let data = page.data.as_mut().expect("checked above");
+    page.deleter.frame(&ctx, data);
+    // Delete and Shift+Delete, as in Explorer.
+    if !ctx.egui_wants_keyboard_input()
+        && let Some(n) = data.selected
+    {
+        let (delete, shift) = ui.input(|i| (i.key_pressed(egui::Key::Delete), i.modifiers.shift));
+        if delete {
+            data.ask_delete = Some((n, !shift));
+        }
+    }
     let height = ui.available_height();
     egui::Panel::top("space-lists")
         .resizable(true)
@@ -267,6 +283,9 @@ pub fn show(ui: &mut Ui, page: &mut SpacePage, elevated: bool, out: &mut Vec<UiC
         ui.add_space(4.0);
         map::show(ui, &mut page.map, &mut page.lists, data, out);
     });
+    if let Some((n, recycle)) = data.ask_delete.take() {
+        page.deleter.ask(data, n, recycle);
+    }
 }
 
 fn progress(ui: &mut Ui, s: &Scanning) {
@@ -468,7 +487,7 @@ fn summary(ui: &mut Ui, page: &mut SpacePage, ctx: &egui::Context) {
         return;
     };
     let tree = &data.tree;
-    let root = &tree.nodes[ROOT as usize];
+    let root = &tree.node(ROOT);
     let mut rescan = false;
     ui.horizontal(|ui| {
         ui.label(widgets::strong(

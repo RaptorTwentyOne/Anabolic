@@ -150,6 +150,88 @@ fn list(root_dev: u64) -> impl Fn(&Path) -> std::io::Result<Listing> + Sync {
     }
 }
 
+/// Why a path is not deleted from the Disk space page, if it is not: the
+/// root, the system's own folders and what is in them, and the folders the
+/// system keeps at the top.
+pub fn protected(path: &Path) -> Option<&'static str> {
+    let text = path.to_string_lossy();
+    let text = text.trim_end_matches('/');
+    if text.is_empty() {
+        return Some("The whole file system is not deleted from here.");
+    }
+    const SYSTEM: &[&str] = &[
+        "/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/run",
+        "/sbin", "/sys", "/usr", "/snap",
+    ];
+    if SYSTEM
+        .iter()
+        .any(|s| text == *s || text.starts_with(&format!("{s}/")))
+    {
+        return Some("The system's own files are not deleted from here.");
+    }
+    if matches!(
+        text,
+        "/home" | "/var" | "/opt" | "/srv" | "/mnt" | "/media" | "/root" | "/tmp"
+    ) {
+        return Some("The system keeps that folder: delete what is in it instead.");
+    }
+    None
+}
+
+/// Moves a file or folder to the desktop's trash (`recycle`, through gio or
+/// KDE's kioclient), or deletes it for good. Can take long: call it off
+/// the window's thread.
+pub fn delete(path: &Path, recycle: bool, _owner: isize) -> Result<(), String> {
+    if let Some(why) = protected(path) {
+        return Err(why.into());
+    }
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|_| format!("{} is not there any more.", path.display()))?;
+    if recycle {
+        let tries: [(&str, &[&str], bool); 3] = [
+            ("gio", &["trash", "--"], false),
+            ("kioclient6", &["move"], true),
+            ("kioclient5", &["move"], true),
+        ];
+        for (program, args, to_trash) in tries {
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args).arg(path);
+            if to_trash {
+                cmd.arg("trash:/");
+            }
+            match cmd
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .output()
+            {
+                Ok(out) if out.status.success() && std::fs::symlink_metadata(path).is_err() => {
+                    return Ok(());
+                }
+                Ok(out) => {
+                    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    return Err(if said.is_empty() {
+                        format!("{program} could not move it to the trash.")
+                    } else {
+                        said
+                    });
+                }
+                Err(_) => continue,
+            }
+        }
+        return Err(
+            "No trash to move it to (neither gio nor kioclient is installed): delete it for good instead."
+                .into(),
+        );
+    }
+    let done = if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    done.map_err(|e| format!("{} could not be deleted: {e}", path.display()))
+}
+
 /// Reads everything under `path`.
 pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
     let started = Instant::now();
@@ -174,4 +256,31 @@ pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
     (tree.total, tree.free) = space(path).unwrap_or((0, 0));
     tree.took = started.elapsed();
     Ok(tree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_system_out_of_reach() {
+        for p in [
+            "/",
+            "/usr",
+            "/usr/lib/x",
+            "/etc/fstab",
+            "/home",
+            "/boot/efi",
+        ] {
+            assert!(protected(Path::new(p)).is_some(), "{p}");
+        }
+        for p in [
+            "/home/you/Downloads",
+            "/var/cache/apt",
+            "/opt/game",
+            "/usrlocal",
+        ] {
+            assert!(protected(Path::new(p)).is_none(), "{p}");
+        }
+    }
 }

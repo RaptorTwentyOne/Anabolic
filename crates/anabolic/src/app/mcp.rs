@@ -84,6 +84,7 @@ impl McpState {
             data_dir: crate::data_dir(),
             elevated,
             recordings: Mutex::new(Default::default()),
+            space: Mutex::new(None),
             headless: false,
         });
         Self {

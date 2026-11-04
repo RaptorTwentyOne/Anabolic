@@ -61,7 +61,7 @@ fn folder_color(tree: &Tree, colors: &[[u8; 3]], folder: u32, skip: usize) -> [u
     let mut at = folder;
     let mut first = true;
     for _ in 0..64 {
-        let n = &tree.nodes[at as usize];
+        let n = &tree.node(at);
         if !n.is_dir() {
             return colors[n.ext as usize].map(|v| (u16::from(v) * 4 / 5) as u8);
         }
@@ -110,7 +110,7 @@ impl Worker {
                     let color = |c: &Cell| -> [u8; 3] {
                         let (base, ext) = match c.kind {
                             Kind::File => {
-                                let ext = tree.nodes[c.node as usize].ext;
+                                let ext = tree.node(c.node).ext;
                                 (colors[ext as usize], Some(ext))
                             }
                             Kind::Rest => {
@@ -252,7 +252,7 @@ pub fn show(
     let ctx = ui.ctx().clone();
     view.collect(&ctx);
     let tree = data.tree.clone();
-    if data.zoom as usize >= tree.nodes.len() || !tree.nodes[data.zoom as usize].is_dir() {
+    if data.zoom as usize >= tree.len() || !tree.node(data.zoom).is_dir() {
         data.zoom = ROOT;
     }
 
@@ -272,11 +272,8 @@ pub fn show(
             }
         }
         ui.label(
-            RichText::new(format!(
-                "  {}",
-                fmt::bytes(tree.nodes[data.zoom as usize].size)
-            ))
-            .color(theme::TEXT_WEAK),
+            RichText::new(format!("  {}", fmt::bytes(tree.node(data.zoom).size)))
+                .color(theme::TEXT_WEAK),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -286,7 +283,7 @@ pub fn show(
             {
                 view.flat = !view.flat;
             }
-            let up = tree.nodes[data.zoom as usize].parent;
+            let up = tree.node(data.zoom).parent;
             if ui
                 .add_enabled(data.zoom != ROOT, egui::Button::new("Up"))
                 .on_hover_text("The folder above (Backspace)")
@@ -302,7 +299,7 @@ pub fn show(
             || (i.key_pressed(egui::Key::Backspace) && !typing)
     });
     if back && data.zoom != ROOT {
-        zoom_to = Some(tree.nodes[data.zoom as usize].parent);
+        zoom_to = Some(tree.node(data.zoom).parent);
     }
 
     let status_height = 20.0;
@@ -426,7 +423,7 @@ pub fn show(
             let chain = tree.ancestry(n);
             if let Some(at) = chain.iter().position(|&a| a == data.zoom)
                 && let Some(&next) = chain.get(at + 1)
-                && tree.nodes[next as usize].is_dir()
+                && tree.node(next).is_dir()
             {
                 zoom_to = Some(next);
             }
@@ -440,7 +437,7 @@ pub fn show(
     if let Some(n) = view.menu {
         response.context_menu(|ui| {
             if data.zoom != ROOT && ui.button("Up a folder").clicked() {
-                zoom_to = Some(tree.nodes[data.zoom as usize].parent);
+                zoom_to = Some(tree.node(data.zoom).parent);
                 ui.close();
             }
             if ui.button("Select in the list").clicked() {
@@ -461,7 +458,7 @@ pub fn show(
     ui.allocate_ui(egui::vec2(rect.width(), status_height), |ui| {
         ui.horizontal(|ui| match hovered {
             Some((n, _)) => {
-                let node = tree.nodes[n as usize];
+                let node = tree.node(n);
                 let kind = view
                     .shown
                     .as_ref()

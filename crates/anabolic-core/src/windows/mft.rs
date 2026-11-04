@@ -1000,7 +1000,7 @@ mod tests {
             std::path::Path::new("C:\\"),
             crate::space::Method::Mft,
         );
-        let root = tree.nodes[ROOT as usize];
+        let root = tree.node(ROOT);
         assert_eq!(
             root.size,
             5000 + 5 + 10,
@@ -1018,19 +1018,19 @@ mod tests {
             ]
         );
         let games = root.first;
-        let pak = tree.nodes[games as usize].first;
+        let pak = tree.node(games).first;
         assert_eq!(
             tree.name(pak),
             "Very Long Name.pak",
             "the short name is dropped"
         );
-        let pak = tree.nodes[pak as usize];
+        let pak = tree.node(pak);
         assert_eq!(pak.size, 5000);
         assert_eq!(pak.flags & HIDDEN, HIDDEN);
         assert!(pak.modified > 1_600_000_000);
         let link = root.children().last().unwrap();
         assert_eq!(
-            tree.nodes[link as usize].flags & crate::space::EXTRA_LINK,
+            tree.node(link).flags & crate::space::EXTRA_LINK,
             crate::space::EXTRA_LINK
         );
     }
@@ -1068,7 +1068,7 @@ mod tests {
             std::path::Path::new("C:\\Games"),
             crate::space::Method::Mft,
         );
-        assert_eq!(tree.nodes.len(), 2);
-        assert_eq!(tree.nodes[ROOT as usize].size, 7);
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.node(ROOT).size, 7);
     }
 }

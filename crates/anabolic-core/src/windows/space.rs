@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use windows::Win32::Foundation::ERROR_NO_MORE_FILES;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO,
     FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -23,6 +24,10 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SetThreadErrorMode, THREAD_ERROR_MODE,
+};
+use windows::Win32::UI::Shell::{
+    FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
+    SHFILEOPSTRUCTW, SHFileOperationW,
 };
 use windows::core::PCWSTR;
 
@@ -380,6 +385,94 @@ pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
     ))
 }
 
+/// Why a path is not deleted from the Disk space page, if it is not:
+/// a whole drive, Windows' own folder, the folders Windows keeps at a
+/// drive's top, and the files Windows itself holds there.
+pub fn protected(path: &Path) -> Option<&'static str> {
+    let text = path.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+    if text.len() <= 2 || text.matches('\\').count() == 0 {
+        return Some("A whole drive is not deleted from here.");
+    }
+    let windows = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".into())
+        .trim_end_matches('\\')
+        .to_lowercase();
+    if text == windows || text.starts_with(&format!("{windows}\\")) {
+        return Some("Windows' own files are not deleted from here.");
+    }
+    // What follows "c:".
+    let top = text[2..].trim_start_matches('\\');
+    if !top.contains('\\') {
+        if matches!(
+            top,
+            "program files"
+                | "program files (x86)"
+                | "programdata"
+                | "users"
+                | "recovery"
+                | "system volume information"
+                | "$recycle.bin"
+                | "boot"
+                | "efi"
+        ) {
+            return Some(
+                "Windows keeps that folder at the top of the drive: delete what is in it instead.",
+            );
+        }
+        if matches!(
+            top,
+            "pagefile.sys" | "hiberfil.sys" | "swapfile.sys" | "bootmgr" | "dumpstack.log.tmp"
+        ) || top.starts_with('$')
+        {
+            return Some("Windows uses that file itself; its own settings change it.");
+        }
+    }
+    None
+}
+
+/// Moves a file or folder to the Recycle Bin (`recycle`) or deletes it for
+/// good. Something too large for the Recycle Bin is not deleted for good
+/// without Windows asking first, in a window owned by `owner`. Can take
+/// long: call it off the window's thread.
+pub fn delete(path: &Path, recycle: bool, owner: isize) -> Result<(), String> {
+    if let Some(why) = protected(path) {
+        return Err(why.into());
+    }
+    if std::fs::symlink_metadata(path).is_err() {
+        return Err(format!("{} is not there any more.", path.display()));
+    }
+    // A list of paths, each ended by a zero and the list by another.
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut flags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    if recycle {
+        flags |= FOF_ALLOWUNDO | FOF_WANTNUKEWARNING;
+    }
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: HWND(owner as *mut _),
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(from.as_ptr()),
+        fFlags: flags.0 as u16,
+        ..Default::default()
+    };
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if op.fAnyOperationsAborted.as_bool() {
+        return Err(
+            "Not deleted: it was too large for the Recycle Bin, and the answer was no.".into(),
+        );
+    }
+    if code != 0 || std::fs::symlink_metadata(path).is_ok() {
+        return Err(match code {
+            0 => "Part of it could not be deleted: a program may have a file open.".into(),
+            5 | 0x78 => "Windows refused: no right to delete it.".into(),
+            32 => "A program has a file in it open.".into(),
+            _ => format!("Windows could not delete it (error {code:#x})."),
+        });
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finish(
     builder: Builder,
@@ -408,6 +501,40 @@ mod tests {
     /// Reads the system drive both ways and compares a folder of it. Needs
     /// an administrator; run with `cargo test -p anabolic-core space -- --ignored --nocapture`.
     #[test]
+    fn keeps_windows_and_the_drives_top_out_of_reach() {
+        let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(protected(Path::new(&windir)).is_some());
+        assert!(protected(&Path::new(&windir).join("System32")).is_some());
+        assert!(protected(Path::new(r"C:\")).is_some());
+        assert!(protected(Path::new(r"D:")).is_some());
+        assert!(protected(Path::new(r"C:\Program Files")).is_some());
+        assert!(protected(Path::new(r"C:\pagefile.sys")).is_some());
+        assert!(protected(Path::new(r"C:\$MFT")).is_some());
+        assert!(protected(Path::new(r"C:\Program Files\Some Game")).is_none());
+        assert!(protected(Path::new(r"D:\Downloads\big.iso")).is_none());
+        assert!(protected(Path::new(r"C:\Windows.old")).is_none());
+    }
+
+    /// Only for good: a test that used the Recycle Bin would leave
+    /// something in the user's.
+    #[test]
+    fn deletes_for_good() {
+        let dir = std::env::temp_dir().join(format!("anabolic-delete-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inside")).unwrap();
+        std::fs::write(dir.join("inside/a.txt"), b"x").unwrap();
+        std::fs::write(dir.join("b.txt"), b"y").unwrap();
+        delete(&dir.join("b.txt"), false, 0).unwrap();
+        assert!(!dir.join("b.txt").exists());
+        delete(&dir.join("inside"), false, 0).unwrap();
+        assert!(!dir.join("inside").exists());
+        assert!(
+            delete(&dir.join("inside"), false, 0).is_err(),
+            "gone already"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     #[ignore]
     fn the_table_and_the_folders_agree() {
         let progress = Progress::default();
@@ -416,9 +543,9 @@ mod tests {
             "C: by {} in {:?}: {} nodes, {} files, {:.1} GB",
             tree.method.label(),
             tree.took,
-            tree.nodes.len(),
-            tree.nodes[0].files,
-            tree.nodes[0].size as f64 / 1e9
+            tree.len(),
+            tree.node(0).files,
+            tree.node(0).size as f64 / 1e9
         );
         assert_eq!(tree.method, Method::Mft, "{:?}", tree.note);
         let folder = Path::new(r"C:\Windows\System32\drivers");
@@ -441,14 +568,14 @@ mod tests {
         };
         println!(
             "drivers: table {} files {} bytes in {:?}; folders {} files {} bytes",
-            by_table.nodes[0].files,
-            by_table.nodes[0].size,
+            by_table.node(0).files,
+            by_table.node(0).size,
             by_table.took,
-            by_walk.nodes[0].files,
-            by_walk.nodes[0].size
+            by_walk.node(0).files,
+            by_walk.node(0).size
         );
         assert_eq!(by_table.method, Method::Mft);
-        let diff = by_table.nodes[0].size.abs_diff(by_walk.nodes[0].size);
-        assert!(diff < by_walk.nodes[0].size / 100, "within 1 %");
+        let diff = by_table.node(0).size.abs_diff(by_walk.node(0).size);
+        assert!(diff < by_walk.node(0).size / 100, "within 1 %");
     }
 }
