@@ -24,6 +24,7 @@ pub enum Tab {
     Folders,
     Types,
     Largest,
+    Clean,
 }
 
 #[derive(Default)]
@@ -39,6 +40,8 @@ pub struct Lists {
     made_for: u64,
     /// Scroll this row into view next frame.
     scroll_to: Option<usize>,
+    /// Clean-up suggestions shown with all their places.
+    open_clean: HashSet<usize>,
 }
 
 impl Lists {
@@ -212,6 +215,7 @@ pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd
             (Tab::Folders, "Folders"),
             (Tab::Types, "File types"),
             (Tab::Largest, "Largest files"),
+            (Tab::Clean, "Clean up"),
         ] {
             if ui.selectable_label(lists.tab == tab, label).clicked() {
                 lists.tab = tab;
@@ -247,6 +251,7 @@ pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd
         Tab::Folders => folders(ui, lists, data, out),
         Tab::Types => types(ui, data),
         Tab::Largest => largest(ui, lists, data, out),
+        Tab::Clean => super::clean::show(ui, data, &mut lists.open_clean),
     }
 }
 

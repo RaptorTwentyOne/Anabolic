@@ -15,8 +15,9 @@
 #[cfg_attr(windows, path = "windows/space.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/space.rs")]
 mod imp;
-pub use imp::{delete, protected, scan, targets};
+pub use imp::{delete, delete_all, empty_recycle_bin, protected, scan, targets};
 
+pub mod clean;
 pub mod treemap;
 
 use std::collections::{HashMap, HashSet};

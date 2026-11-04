@@ -438,15 +438,32 @@ pub fn protected(path: &Path) -> Option<&'static str> {
 /// without Windows asking first, in a window owned by `owner`. Can take
 /// long: call it off the window's thread.
 pub fn delete(path: &Path, recycle: bool, owner: isize) -> Result<(), String> {
-    if let Some(why) = protected(path) {
-        return Err(why.into());
+    delete_all(&[path.to_path_buf()], recycle, owner)
+}
+
+/// The same for many at once, in one operation. When some cannot be
+/// deleted (a program holds them open) the rest still are, and the
+/// answer says so: ask each path afterwards to know which.
+pub fn delete_all(paths: &[PathBuf], recycle: bool, owner: isize) -> Result<(), String> {
+    for p in paths {
+        if let Some(why) = protected(p) {
+            return Err(format!("{}: {why}", p.display()));
+        }
     }
-    if std::fs::symlink_metadata(path).is_err() {
-        return Err(format!("{} is not there any more.", path.display()));
+    let there: Vec<&PathBuf> = paths
+        .iter()
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
+        .collect();
+    if there.is_empty() {
+        return Err("It is not there any more.".into());
     }
     // A list of paths, each ended by a zero and the list by another.
-    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
-    from.extend([0, 0]);
+    let mut from: Vec<u16> = Vec::new();
+    for p in &there {
+        from.extend(p.as_os_str().encode_wide());
+        from.push(0);
+    }
+    from.push(0);
     let mut flags = FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
     if recycle {
         flags |= FOF_ALLOWUNDO | FOF_WANTNUKEWARNING;
@@ -464,15 +481,42 @@ pub fn delete(path: &Path, recycle: bool, owner: isize) -> Result<(), String> {
             "Not deleted: it was too large for the Recycle Bin, and the answer was no.".into(),
         );
     }
-    if code != 0 || std::fs::symlink_metadata(path).is_ok() {
+    let left = there
+        .iter()
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
+        .count();
+    if code != 0 || left > 0 {
         return Err(match code {
-            0 => "Part of it could not be deleted: a program may have a file open.".into(),
+            0 | 32 => "Part of it could not be deleted: a program has a file open.".into(),
             5 | 0x78 => "Windows refused: no right to delete it.".into(),
-            32 => "A program has a file in it open.".into(),
-            _ => format!("Windows could not delete it (error {code:#x})."),
+            _ => format!("Windows could not delete all of it (error {code:#x})."),
         });
     }
     Ok(())
+}
+
+/// Empties the Recycle Bin of the drive `root` is on: deleted for good.
+pub fn empty_recycle_bin(root: &Path, owner: isize) -> Result<(), String> {
+    use windows::Win32::UI::Shell::{
+        SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND, SHEmptyRecycleBinW,
+    };
+    let drive = root.to_string_lossy();
+    let drive = wide(&format!("{}\\", drive.get(..2).unwrap_or("C:")));
+    unsafe {
+        SHEmptyRecycleBinW(
+            Some(HWND(owner as *mut _)),
+            PCWSTR(drive.as_ptr()),
+            SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND,
+        )
+    }
+    // An empty bin answers E_UNEXPECTED: nothing to do is done.
+    .or_else(|e| {
+        if e.code().0 as u32 == 0x8000_FFFF {
+            Ok(())
+        } else {
+            Err(format!("Windows could not empty it: {}", e.message()))
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

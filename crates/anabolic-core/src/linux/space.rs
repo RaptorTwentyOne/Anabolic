@@ -178,6 +178,41 @@ pub fn protected(path: &Path) -> Option<&'static str> {
     None
 }
 
+/// The same for many: each in turn, all tried; the first failure is
+/// the answer.
+pub fn delete_all(paths: &[PathBuf], recycle: bool, owner: isize) -> Result<(), String> {
+    let mut first = None;
+    for p in paths {
+        if let Err(e) = delete(p, recycle, owner)
+            && first.is_none()
+        {
+            first = Some(e);
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
+/// Empties the trash: what is in it is deleted for good.
+pub fn empty_recycle_bin(_root: &Path, _owner: isize) -> Result<(), String> {
+    let home = std::env::var_os("HOME").ok_or("No home folder.")?;
+    let trash = Path::new(&home).join(".local/share/Trash");
+    for sub in ["files", "info", "expunged"] {
+        let Ok(entries) = std::fs::read_dir(trash.join(sub)) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            let gone = if e.file_type().is_ok_and(|t| t.is_dir()) {
+                std::fs::remove_dir_all(&p)
+            } else {
+                std::fs::remove_file(&p)
+            };
+            gone.map_err(|err| format!("{} could not be deleted: {err}", p.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Moves a file or folder to the desktop's trash (`recycle`, through gio or
 /// KDE's kioclient), or deletes it for good. Can take long: call it off
 /// the window's thread.

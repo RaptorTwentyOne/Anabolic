@@ -100,6 +100,24 @@ fn main() {
     }
 
     let started = Instant::now();
+    let found = space::clean::suggest(&tree);
+    println!(
+        "{} clean-up suggestions in {:.2?}",
+        found.len(),
+        started.elapsed()
+    );
+    for c in &found {
+        println!(
+            "  {:>10.2} GB  {:<15} {} ({} places, first {})",
+            c.size as f64 / 1e9,
+            c.level.label(),
+            c.title,
+            c.nodes.len(),
+            tree.path_of(c.nodes[0]).display()
+        );
+    }
+
+    let started = Instant::now();
     let ext = tree.by_extension();
     println!("{} extensions in {:.2?}", ext.len(), started.elapsed());
 

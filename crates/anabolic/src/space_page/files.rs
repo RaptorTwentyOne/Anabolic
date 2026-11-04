@@ -168,6 +168,21 @@ pub fn largest(tree: &Tree, files: &[u32]) -> Table {
     (vec!["File", "Size", "On disk", "Modified"], rows)
 }
 
+pub fn clean(tree: &Tree, found: &[anabolic_core::space::clean::Suggestion]) -> Table {
+    let mut rows = Vec::new();
+    for s in found {
+        for &n in &s.nodes {
+            rows.push(vec![
+                s.title.to_string(),
+                s.level.label().to_string(),
+                tree.path_of(n).to_string_lossy().into_owned(),
+                tree.size(n).to_string(),
+            ]);
+        }
+    }
+    (vec!["Clean-up", "How safe", "Path", "Size"], rows)
+}
+
 /// Writes `make`'s table as CSV into Anabolic's exports folder, on a
 /// thread of its own; answers the file written.
 pub fn save<F>(name: &'static str, tree: Arc<Tree>, make: F) -> Receiver<Result<PathBuf, String>>

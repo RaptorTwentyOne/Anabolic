@@ -13,6 +13,7 @@
 //! points at is looked up in the picture's index, one entry per pixel, so
 //! a frame costs the same for ten files and ten million.
 
+mod clean;
 mod delete;
 mod files;
 mod lists;
@@ -22,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anabolic_core::space::clean::Suggestion;
 use anabolic_core::space::{self, ExtTotal, Phase, Progress, ROOT, Target, Tree};
 use crossbeam_channel::{Receiver, bounded};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Ui};
@@ -95,6 +97,12 @@ pub struct Data {
     pub highlight: Option<u32>,
     /// A menu or key asked to delete: (node, to the Recycle Bin).
     pub ask_delete: Option<(u32, bool)>,
+    /// What can be cleaned up.
+    pub clean: Vec<Suggestion>,
+    /// The Clean up tab asked to delete this suggestion's places.
+    pub ask_clean: Option<usize>,
+    /// Open the folder list down to this node.
+    pub reveal: Option<u32>,
 }
 
 impl Data {
@@ -109,6 +117,9 @@ impl Data {
             selected: None,
             highlight: None,
             ask_delete: None,
+            clean: s.clean,
+            ask_clean: None,
+            reveal: None,
         }
     }
 
@@ -138,6 +149,7 @@ struct Scanned {
     exts: Vec<ExtTotal>,
     colors: Vec<[u8; 3]>,
     largest: Vec<u32>,
+    clean: Vec<Suggestion>,
 }
 
 /// The work that follows a scan, done on its thread too.
@@ -148,11 +160,13 @@ fn prepare(tree: Tree) -> Scanned {
         colors[e.ext as usize] = PALETTE[rank];
     }
     let largest = tree.largest_files(1000);
+    let clean = space::clean::suggest(&tree);
     Scanned {
         tree,
         exts,
         colors,
         largest,
+        clean,
     }
 }
 
@@ -372,10 +386,22 @@ pub fn show(
                 let largest = data.largest.clone();
                 files::save("largest", tree, move |t| files::largest(t, &largest))
             }
+            lists::Tab::Clean => {
+                let clean = data.clean.clone();
+                files::save("cleanup", tree, move |t| files::clean(t, &clean))
+            }
         });
     }
     if let Some((n, recycle)) = data.ask_delete.take() {
         page.deleter.ask(data, n, recycle);
+    }
+    if let Some(i) = data.ask_clean.take()
+        && let Some(s) = data.clean.get(i).cloned()
+    {
+        page.deleter.ask_suggestion(data, &s);
+    }
+    if let Some(n) = data.reveal.take() {
+        page.lists.reveal(&data.tree, n);
     }
 }
 
