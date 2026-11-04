@@ -4,8 +4,9 @@
 # Anabolic on it: https://github.com/RaptorTwentyOne/Anabolic
 #
 #   docker build -t anabolic .
-#   docker run -i --rm anabolic              # speaks MCP on stdin/stdout
-#   docker run -i --rm anabolic --allow all  # every kind of tool, not only reading
+#   docker run -i --rm anabolic                   # speaks MCP on stdin/stdout
+#   docker run -i --rm anabolic --allow all       # every kind of tool, not only reading
+#   docker run -i --rm -e ALLOW=read,end anabolic # the same through the environment
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY . .
@@ -17,4 +18,6 @@ RUN cargo build --release --locked --bin anabolic
 
 FROM debian:bookworm-slim
 COPY --from=build /src/target/release/anabolic /usr/local/bin/anabolic
-ENTRYPOINT ["anabolic", "mcp"]
+# ALLOW, when set, is --allow: directories configure servers through the
+# environment. Arguments given to the container come after it.
+ENTRYPOINT ["/bin/sh", "-c", "exec anabolic mcp ${ALLOW:+--allow \"$ALLOW\"} \"$@\"", "anabolic"]

@@ -24,9 +24,18 @@ jobs:
             echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
             echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
             echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_system_overview","arguments":{}}}'
-            sleep 5
-          } | timeout 60 docker run -i --rm anabolic > answers.jsonl
-          cat answers.jsonl | cut -c1-300
+            echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"end_process","arguments":{"pid":999999}}}'
+          } > requests.jsonl
+          timeout 60 docker run -i --rm anabolic < <(cat requests.jsonl; sleep 5) > answers.jsonl
+          cut -c1-300 answers.jsonl
           jq -e 'select(.id == 1) | .result.serverInfo.name == "anabolic"' answers.jsonl
           jq -e 'select(.id == 2) | (.result.tools | length) > 30' answers.jsonl
           jq -e 'select(.id == 3) | .result.isError != true' answers.jsonl
+          # Reading only, by default: ending a process is not allowed.
+          jq -e 'select(.id == 4) | .result.content[0].text | startswith("Not allowed")' answers.jsonl
+      - name: ALLOW in the environment is --allow
+        run: |
+          timeout 60 docker run -i --rm -e ALLOW=read,end anabolic < <(cat requests.jsonl; sleep 5) > allowed.jsonl
+          cut -c1-300 allowed.jsonl
+          # Allowed now: refused only because there is no such process.
+          jq -e 'select(.id == 4) | .result.content[0].text | startswith("Not allowed") | not' allowed.jsonl
