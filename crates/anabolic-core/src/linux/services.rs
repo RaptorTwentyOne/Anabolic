@@ -1354,6 +1354,94 @@ pub(super) fn delete(name: &str, display: &str, stop_first: bool) -> ChangeOutco
 mod tests {
     use super::*;
 
+    /// Creates, reads back, changes and deletes a throwaway unit that is
+    /// never started, through pkexec as the dialog does it. Needs root (then
+    /// pkexec asks no one), systemd and pkexec; skips itself without.
+    #[test]
+    fn creates_changes_and_deletes_a_unit() {
+        use crate::services::{ServiceChange, change_now};
+        let pkexec = ["/usr/bin/pkexec", "/bin/pkexec"]
+            .iter()
+            .any(|p| Path::new(p).exists());
+        if unsafe { libc::geteuid() } != 0 || !Path::new("/run/systemd/system").exists() || !pkexec
+        {
+            eprintln!("skipped: needs root, systemd and pkexec");
+            return;
+        }
+        let name = format!("anabolic-test-{}", std::process::id());
+        let unit = format!("{name}.service");
+        // Whatever happens, the unit goes, past any rule of Anabolic's own.
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let systemctl = |args: &[&str]| {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(args)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                };
+                systemctl(&["disable", &self.0]);
+                let file = Path::new(ADMIN_DIR).join(&self.0);
+                let _ = std::fs::remove_file(&file);
+                let _ = std::fs::remove_dir_all(file.with_extension("service.d"));
+                systemctl(&["daemon-reload"]);
+            }
+        }
+        let _cleanup = Cleanup(unit.clone());
+        let spec = ServiceSpec {
+            name: name.clone(),
+            display: "Anabolic test unit".into(),
+            program: "/bin/false --never-started".into(),
+            start: StartType::Manual,
+            account: Account::User("nobody".into()),
+            dependencies: vec!["network-online.target".into()],
+            recovery: Recovery {
+                actions: [FailureAction::Restart; 3],
+                delay: Duration::from_secs(7),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let made = change_now(&ServiceChange::Create(Box::new(spec.clone())));
+        assert!(made.result.is_ok(), "{:?}", made.result);
+        let file = Path::new(ADMIN_DIR).join(&unit);
+        assert!(file.exists());
+        let read = detail(&unit).expect("it reads back");
+        assert_eq!(read.keep, None);
+        assert_eq!(read.spec.display, spec.display);
+        assert_eq!(read.spec.program, spec.program);
+        assert_eq!(read.spec.start, StartType::Manual);
+        assert_eq!(read.spec.account, spec.account);
+        assert_eq!(read.spec.dependencies, spec.dependencies);
+        assert_eq!(read.spec.recovery.actions[0], FailureAction::Restart);
+        assert_eq!(read.spec.recovery.delay, Duration::from_secs(7));
+
+        let mut after = read.spec.clone();
+        after.display = "Anabolic test unit, changed".into();
+        after.start = StartType::Automatic;
+        after.recovery.actions = [FailureAction::Nothing; 3];
+        let changed = change_now(&ServiceChange::Configure {
+            before: Box::new(read.spec.clone()),
+            after: Box::new(after.clone()),
+        });
+        assert!(changed.result.is_ok(), "{:?}", changed.result);
+        let read = detail(&unit).expect("it reads back changed");
+        assert_eq!(read.spec.display, after.display);
+        assert_eq!(read.spec.start, StartType::Automatic);
+        assert_eq!(read.spec.recovery.actions[0], FailureAction::Nothing);
+        assert_eq!(read.spec.program, spec.program);
+
+        let gone = change_now(&ServiceChange::Delete {
+            name: unit.as_str().into(),
+            display: after.display.as_str().into(),
+            stop: true,
+        });
+        assert!(gone.result.is_ok(), "{:?}", gone.result);
+        assert!(!file.exists());
+        assert!(detail(&unit).is_err());
+    }
+
     #[test]
     fn manages_files_and_names() {
         assert_eq!(canonical("backup", false), "backup.service");
