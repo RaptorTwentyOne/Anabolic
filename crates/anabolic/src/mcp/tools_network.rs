@@ -28,14 +28,18 @@ use super::handler::{AnabolicMcp, blocking, fail, ok, progress};
 use crate::settings::McpKind;
 
 #[cfg(windows)]
-const DNS_LOOKUPS: &str = "DNS lookups programs made (from the DNS client's events): when, which \
-                           program, the name asked, the addresses answered and any error. The \
-                           latest first. Lookups are seen while the network trace runs: give \
-                           trace_seconds to watch for a while.";
+const DNS_LOOKUPS: &str = "Lists the DNS lookups programs made (from the DNS client's events): \
+                           when, which program, the name asked, the addresses answered and any \
+                           error, the latest first. It answers which names a program looked up; \
+                           list_connections shows where programs are connected, and \
+                           get_network_usage how much they send. Lookups are seen while the \
+                           network trace runs: give trace_seconds to watch for a while.";
 /// Linux keeps no record of them: the tool says so.
 #[cfg(target_os = "linux")]
-const DNS_LOOKUPS: &str = "DNS lookups programs made. Not available on Linux: nothing records \
-                           the names programs look up system-wide.";
+const DNS_LOOKUPS: &str = "Lists the DNS lookups programs made, on Windows. On Linux it always refuses, so do not \
+     call it there: each program looks names up through its own library, and nothing records \
+     who asked for what. list_connections shows where programs are connected, with the remote \
+     names, and get_network_usage how much they send.";
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]

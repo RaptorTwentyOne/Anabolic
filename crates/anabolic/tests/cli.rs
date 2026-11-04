@@ -116,7 +116,6 @@ fn the_mcp_server_speaks_over_standard_input_and_output() {
     assert_eq!(result["isError"], true, "{result}");
 
     // The client goes: so does the server.
-    drop(send);
     drop(input);
     let since = Instant::now();
     loop {

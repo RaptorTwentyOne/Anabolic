@@ -49,39 +49,48 @@ pub struct PidForce {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PriorityArgs {
+    /// The process ID (list_processes gives it).
     pub pid: u32,
     /// idle, below_normal, normal, above_normal, high or realtime.
     pub priority: String,
+    /// True only after the user agreed to the risk this tool described.
     #[serde(default)]
     pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AffinityArgs {
+    /// The process ID (list_processes gives it).
     pub pid: u32,
-    /// The logical processors it may run on, from 0 (get_cpu lists them).
+    /// The logical processors it may run on, from 0 to 63 (get_cpu lists
+    /// them).
     pub cpus: Vec<u32>,
+    /// True only after the user agreed to the risk this tool described.
     #[serde(default)]
     pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EfficiencyArgs {
+    /// The process ID (list_processes gives it).
     pub pid: u32,
-    /// On: Windows runs it at low priority on efficient cores and clocks.
+    /// True turns it on, false back off (normal priority again).
     pub on: bool,
+    /// True only after the user agreed to the risk this tool described.
     #[serde(default)]
     pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct LimitArgs {
+    /// The process ID (list_processes gives it).
     pub pid: u32,
     /// The most of the whole machine's CPU it may use, percent (1 to 99),
     /// as list_processes counts it.
     pub cpu_percent: Option<f32>,
     /// The most private memory it may commit, GB, with what it starts.
     pub memory_gb: Option<f32>,
+    /// True only after the user agreed to the risk this tool described.
     #[serde(default)]
     pub force: bool,
 }
@@ -418,7 +427,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Sets which logical processors a process may run on (its affinity).",
+        description = text::AFFINITY,
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -815,11 +824,35 @@ mod text {
      lost. The system's critical processes (init, the kernel, the session's compositor) and \
      Anabolic are refused; a game or anti-cheat program needs force=true after the user agreed.";
     #[cfg(windows)]
-    pub const EFFICIENCY_MODE: &str = "Turns Windows' efficiency mode on or off for a process (low priority, \
-                       efficient cores and clocks: EcoQoS).";
+    pub const EFFICIENCY_MODE: &str = "Turns Windows' efficiency mode on or off for a process, as Task Manager \
+                       does: on, it runs at idle priority on efficient cores and clocks \
+                       (EcoQoS); off, at normal priority again. For a background program that \
+                       takes the processor from what the user is doing; set_priority changes \
+                       the priority alone, set_affinity the cores. It lasts until the process \
+                       ends. Critical processes and Anabolic are refused; a game or anti-cheat \
+                       program needs force=true after the user agreed. Another user's or an \
+                       elevated process needs Anabolic running as administrator.";
     #[cfg(target_os = "linux")]
-    pub const EFFICIENCY_MODE: &str = "Turns efficiency mode on or off for a process: it runs only when no one else wants the \
-     processor (the idle scheduling class), and its disk I/O likewise.";
+    pub const EFFICIENCY_MODE: &str = "Turns efficiency mode on or off for a process: on, every thread runs only when no one \
+     else wants the processor (the idle scheduling class), and its disk I/O likewise; off, \
+     the normal class again. For a background program that takes the processor from what the \
+     user is doing; set_priority changes the priority alone, set_affinity the cores. It lasts \
+     until the process ends. Critical processes and Anabolic are refused; a game or anti-cheat \
+     program needs force=true after the user agreed. Another user's process needs Anabolic's \
+     full access (cap_sys_nice).";
+    #[cfg(windows)]
+    pub const AFFINITY: &str = "Sets which logical processors a process may run on (its affinity), all \
+                       its threads at once, until it ends. get_cpu lists the processors; \
+                       set_priority and set_efficiency_mode change how much time it gets \
+                       rather than where. Critical processes and Anabolic are refused; a game \
+                       or anti-cheat program needs force=true after the user agreed. Another \
+                       user's or an elevated process needs Anabolic running as administrator.";
+    #[cfg(target_os = "linux")]
+    pub const AFFINITY: &str = "Sets which logical processors a process may run on (its affinity), all its threads at \
+     once, until it ends. get_cpu lists the processors; set_priority and set_efficiency_mode \
+     change how much time it gets rather than where. Critical processes and Anabolic are \
+     refused; a game or anti-cheat program needs force=true after the user agreed. Another \
+     user's process needs Anabolic's full access (cap_sys_nice).";
     #[cfg(windows)]
     pub const CONTROL_SERVICE: &str = "Starts, stops, restarts, pauses or continues a Windows service. Stopping \
                        one that others depend on fails unless with_dependents=true.";
@@ -835,11 +868,15 @@ mod text {
      Linux.";
     #[cfg(windows)]
     pub const BLOCK_PROGRAM: &str = "Blocks a program from the network with two Windows Firewall rules \
-                       (outbound and inbound), until unblock_program. Windows' own files cannot \
-                       be blocked. The Network page lists what is blocked.";
+                       (outbound and inbound), for every copy of it that runs, until \
+                       unblock_program removes them. Windows' own files cannot be blocked. \
+                       Needs Anabolic running as administrator. The Network page lists what is \
+                       blocked; close_connection cuts a single connection instead.";
     #[cfg(target_os = "linux")]
-    pub const BLOCK_PROGRAM: &str = "Blocking a program from the network is not possible on Linux, whose firewalls filter by \
-     address, port and user rather than by program: this always refuses there.";
+    pub const BLOCK_PROGRAM: &str = "Blocks a program from the network on Windows (firewall rules that unblock_program \
+     removes). On Linux it always refuses, so do not call it there: Linux firewalls filter by \
+     address, port and user rather than by program. close_connection cuts a single connection \
+     instead.";
     #[cfg(windows)]
     pub const STARTUP_ITEM: &str = "Turns a startup program on or off the way Task Manager does (nothing is \
                        deleted; tasks through Task Scheduler).";
