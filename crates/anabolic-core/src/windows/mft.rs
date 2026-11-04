@@ -493,8 +493,10 @@ fn parse(rec: &mut [u8], number: u32, cluster: u64, out: &mut Parsed) {
                 };
                 let at = out.text.len() as u32;
                 let units = raw
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]));
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c));
                 out.text.extend(
                     char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)),
                 );

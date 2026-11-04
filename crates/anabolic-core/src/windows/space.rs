@@ -244,8 +244,10 @@ fn list(path: &Path) -> std::io::Result<Listing> {
                 break;
             }
             let units: Vec<u16> = raw[at + name_at..at + name_at + name_len]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let name = String::from_utf16_lossy(&units);
             if name != "." && name != ".." {
