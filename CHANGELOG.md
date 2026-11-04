@@ -6,6 +6,11 @@ new since the one before.
 
 ## Unreleased
 
+- **Services: new, properties, delete.** Create a service, change
+  everything about one (program, account and password, dependencies, what
+  it does when it fails), or delete one; Windows' own services can be
+  disabled, not deleted. On Linux a new unit goes where systemd keeps the
+  administrator's own, and a package's unit is changed through a drop-in.
 - **Terminal commands:** `anabolic-cli ps`, `kill`, `services`, `service
   restart NAME`, `ports` and more (on Linux `anabolic ps`): what the
   window shows, as tables, or as JSON for scripts (`--json`). Each answers

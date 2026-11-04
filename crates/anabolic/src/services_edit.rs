@@ -41,9 +41,10 @@ enum Who {
     User,
 }
 
-/// A failure's delay: in minutes on Windows, as the Services console has
-/// it; in seconds on Linux, as systemd has it.
-const DELAY_UNIT: f64 = if cfg!(windows) { 60.0 } else { 1.0 };
+/// A failure's delay, in seconds: Windows keeps milliseconds and its own
+/// services often wait a few seconds, which the Services console's whole
+/// minutes cannot say; systemd counts in seconds too.
+const DELAY_UNIT: f64 = 1.0;
 
 /// What the dialog's fields hold.
 struct Form {
@@ -647,10 +648,10 @@ impl ServiceDialog {
                             ui.add_enabled(
                                 acts,
                                 egui::DragValue::new(&mut f.delay)
-                                    .range(0.0..=1440.0)
-                                    .speed(0.25)
-                                    .max_decimals(2)
-                                    .suffix(" minutes"),
+                                    .range(0.0..=86400.0)
+                                    .speed(0.5)
+                                    .max_decimals(1)
+                                    .suffix(" seconds"),
                             );
                             ui.end_row();
                             label(ui, "Count again after");
