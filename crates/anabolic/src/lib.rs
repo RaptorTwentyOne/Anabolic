@@ -11,6 +11,7 @@ mod access;
 mod activity_page;
 mod app;
 mod bench;
+mod cli;
 #[cfg(target_os = "linux")]
 #[path = "linux/desktop.rs"]
 mod desktop;
@@ -21,6 +22,7 @@ mod displays_view;
 mod fmt;
 mod gamemode;
 mod graph;
+mod headless;
 mod help;
 mod history_page;
 mod icons;
@@ -63,7 +65,14 @@ mod windowless;
 use anabolic_core::instance::{self, Claim};
 use eframe::egui;
 
-/// The window program: everything `anabolic` does when started.
+/// The terminal program (anabolic-cli on Windows): the command its
+/// arguments name.
+pub fn cli_main() -> std::process::ExitCode {
+    std::process::ExitCode::from(cli::main(std::env::args().skip(1).collect()))
+}
+
+/// The window program: everything `anabolic` does when started (on Linux
+/// also the terminal commands).
 pub fn run() -> eframe::Result {
     #[cfg(windows)]
     attach_parent_console();
@@ -74,6 +83,25 @@ pub fn run() -> eframe::Result {
         report(info);
     }));
     let args: Vec<String> = std::env::args().collect();
+    // `anabolic ps` and the other terminal commands. On Windows they come
+    // with anabolic-cli.exe: this program has no console of its own, so a
+    // terminal would not wait for it, and it asks for elevation.
+    if args.get(1).is_some_and(|a| cli::is_command(a)) {
+        #[cfg(target_os = "linux")]
+        std::process::exit(i32::from(cli::main(args[1..].to_vec())));
+        #[cfg(windows)]
+        {
+            message_box(
+                &format!(
+                    "Anabolic's terminal commands come with anabolic-cli.exe, beside \
+                     anabolic.exe:\n\nanabolic-cli {}",
+                    args[1]
+                ),
+                false,
+            );
+            return Ok(());
+        }
+    }
     // The installer, as it removes Anabolic: every user's sign-in task
     // goes with it. Nothing else starts.
     if args.iter().any(|a| a == "--forget-sign-in") {

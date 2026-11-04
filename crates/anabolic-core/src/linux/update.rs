@@ -21,6 +21,8 @@ pub(super) const PLATFORM: &str = "Linux x64";
 pub(super) const SYSTEM: &str = "Linux";
 pub(super) const EXECUTABLE: &str = "anabolic";
 pub(super) const MAGIC: &[u8] = b"\x7fELF";
+/// The terminal commands are the executable's own on Linux.
+pub(super) const COMPANIONS: &[&str] = &[];
 
 /// rwxr-xr-x, as the release's executable came.
 pub(super) fn make_runnable(path: &Path) -> std::io::Result<()> {

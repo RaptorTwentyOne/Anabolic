@@ -4,6 +4,21 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
+## Unreleased
+
+- **Terminal commands:** `anabolic-cli ps`, `kill`, `services`, `service
+  restart NAME`, `ports` and more (on Linux `anabolic ps`): what the
+  window shows, as tables, or as JSON for scripts (`--json`). Each answers
+  through the MCP tool behind it, and refuses what that refuses. On
+  Windows they come with anabolic-cli.exe, beside anabolic.exe, and the
+  installer puts its folder on PATH.
+- **MCP without the window:** a client can start Anabolic itself
+  (`anabolic-cli mcp`) and speak to it over standard input and output: no
+  port, no key, no window. The MCP page shows the command and the JSON
+  for it. It may do what the page allows, except setting limits.
+- Each release file carries a build attestation, which `gh attestation
+  verify` checks.
+
 ## 0.5.0 (2026-11-03)
 
 Limits Windows keeps on a program's processor and memory, rules that wait

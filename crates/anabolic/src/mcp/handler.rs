@@ -232,6 +232,11 @@ pub(super) fn fail(message: impl Into<String>) -> Result<CallToolResult, ErrorDa
     )]))
 }
 
+/// How a refusal that waits for the user's agreement begins, and where its
+/// risks end: the terminal commands say it their own way (--force).
+pub const AGREE_START: &str = "Not done yet: this needs the user's agreement. ";
+pub const AGREE_END: &str = " Tell the user this in your own words";
+
 /// Runs blocking Windows calls off the runtime's workers.
 pub(super) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::task::spawn_blocking(work).await {
@@ -306,9 +311,8 @@ impl AnabolicMcp {
     ) -> Option<Result<CallToolResult, ErrorData>> {
         (!force).then(|| {
             fail(format!(
-                "Not done yet: this needs the user's agreement. {risks} Tell the user this in \
-                 your own words and ask whether to go ahead. Only if they agree, call this tool \
-                 again with the same arguments and force=true."
+                "{AGREE_START}{risks}{AGREE_END} and ask whether to go ahead. Only if they \
+                 agree, call this tool again with the same arguments and force=true."
             ))
         })
     }

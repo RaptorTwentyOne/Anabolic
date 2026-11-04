@@ -42,6 +42,10 @@ pub(super) const PLATFORM: &str = "Windows x64";
 pub(super) const SYSTEM: &str = "Windows";
 pub(super) const EXECUTABLE: &str = "anabolic.exe";
 pub(super) const MAGIC: &[u8] = b"MZ";
+/// Programs that come beside the executable and are updated with it: the
+/// terminal commands, which may be running (an MCP client's server) as an
+/// update comes.
+pub(super) const COMPANIONS: &[&str] = &["anabolic-cli.exe"];
 
 /// The release's installer, for copies it installed.
 pub(super) const PACKAGE: Option<&str> = Some("-windows-x64.msi");
@@ -490,6 +494,72 @@ mod tests {
         }
         clean_up(&exe);
         assert!(!exe.with_extension("exe.old").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A release's zip unpacked over an older copy: the program and the
+    /// terminal program put in place (the latter new beside it), the notices
+    /// that came from us replaced, nothing of someone else's touched.
+    #[test]
+    fn unpacks_the_program_and_its_terminal_program() {
+        let dir = std::env::temp_dir().join(format!("anabolic-unpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("anabolic.exe");
+        std::fs::write(&exe, b"MZ old").unwrap();
+        let notice = "<html> the notices of the old release, long enough to be compared by...";
+        std::fs::write(dir.join("THIRD-PARTY-NOTICES.html"), notice).unwrap();
+        std::fs::write(
+            dir.join("README.md"),
+            "someone else's readme, not ours at all......",
+        )
+        .unwrap();
+        let new_notice =
+            "<html> the notices of the old release, long enough to be compared by... and more";
+        let files = vec![
+            ("anabolic.exe".to_string(), b"MZ new".to_vec()),
+            ("anabolic-cli.exe".to_string(), b"MZ cli".to_vec()),
+            (
+                "THIRD-PARTY-NOTICES.html".to_string(),
+                new_notice.as_bytes().to_vec(),
+            ),
+            (
+                "README.md".to_string(),
+                b"# Anabolic, the release's own readme here....".to_vec(),
+            ),
+            (
+                "LICENSE-MIT".to_string(),
+                b"not there before, so not added".to_vec(),
+            ),
+        ];
+        unpack(&files, &exe).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"MZ new");
+        assert_eq!(
+            std::fs::read(dir.join("anabolic-cli.exe")).unwrap(),
+            b"MZ cli"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("THIRD-PARTY-NOTICES.html")).unwrap(),
+            new_notice
+        );
+        assert!(
+            std::fs::read_to_string(dir.join("README.md"))
+                .unwrap()
+                .starts_with("someone")
+        );
+        assert!(!dir.join("LICENSE-MIT").exists());
+        // Again: the terminal program there now is replaced as well.
+        let files = vec![
+            ("anabolic.exe".to_string(), b"MZ newer".to_vec()),
+            ("anabolic-cli.exe".to_string(), b"MZ cli 2".to_vec()),
+        ];
+        unpack(&files, &exe).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("anabolic-cli.exe")).unwrap(),
+            b"MZ cli 2"
+        );
+        clean_up(&exe);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

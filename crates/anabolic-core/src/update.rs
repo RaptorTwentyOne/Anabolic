@@ -191,8 +191,15 @@ pub fn from_source(exe: &Path) -> bool {
 /// Deletes what the last update left: the old executable it moved aside,
 /// and a download it could not put in place.
 pub fn clean_up(exe: &Path) {
-    let _ = std::fs::remove_file(aside(exe, "old"));
-    let _ = std::fs::remove_file(aside(exe, "new"));
+    for file in std::iter::once(exe.to_path_buf()).chain(companions(exe)) {
+        let _ = std::fs::remove_file(aside(&file, "old"));
+        let _ = std::fs::remove_file(aside(&file, "new"));
+    }
+}
+
+/// The programs updated with `exe`, beside it (whether there yet or not).
+fn companions(exe: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    imp::COMPANIONS.iter().map(|name| exe.with_file_name(name))
 }
 
 /// `anabolic.exe.old` beside `anabolic.exe`; `anabolic.old` beside `anabolic`.
@@ -307,19 +314,37 @@ fn install(release: &Release, exe: &Path, progress: impl FnMut(u64, u64)) -> Res
         return install_package(&data, package, exe);
     }
     let zip = fetch(&release.zip, progress)?;
-    let files = unzip(&zip)?;
-    let new = files
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(imp::EXECUTABLE))
-        .filter(|(_, data)| data.starts_with(imp::MAGIC))
+    unpack(&unzip(&zip)?, exe)
+}
+
+/// Puts a release's files where `exe` is: the executable, the programs that
+/// come with it (there already or not), and the license and notice files
+/// where they lie beside it.
+fn unpack(files: &[(String, Vec<u8>)], exe: &Path) -> Result<(), String> {
+    let program = |name: &str| {
+        files
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, data)| data)
+            .filter(|data| data.starts_with(imp::MAGIC))
+    };
+    let new = program(imp::EXECUTABLE)
         .ok_or_else(|| format!("the release holds no {}", imp::EXECUTABLE))?;
-    replace(exe, &new.1)?;
+    replace(exe, new)?;
+    // The terminal program may be running: stepped aside like the
+    // executable. One left as it was still works, only older.
+    for companion in companions(exe) {
+        let name = companion.file_name().unwrap_or_default().to_string_lossy();
+        if let Some(data) = program(&name) {
+            let _ = replace(&companion, data);
+        }
+    }
     // The others only where they came from us: a README.md of someone
     // else's in the same folder stays as it is.
     if let Some(dir) = exe.parent() {
-        for (name, data) in &files {
+        for (name, data) in files {
             let path = dir.join(name);
-            if path == exe {
+            if path == exe || companions(exe).any(|c| c == path) {
                 continue;
             }
             if let Ok(old) = std::fs::read(&path)
@@ -392,9 +417,23 @@ fn install_package(data: &[u8], package: &Download, exe: &Path) -> Result<(), St
                 exe.display()
             )
         })?;
+        // The terminal program too, which may be serving an MCP client.
+        let moved: Vec<PathBuf> = companions(exe)
+            .filter(|c| c.exists())
+            .filter(|c| {
+                let _ = std::fs::remove_file(aside(c, "old"));
+                rename_patiently(c, &aside(c, "old")).is_ok()
+            })
+            .collect();
         let ran = imp::run_package(&path, &log);
-        if ran.is_err() && !exe.exists() {
-            let _ = std::fs::rename(&old, exe);
+        if ran.is_err() {
+            for (file, old) in std::iter::once((exe.to_path_buf(), old))
+                .chain(moved.into_iter().map(|c| (c.clone(), aside(&c, "old"))))
+            {
+                if !file.exists() {
+                    let _ = std::fs::rename(&old, &file);
+                }
+            }
         }
         drop(held);
         ran

@@ -41,6 +41,8 @@ pub fn show(
             ui.add_space(8.0);
             card(ui, |ui| connect_card(ui, settings, mcp, out));
             ui.add_space(8.0);
+            card(ui, |ui| windowless_card(ui, out));
+            ui.add_space(8.0);
             card(ui, |ui| calls_card(ui, mcp));
         });
 }
@@ -211,6 +213,46 @@ fn connect_card(ui: &mut Ui, settings: &mut McpSettings, mcp: &mut McpState, out
         ui,
         "Streamable HTTP at /mcp; every request carries the key as Authorization: Bearer.",
     );
+}
+
+/// A client that starts Anabolic itself, over standard input and output:
+/// no port, no key, no window.
+fn windowless_card(ui: &mut Ui, out: &mut Vec<UiCmd>) {
+    ui.label(widgets::strong("Without the window", theme::SUBTITLE));
+    note(
+        ui,
+        "A client can also start Anabolic itself, out of sight, for as long as it needs it: no \
+         port and no key, and the server above need not be on. It may do what you allow above, \
+         except setting CPU and memory limits, which last only while Anabolic runs. It runs with \
+         the client's rights: started by a client that is not elevated, it sees what a standard \
+         account sees.",
+    );
+    let Some(program) = crate::mcp::stdio_program() else {
+        note(
+            ui,
+            "anabolic-cli.exe, the program a client starts for this, is not beside this copy of \
+             Anabolic. It comes with the installer and the zip.",
+        );
+        return;
+    };
+    ui.add_space(4.0);
+    let command = crate::mcp::claude_stdio_command(&program);
+    ui.horizontal(|ui| {
+        ui.label("Claude Code");
+        if ui.small_button("Copy").clicked() {
+            out.push(UiCmd::Copy(command.clone()));
+        }
+    });
+    code(ui, &command, true, "");
+    ui.add_space(8.0);
+    let json = crate::mcp::json_stdio_config(&program);
+    ui.horizontal(|ui| {
+        ui.label("Other clients (Claude Desktop, Cursor, VS Code...)");
+        if ui.small_button("Copy").clicked() {
+            out.push(UiCmd::Copy(json.clone()));
+        }
+    });
+    code(ui, &json, true, "");
 }
 
 /// A configuration snippet, with the key hidden unless it is shown above.

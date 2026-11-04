@@ -196,6 +196,9 @@ impl AnabolicMcp {
     /// The process to act on, or the refusal: not allowed, unknown, one
     /// that must never be touched, or a game or anti-cheat program without
     /// force.
+    // The refusal is the tool's whole answer, returned as it is: boxing it
+    // would buy nothing on a path taken once per call.
+    #[allow(clippy::result_large_err)]
     async fn actionable(
         &self,
         kind: McpKind,
@@ -493,6 +496,14 @@ impl AnabolicMcp {
         &self,
         Parameters(args): Parameters<LimitArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if self.shared.headless {
+            return fail(
+                "Not done: a limit lasts only while Anabolic runs, and this Anabolic has no \
+                 window. It was started by a terminal or an MCP client, which can end it at any \
+                 moment and leave the limit on. Limit the process from Anabolic's window, or \
+                 through the server its MCP page runs.",
+            );
+        }
         let limits = anabolic_core::limits::Limits {
             cpu_pct: args.cpu_percent,
             memory: args

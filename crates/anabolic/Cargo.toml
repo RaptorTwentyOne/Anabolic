@@ -15,12 +15,16 @@ crossbeam-channel.workspace = true
 serde.workspace = true
 arc-swap.workspace = true
 # The MCP server (the MCP page): Streamable HTTP on 127.0.0.1, on a tokio
-# runtime of its own, off unless turned on.
-rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
+# runtime of its own, off unless turned on. Without a window (`anabolic mcp`)
+# it also speaks over standard input and output, and the terminal commands
+# call its tools as a client in the same process.
+rmcp = { version = "3.5", features = ["transport-streamable-http-server", "transport-io", "client"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time", "io-std", "signal"] }
 tokio-util = "0.7"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-serde_json = "1"
+# Objects keep the order their fields are written in: tools write the
+# telling ones first, and the terminal commands show them that way.
+serde_json = { version = "1", features = ["preserve_order"] }
 # glow: OpenGL, only for GPUs without a Direct3D 12 driver on Windows, and
 # what draws on Linux (see renderer() in main.rs).
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wgpu_no_default_features"] }
@@ -28,6 +32,9 @@ egui_extras = { version = "0.36", default-features = false }
 # Which window is ours: whether it is on screen, and on Linux which display
 # it is on.
 raw-window-handle = "0.6"
+# The saved settings, read without a window (eframe keeps them as RON); and
+# on Linux eframe's state written while there is none (linux/windowless.rs).
+ron = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 # Direct3D 12 only: see wgpu_options in main.rs.
@@ -39,9 +46,6 @@ eframe = { version = "0.36", default-features = false, features = ["wayland", "x
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 libc = "0.2"
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
-# Without a window on Wayland (see linux/windowless.rs): eframe's saved
-# state written without it.
-ron = "0.12"
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true

@@ -51,6 +51,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 - [On Linux](#on-linux)
 - [Getting started](#getting-started)
 - [Keyboard](#keyboard)
+- [Terminal commands](#terminal-commands)
 - [AI assistants (MCP)](#ai-assistants-mcp)
 - [Games and anti-cheat](#games-and-anti-cheat)
 - [Privacy](#privacy)
@@ -153,6 +154,8 @@ Windows 10 or 11, x64. The installer (`anabolic-…-windows-x64.msi`) puts
 Anabolic in Program Files and the Start menu, for every user of the PC;
 Settings → Apps removes it again, and leaves its settings and history (see
 [Privacy](#privacy)). From the zip, run `anabolic.exe` wherever you put it.
+Beside it comes `anabolic-cli.exe`, the [terminal commands](#terminal-commands);
+the installer puts its folder on PATH.
 
 On an administrator account Windows asks for elevation as it starts, and with
 it Anabolic sees everything: kernel traces, every process' details, disk
@@ -252,6 +255,41 @@ one in KDE's shortcut settings.
 | Shift+F10 | The selected process' menu |
 | F1 | Every shortcut and what the colours mean |
 
+## Terminal commands
+
+What the window shows, in a terminal: for a quick look, or for a script.
+On Windows they come with `anabolic-cli.exe`, beside `anabolic.exe`; on
+Linux they are `anabolic`'s own (`anabolic ps`).
+
+```
+anabolic-cli ps chrome --sort memory    # processes, the busiest first
+anabolic-cli kill 1234 --tree           # end a process and what it started
+anabolic-cli service restart Spooler    # start, stop or restart a service
+anabolic-cli ports                      # who listens, and who can reach it
+anabolic-cli ps --json                  # the same as JSON, for scripts
+```
+
+| Command | |
+|---|---|
+| `overview` | The machine at a glance |
+| `ps [FILTER]` | Processes, the busiest first (`--sort`, `--limit`, `--all`) |
+| `tree [PID]`, `show PID`, `why PID` | Who started what; one process in full; why it will not end |
+| `services [FILTER]`, `service NAME` | Services, and one in full |
+| `ports`, `connections`, `startup` | Listening ports, connections, startup programs |
+| `kill PID`, `suspend PID`, `resume PID`, `priority PID LEVEL` | Act on a process |
+| `service start\|stop\|restart\|pause\|continue NAME`, `service startup NAME TYPE` | Act on a service |
+| `mcp` | The MCP server without the window ([below](#without-the-window)) |
+| `tools`, `call TOOL NAME=VALUE...` | Every MCP tool, and any of them called directly |
+
+Each command answers through the MCP server's own tool, and refuses what
+the tool refuses: Windows' critical processes and Anabolic itself are never
+acted on, and a game or an anti-cheat program only with `--force`, after it
+said what can happen. Commands run with the terminal's rights: from one that
+is not elevated, other users' processes show less and acting on them is
+refused. `--json` prints the tool's answer as it is; the exit code is 0 when
+done, 1 when refused or failed, 2 when the command was not understood.
+`anabolic-cli help` lists everything.
+
 ## AI assistants (MCP)
 
 The MCP page (Ctrl+0) turns on a Model Context Protocol server, so Claude and
@@ -286,6 +324,33 @@ session's compositor) and Anabolic itself are never acted on.
 The server also offers resources (`anabolic://overview`,
 `anabolic://process/{pid}` and others) and prompts for common questions
 ("why is the PC slow", "why does my game stutter", "what happened at 14:32").
+
+### Without the window
+
+A client can also start Anabolic itself, out of sight, for as long as it
+needs it, and speak to it over standard input and output: no port and no
+key, and the window need not run.
+
+```json
+{
+  "mcpServers": {
+    "anabolic": {
+      "command": "C:\\Program Files\\Anabolic\\anabolic-cli.exe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+On Linux the command is the `anabolic` file itself; for Claude Code,
+`claude mcp add anabolic -- anabolic-cli mcp`. The MCP page shows both for
+the copy it runs from. Such a server may do what the MCP page allows
+(`--allow read,end,...` or `--allow all` instead), except setting CPU and
+memory limits, which last only while Anabolic runs. It runs with the
+client's rights. `anabolic-cli mcp --http` serves Streamable HTTP like the
+page's server instead, until Ctrl+C. The [Dockerfile](Dockerfile) builds the
+same server into an image, for MCP directories that try servers in a
+container (where it sees the container, not the machine).
 
 ## Games and anti-cheat
 
@@ -341,8 +406,9 @@ loaded as the program starts.
 cargo build --release
 ```
 
-The result is `target\release\anabolic.exe` or `target/release/anabolic`, a
-single executable with its fonts and icons embedded. `cargo test` runs the
+The result is `target\release\anabolic.exe` (with `anabolic-cli.exe`, the
+terminal commands) or `target/release/anabolic`, a single executable with
+its fonts and icons embedded. `cargo test` runs the
 tests; the few that need administrator rights (on Linux, full access) skip
 themselves without them.
 

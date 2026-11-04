@@ -110,6 +110,9 @@ fn risks(snap: &Snapshot, p: &ProcessInfo, doing: &str) -> String {
 impl AnabolicMcp {
     /// The live process, or the refusal: not allowed, unknown PID, or not
     /// confirmed yet.
+    // The refusal is the tool's whole answer, returned as it is: boxing it
+    // would buy nothing on a path taken once per call.
+    #[allow(clippy::result_large_err)]
     async fn opened(
         &self,
         kind: McpKind,

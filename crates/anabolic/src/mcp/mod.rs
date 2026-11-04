@@ -21,6 +21,7 @@ mod guide;
 mod handler;
 mod json;
 mod server;
+mod stdio;
 mod tools_actions;
 mod tools_activity;
 mod tools_inspect;
@@ -44,7 +45,9 @@ use eframe::egui;
 
 use crate::settings::{McpKind, McpSettings};
 
+pub use handler::{AGREE_END, AGREE_START, AnabolicMcp};
 pub use server::McpServer;
+pub use stdio::serve_stdio;
 
 /// Everything the server's threads share; built by the UI.
 pub struct Shared {
@@ -63,6 +66,9 @@ pub struct Shared {
     pub elevated: bool,
     /// Activity recordings made for MCP clients (server threads only).
     pub recordings: Mutex<tools_activity::Recordings>,
+    /// Serving without a window (`anabolic mcp`, the terminal commands):
+    /// whoever started this process may end it at any moment.
+    pub headless: bool,
 }
 
 impl Shared {
@@ -165,6 +171,34 @@ pub fn claude_command(port: u16, token: &str) -> String {
     )
 }
 
+/// The program a client starts to have the server without the window
+/// (`<program> mcp`): anabolic-cli.exe beside this one on Windows, this
+/// program itself on Linux. None when it is not there (a copy from before
+/// 0.6, or one built without it).
+pub fn stdio_program() -> Option<PathBuf> {
+    let exe = anabolic_core::update::this_exe()?;
+    #[cfg(windows)]
+    let program = exe.with_file_name("anabolic-cli.exe");
+    #[cfg(not(windows))]
+    let program = exe;
+    program.exists().then_some(program)
+}
+
+/// The command that adds the windowless server to Claude Code.
+pub fn claude_stdio_command(program: &std::path::Path) -> String {
+    format!("claude mcp add anabolic -- \"{}\" mcp", program.display())
+}
+
+/// The windowless server for clients configured with JSON.
+pub fn json_stdio_config(program: &std::path::Path) -> String {
+    // A path as JSON writes it (backslashes doubled).
+    let command = serde_json::to_string(&program.display().to_string()).unwrap_or_default();
+    format!(
+        "{{\n  \"mcpServers\": {{\n    \"anabolic\": {{\n      \"command\": {command},\n      \
+         \"args\": [\"mcp\"]\n    }}\n  }}\n}}"
+    )
+}
+
 /// The same server for clients configured with JSON (Claude Desktop,
 /// Cursor, VS Code and others that speak Streamable HTTP).
 pub fn json_config(port: u16, token: &str) -> String {
@@ -173,4 +207,17 @@ pub fn json_config(port: u16, token: &str) -> String {
          \"http://127.0.0.1:{port}/mcp\",\n      \"headers\": {{ \"Authorization\": \"Bearer \
          {token}\" }}\n    }}\n  }}\n}}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_windowless_configuration_is_json_with_the_path_as_it_is() {
+        let path = std::path::Path::new(r"C:\Program Files\Anabolic\anabolic-cli.exe");
+        let config: serde_json::Value =
+            serde_json::from_str(&super::json_stdio_config(path)).unwrap();
+        let server = &config["mcpServers"]["anabolic"];
+        assert_eq!(server["command"], path.display().to_string());
+        assert_eq!(server["args"], serde_json::json!(["mcp"]));
+    }
 }

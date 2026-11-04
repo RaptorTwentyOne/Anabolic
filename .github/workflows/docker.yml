@@ -1,0 +1,32 @@
+name: Docker
+
+# The image MCP directories build from the Dockerfile: it has to build, and
+# the server in it has to answer a client. Only when the image's recipe
+# changes, or by hand: CI's own tests try the program itself.
+on:
+  push:
+    paths: ["Dockerfile", ".dockerignore", ".github/workflows/docker.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t anabolic .
+      - name: The server answers over standard input and output
+        run: |
+          {
+            echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}'
+            echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+            echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+            echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_system_overview","arguments":{}}}'
+            sleep 5
+          } | timeout 60 docker run -i --rm anabolic > answers.jsonl
+          cat answers.jsonl | cut -c1-300
+          jq -e 'select(.id == 1) | .result.serverInfo.name == "anabolic"' answers.jsonl
+          jq -e 'select(.id == 2) | (.result.tools | length) > 30' answers.jsonl
+          jq -e 'select(.id == 3) | .result.isError != true' answers.jsonl
