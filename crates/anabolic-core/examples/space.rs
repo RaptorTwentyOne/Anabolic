@@ -48,13 +48,13 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let root = tree.nodes[ROOT as usize];
+    let root = tree.node(ROOT);
     println!(
         "{} by {} in {:.2?}: {} nodes, {} files, {:.2} GB ({:.2} GB on disk), {} unreadable",
         tree.path.display(),
         tree.method.label(),
         tree.took,
-        tree.nodes.len(),
+        tree.len(),
         root.files,
         root.size as f64 / 1e9,
         root.alloc as f64 / 1e9,
@@ -68,15 +68,15 @@ fn main() {
     );
     if std::env::var_os("SPACE_DRILL").is_some() {
         // The files whose space on disk is furthest above their size.
-        let mut odd: Vec<u32> = (0..tree.nodes.len() as u32)
-            .filter(|&i| !tree.nodes[i as usize].is_dir())
+        let mut odd: Vec<u32> = (0..tree.len() as u32)
+            .filter(|&i| !tree.node(i).is_dir())
             .collect();
         odd.sort_unstable_by_key(|&i| {
-            let n = tree.nodes[i as usize];
+            let n = tree.node(i);
             std::cmp::Reverse(n.alloc.saturating_sub(n.size))
         });
         for &i in odd.iter().take(15) {
-            let n = tree.nodes[i as usize];
+            let n = tree.node(i);
             println!(
                 "  odd: size {:.3} GB alloc {:.3} GB flags {:#x} {}",
                 n.size as f64 / 1e9,
@@ -90,7 +90,7 @@ fn main() {
         println!("note: {note}");
     }
     for c in root.children().take(12) {
-        let n = tree.nodes[c as usize];
+        let n = tree.node(c);
         println!(
             "  {:>10.2} GB  {:>10.2} GB on disk  {}",
             n.size as f64 / 1e9,
@@ -114,7 +114,7 @@ fn main() {
     ];
     let color = |c: &treemap::Cell| -> [u8; 3] {
         match c.kind {
-            treemap::Kind::File => palette[tree.nodes[c.node as usize].ext as usize % 6],
+            treemap::Kind::File => palette[tree.node(c.node).ext as usize % 6],
             _ => [110, 110, 110],
         }
     };
