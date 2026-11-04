@@ -14,6 +14,7 @@
 //! a frame costs the same for ten files and ten million.
 
 mod clean;
+mod compare;
 mod delete;
 mod dupes;
 mod files;
@@ -109,6 +110,8 @@ pub struct Data {
     pub reveal: Option<u32>,
     /// Files with the same contents, once looked for.
     pub dupes: Option<Vec<space::dupes::Group>>,
+    /// When the scan ended, Unix seconds: its outline's name.
+    pub scanned_at: i64,
 }
 
 impl Data {
@@ -127,6 +130,7 @@ impl Data {
             ask_clean: None,
             reveal: None,
             dupes: None,
+            scanned_at: s.scanned_at,
         }
     }
 
@@ -157,10 +161,19 @@ struct Scanned {
     colors: Vec<[u8; 3]>,
     largest: Vec<u32>,
     clean: Vec<Suggestion>,
+    scanned_at: i64,
 }
 
-/// The work that follows a scan, done on its thread too.
-fn prepare(tree: Tree) -> Scanned {
+/// The work that follows a scan, done on its thread too: the extensions'
+/// colours, the largest files, what can be cleaned up, and the outline
+/// kept to compare a later scan with.
+fn prepare(tree: Tree, keep: bool) -> Scanned {
+    let scanned_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    if keep && let Some(dir) = compare::outlines_dir() {
+        let _ = space::outline::save(&dir, &space::outline::outline(&tree, scanned_at));
+    }
     let exts = tree.by_extension();
     let mut colors = vec![OTHER; tree.ext_count()];
     for (rank, e) in exts.iter().take(PALETTE.len()).enumerate() {
@@ -174,6 +187,7 @@ fn prepare(tree: Tree) -> Scanned {
         colors,
         largest,
         clean,
+        scanned_at,
     }
 }
 
@@ -201,6 +215,9 @@ pub struct SpacePage {
     pub start: Option<PathBuf>,
     pub deleter: delete::Deleter,
     dupes: dupes::Dupes,
+    compare: compare::Compare,
+    /// The setting that keeps outlines, as the last frame saw it.
+    keep: bool,
     /// The folder picker, while it is open.
     picking: Option<Receiver<Option<PathBuf>>>,
     /// A CSV being written.
@@ -216,11 +233,11 @@ impl SpacePage {
         }
         let progress = Arc::new(Progress::default());
         let (tx, rx) = bounded(1);
-        let (p, ctx, at) = (progress.clone(), ctx.clone(), path.clone());
+        let (p, ctx, at, keep) = (progress.clone(), ctx.clone(), path.clone(), self.keep);
         let spawned = std::thread::Builder::new()
             .name("space-scan".into())
             .spawn(move || {
-                let result = space::scan(&at, &p).map(prepare);
+                let result = space::scan(&at, &p).map(|t| prepare(t, keep));
                 let _ = tx.send(result);
                 ctx.request_repaint();
             });
@@ -273,6 +290,7 @@ impl SpacePage {
                 self.map.reset();
                 self.dupes.stop();
                 self.dupes = dupes::Dupes::default();
+                self.compare = compare::Compare::default();
                 self.scanning = None;
             }
             Ok(Err(e)) => {
@@ -300,6 +318,7 @@ pub fn show(
     out: &mut Vec<UiCmd>,
 ) {
     let ctx = ui.ctx().clone();
+    page.keep = settings.keep_scans;
     if let Some(path) = page.start.take() {
         page.begin(path, &ctx);
     }
@@ -381,17 +400,22 @@ pub fn show(
                 .layout(Layout::top_down(Align::Min)),
         );
         ui.set_clip_rect(area);
-        if page.lists.tab == lists::Tab::Duplicates {
-            lists::tabs(&mut ui, &mut page.lists, data);
-            dupes::show(
-                &mut ui,
-                &mut page.dupes,
-                data,
-                &mut settings.duplicates_from_mb,
-                out,
-            );
-        } else {
-            lists::show(&mut ui, &mut page.lists, data, out);
+        match page.lists.tab {
+            lists::Tab::Duplicates => {
+                lists::tabs(&mut ui, &mut page.lists, data);
+                dupes::show(
+                    &mut ui,
+                    &mut page.dupes,
+                    data,
+                    &mut settings.duplicates_from_mb,
+                    out,
+                );
+            }
+            lists::Tab::Compare => {
+                lists::tabs(&mut ui, &mut page.lists, data);
+                compare::show(&mut ui, &mut page.compare, data, &mut settings.keep_scans);
+            }
+            _ => lists::show(&mut ui, &mut page.lists, data, out),
         }
     }
     let (handle, drag) = ui.allocate_exact_size(egui::vec2(width, 7.0), Sense::drag());
@@ -437,6 +461,10 @@ pub fn show(
             lists::Tab::Duplicates => {
                 let groups = data.dupes.clone().unwrap_or_default();
                 files::save("duplicates", tree, move |t| files::dupes(t, &groups))
+            }
+            lists::Tab::Compare => {
+                let diff = page.compare.diff().unwrap_or_default();
+                files::save("changes", tree, move |_| files::changes(&diff))
             }
         });
     }

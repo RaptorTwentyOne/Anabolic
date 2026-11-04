@@ -197,6 +197,32 @@ pub fn dupes(tree: &Tree, groups: &[anabolic_core::space::dupes::Group]) -> Tabl
     (vec!["Set", "File", "Size"], rows)
 }
 
+/// Every folder of a comparison, with its path from the scanned folder.
+pub fn changes(diff: &[anabolic_core::space::outline::Diff]) -> Table {
+    let mut rows = Vec::new();
+    let mut stack: Vec<(u32, String)> = vec![(0, String::new())];
+    while let Some((i, path)) = stack.pop() {
+        let d = &diff[i as usize];
+        let size = |v: Option<u64>| v.map_or(String::new(), |s| s.to_string());
+        rows.push(vec![
+            if i == 0 { d.name.clone() } else { path.clone() },
+            size(d.then),
+            size(d.now),
+            d.change().to_string(),
+        ]);
+        for &c in d.children.iter().rev() {
+            let name = &diff[c as usize].name;
+            let child = if path.is_empty() {
+                name.clone()
+            } else {
+                format!("{path}/{name}")
+            };
+            stack.push((c, child));
+        }
+    }
+    (vec!["Folder", "Then", "Now", "Change"], rows)
+}
+
 /// Writes `make`'s table as CSV into Anabolic's exports folder, on a
 /// thread of its own; answers the file written.
 pub fn save<F>(name: &'static str, tree: Arc<Tree>, make: F) -> Receiver<Result<PathBuf, String>>
