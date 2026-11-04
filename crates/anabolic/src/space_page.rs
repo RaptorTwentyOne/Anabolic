@@ -14,6 +14,7 @@
 //! a frame costs the same for ten files and ten million.
 
 mod delete;
+mod files;
 mod lists;
 mod map;
 
@@ -25,8 +26,32 @@ use anabolic_core::space::{self, ExtTotal, Phase, Progress, ROOT, Target, Tree};
 use crossbeam_channel::{Receiver, bounded};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense, Ui};
 
+use serde::{Deserialize, Serialize};
+
 use crate::proc_table::UiCmd;
 use crate::{fmt, theme, widgets};
+
+/// What the page keeps between runs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpaceSettings {
+    /// Flat pieces instead of cushions.
+    pub flat: bool,
+    /// Duplicates are looked for among files of at least this many MB.
+    pub duplicates_from_mb: u32,
+    /// A summary of each scan is kept, to compare with later ones.
+    pub keep_scans: bool,
+}
+
+impl Default for SpaceSettings {
+    fn default() -> Self {
+        SpaceSettings {
+            flat: false,
+            duplicates_from_mb: 1,
+            keep_scans: true,
+        }
+    }
+}
 
 /// The colours of the extensions that take the most room, in that order.
 const PALETTE: [[u8; 3]; 14] = [
@@ -154,6 +179,12 @@ pub struct SpacePage {
     /// From `--space PATH`: scan it when the page first shows.
     pub start: Option<PathBuf>,
     pub deleter: delete::Deleter,
+    /// The folder picker, while it is open.
+    picking: Option<Receiver<Option<PathBuf>>>,
+    /// A CSV being written.
+    export: Option<Receiver<Result<PathBuf, String>>>,
+    /// The last CSV written, or why it was not.
+    exported: Option<Result<PathBuf, String>>,
 }
 
 impl SpacePage {
@@ -237,12 +268,36 @@ impl SpacePage {
     }
 }
 
-pub fn show(ui: &mut Ui, page: &mut SpacePage, elevated: bool, out: &mut Vec<UiCmd>) {
+pub fn show(
+    ui: &mut Ui,
+    page: &mut SpacePage,
+    settings: &mut SpaceSettings,
+    elevated: bool,
+    out: &mut Vec<UiCmd>,
+) {
     let ctx = ui.ctx().clone();
     if let Some(path) = page.start.take() {
         page.begin(path, &ctx);
     }
     page.poll(&ctx);
+    if let Some(rx) = &page.picking
+        && let Ok(picked) = rx.try_recv()
+    {
+        page.picking = None;
+        if let Some(path) = picked {
+            page.folder = path.to_string_lossy().into_owned();
+            page.begin(path, &ctx);
+        }
+    }
+    if let Some(rx) = &page.export {
+        match rx.try_recv() {
+            Ok(done) => {
+                page.exported = Some(done);
+                page.export = None;
+            }
+            Err(_) => ctx.request_repaint_after(Duration::from_millis(100)),
+        }
+    }
 
     if let Some(s) = &page.scanning {
         progress(ui, s);
@@ -260,6 +315,23 @@ pub fn show(ui: &mut Ui, page: &mut SpacePage, elevated: bool, out: &mut Vec<UiC
     }
     summary(ui, page, &ctx);
     page.deleter.status(ui);
+    match &page.exported {
+        Some(Ok(path)) => {
+            let path = path.clone();
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Saved {}", path.display())).color(theme::TEXT_WEAK),
+                );
+                if widgets::link(ui, "Show it").clicked() {
+                    out.push(UiCmd::OpenLocation(path.to_string_lossy().into_owned()));
+                }
+            });
+        }
+        Some(Err(e)) => {
+            ui.label(RichText::new(format!("Not saved: {e}")).color(theme::BAD));
+        }
+        None => {}
+    }
     ui.add_space(4.0);
     let data = page.data.as_mut().expect("checked above");
     page.deleter.frame(&ctx, data);
@@ -279,10 +351,29 @@ pub fn show(ui: &mut Ui, page: &mut SpacePage, elevated: bool, out: &mut Vec<UiC
         .min_size(90.0)
         .frame(egui::Frame::NONE)
         .show(ui, |ui| lists::show(ui, &mut page.lists, data, out));
+    page.map.flat = settings.flat;
     egui::CentralPanel::no_frame().show(ui, |ui| {
         ui.add_space(4.0);
         map::show(ui, &mut page.map, &mut page.lists, data, out);
     });
+    settings.flat = page.map.flat;
+    if let Some(tab) = page.lists.export.take()
+        && page.export.is_none()
+    {
+        let tree = data.tree.clone();
+        page.exported = None;
+        page.export = Some(match tab {
+            lists::Tab::Folders => files::save("folders", tree, files::folders),
+            lists::Tab::Types => {
+                let exts = data.exts.clone();
+                files::save("types", tree, move |t| files::types(t, &exts))
+            }
+            lists::Tab::Largest => {
+                let largest = data.largest.clone();
+                files::save("largest", tree, move |t| files::largest(t, &largest))
+            }
+        });
+    }
     if let Some((n, recycle)) = data.ask_delete.take() {
         page.deleter.ask(data, n, recycle);
     }
@@ -379,6 +470,12 @@ fn chooser(ui: &mut Ui, page: &mut SpacePage, elevated: bool, ctx: &egui::Contex
         let go = ui
             .add_enabled(!page.folder.trim().is_empty(), egui::Button::new("Scan"))
             .clicked();
+        if ui
+            .add_enabled(page.picking.is_none(), egui::Button::new("Choose…"))
+            .clicked()
+        {
+            page.picking = Some(files::pick_folder(page.deleter.owner));
+        }
         if (go || enter) && !page.folder.trim().is_empty() {
             let path = PathBuf::from(page.folder.trim());
             page.begin(path, ctx);

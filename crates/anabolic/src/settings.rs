@@ -558,6 +558,8 @@ pub struct Settings {
     /// antivirus takes reading it for credential theft.
     pub dump_sign_in_secrets: bool,
     pub game: crate::gamemode::GameModeSettings,
+    /// The Disk space page's choices.
+    pub space: crate::space_page::SpaceSettings,
     /// Programs Anabolic cut off the network (Windows Firewall rules), by
     /// path.
     pub blocked: Vec<String>,
@@ -623,6 +625,7 @@ impl Default for Settings {
             watch_stutters: false,
             dump_sign_in_secrets: false,
             game: Default::default(),
+            space: Default::default(),
             blocked: Vec::new(),
             updates: Updates::default(),
             last_version: None,

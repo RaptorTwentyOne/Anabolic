@@ -29,6 +29,8 @@ pub enum Tab {
 #[derive(Default)]
 pub struct Lists {
     tab: Tab,
+    /// "Save as CSV" was pressed on this tab.
+    pub export: Option<Tab>,
     open: HashSet<u32>,
     /// The folder tree's rows: (node, depth).
     rows: Vec<(u32, u16)>,
@@ -215,6 +217,15 @@ pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd
                 lists.tab = tab;
             }
         }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui
+                .small_button("Save as CSV")
+                .on_hover_text("Into Anabolic's exports folder")
+                .clicked()
+            {
+                lists.export = Some(lists.tab);
+            }
+        });
         if let Some(e) = data.highlight {
             ui.add_space(12.0);
             let name = match data.tree.ext_name(e) {

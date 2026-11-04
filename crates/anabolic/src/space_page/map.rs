@@ -172,7 +172,7 @@ pub struct MapView {
     /// The picture on screen and what it was drawn for.
     shown: Option<(Ask, Arc<Map>)>,
     texture: Option<egui::TextureHandle>,
-    flat: bool,
+    pub flat: bool,
     /// What the open right-click menu is about.
     menu: Option<u32>,
     /// The map's size in pixels and since when, to wait out a resize.

@@ -1646,7 +1646,13 @@ impl eframe::App for App {
             Tab::Space => {
                 self.space.deleter.owner = window::handle(frame);
                 egui::CentralPanel::default_margins().show(ui, |ui| {
-                    crate::space_page::show(ui, &mut self.space, self.elevated, &mut cmds);
+                    crate::space_page::show(
+                        ui,
+                        &mut self.space,
+                        &mut self.settings.space,
+                        self.elevated,
+                        &mut cmds,
+                    );
                 });
             }
             Tab::Activity => {
