@@ -152,6 +152,20 @@ pub fn set_current_thread_priority(priority: ThreadPriority) {
     let wanted = match priority {
         ThreadPriority::BelowNormal => current + 5,
         ThreadPriority::AboveNormal => current - 2,
+        ThreadPriority::Background => {
+            // Its disk reads wait for everyone else's too.
+            const IOPRIO_WHO_PROCESS: i32 = 1;
+            const IOPRIO_CLASS_IDLE: i32 = 3;
+            unsafe {
+                libc::syscall(
+                    libc::SYS_ioprio_set,
+                    IOPRIO_WHO_PROCESS,
+                    tid,
+                    IOPRIO_CLASS_IDLE << 13,
+                );
+            }
+            19
+        }
     };
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, tid, wanted.clamp(-20, 19));

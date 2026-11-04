@@ -19,6 +19,10 @@ pub enum ThreadPriority {
     BelowNormal,
     /// The collector and the traces, which must keep up under load.
     AboveNormal,
+    /// Long reading the user did not wait for (finding duplicates): the
+    /// lowest CPU, disk and memory priority, so what the user does goes
+    /// first.
+    Background,
 }
 
 #[derive(Clone, Debug)]

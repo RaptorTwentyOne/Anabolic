@@ -24,12 +24,13 @@ pub enum Tab {
     Folders,
     Types,
     Largest,
+    Duplicates,
     Clean,
 }
 
 #[derive(Default)]
 pub struct Lists {
-    tab: Tab,
+    pub tab: Tab,
     /// "Save as CSV" was pressed on this tab.
     pub export: Option<Tab>,
     open: HashSet<u32>,
@@ -210,11 +211,25 @@ pub fn node_menu(ui: &mut Ui, data: &mut Data, n: u32, out: &mut Vec<UiCmd>) {
 }
 
 pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>) {
+    tabs(ui, lists, data);
+    match lists.tab {
+        Tab::Folders => folders(ui, lists, data, out),
+        Tab::Types => types(ui, data),
+        Tab::Largest => largest(ui, lists, data, out),
+        Tab::Clean => super::clean::show(ui, data, &mut lists.open_clean),
+        // Drawn by the page, which keeps the search.
+        Tab::Duplicates => {}
+    }
+}
+
+/// The row of tabs, with the CSV button and the highlight's note.
+pub fn tabs(ui: &mut Ui, lists: &mut Lists, data: &mut Data) {
     ui.horizontal(|ui| {
         for (tab, label) in [
             (Tab::Folders, "Folders"),
             (Tab::Types, "File types"),
             (Tab::Largest, "Largest files"),
+            (Tab::Duplicates, "Duplicates"),
             (Tab::Clean, "Clean up"),
         ] {
             if ui.selectable_label(lists.tab == tab, label).clicked() {
@@ -247,12 +262,6 @@ pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd
         }
     });
     ui.add_space(2.0);
-    match lists.tab {
-        Tab::Folders => folders(ui, lists, data, out),
-        Tab::Types => types(ui, data),
-        Tab::Largest => largest(ui, lists, data, out),
-        Tab::Clean => super::clean::show(ui, data, &mut lists.open_clean),
-    }
 }
 
 fn folders(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>) {

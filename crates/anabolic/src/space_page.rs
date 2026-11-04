@@ -15,6 +15,7 @@
 
 mod clean;
 mod delete;
+mod dupes;
 mod files;
 mod lists;
 mod map;
@@ -43,6 +44,8 @@ pub struct SpaceSettings {
     pub duplicates_from_mb: u32,
     /// A summary of each scan is kept, to compare with later ones.
     pub keep_scans: bool,
+    /// The share of the page's height the lists take above the map.
+    pub split: f32,
 }
 
 impl Default for SpaceSettings {
@@ -51,6 +54,7 @@ impl Default for SpaceSettings {
             flat: false,
             duplicates_from_mb: 1,
             keep_scans: true,
+            split: 0.42,
         }
     }
 }
@@ -103,6 +107,8 @@ pub struct Data {
     pub ask_clean: Option<usize>,
     /// Open the folder list down to this node.
     pub reveal: Option<u32>,
+    /// Files with the same contents, once looked for.
+    pub dupes: Option<Vec<space::dupes::Group>>,
 }
 
 impl Data {
@@ -120,6 +126,7 @@ impl Data {
             clean: s.clean,
             ask_clean: None,
             reveal: None,
+            dupes: None,
         }
     }
 
@@ -193,6 +200,7 @@ pub struct SpacePage {
     /// From `--space PATH`: scan it when the page first shows.
     pub start: Option<PathBuf>,
     pub deleter: delete::Deleter,
+    dupes: dupes::Dupes,
     /// The folder picker, while it is open.
     picking: Option<Receiver<Option<PathBuf>>>,
     /// A CSV being written.
@@ -263,6 +271,8 @@ impl SpacePage {
                 }
                 self.lists.reset();
                 self.map.reset();
+                self.dupes.stop();
+                self.dupes = dupes::Dupes::default();
                 self.scanning = None;
             }
             Ok(Err(e)) => {
@@ -358,18 +368,52 @@ pub fn show(
             data.ask_delete = Some((n, !shift));
         }
     }
-    let height = ui.available_height();
-    egui::Panel::top("space-lists")
-        .resizable(true)
-        .default_size((height * 0.42).max(120.0))
-        .min_size(90.0)
-        .frame(egui::Frame::NONE)
-        .show(ui, |ui| lists::show(ui, &mut page.lists, data, out));
+    // The lists above, the map below, and between them a handle that moves
+    // the line; the lists keep their height whatever a tab shows.
+    let total = ui.available_height();
+    let width = ui.available_width();
+    let list_height = (total * settings.split).clamp(90.0, (total - 160.0).max(90.0));
+    let (area, _) = ui.allocate_exact_size(egui::vec2(width, list_height), Sense::hover());
+    {
+        let mut ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(area)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        ui.set_clip_rect(area);
+        if page.lists.tab == lists::Tab::Duplicates {
+            lists::tabs(&mut ui, &mut page.lists, data);
+            dupes::show(
+                &mut ui,
+                &mut page.dupes,
+                data,
+                &mut settings.duplicates_from_mb,
+                out,
+            );
+        } else {
+            lists::show(&mut ui, &mut page.lists, data, out);
+        }
+    }
+    let (handle, drag) = ui.allocate_exact_size(egui::vec2(width, 7.0), Sense::drag());
+    let line = if drag.hovered() || drag.dragged() {
+        theme::BORDER_STRONG
+    } else {
+        theme::BORDER
+    };
+    ui.painter().hline(
+        handle.x_range(),
+        handle.center().y,
+        egui::Stroke::new(1.0, line),
+    );
+    if drag.hovered() || drag.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if drag.dragged() && total > 0.0 {
+        settings.split = ((list_height + drag.drag_delta().y) / total).clamp(0.12, 0.85);
+    }
+    page.dupes.poll(&ctx, data);
     page.map.flat = settings.flat;
-    egui::CentralPanel::no_frame().show(ui, |ui| {
-        ui.add_space(4.0);
-        map::show(ui, &mut page.map, &mut page.lists, data, out);
-    });
+    map::show(ui, &mut page.map, &mut page.lists, data, out);
     settings.flat = page.map.flat;
     if let Some(tab) = page.lists.export.take()
         && page.export.is_none()
@@ -389,6 +433,10 @@ pub fn show(
             lists::Tab::Clean => {
                 let clean = data.clean.clone();
                 files::save("cleanup", tree, move |t| files::clean(t, &clean))
+            }
+            lists::Tab::Duplicates => {
+                let groups = data.dupes.clone().unwrap_or_default();
+                files::save("duplicates", tree, move |t| files::dupes(t, &groups))
             }
         });
     }

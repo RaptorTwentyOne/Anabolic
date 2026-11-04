@@ -183,6 +183,20 @@ pub fn clean(tree: &Tree, found: &[anabolic_core::space::clean::Suggestion]) -> 
     (vec!["Clean-up", "How safe", "Path", "Size"], rows)
 }
 
+pub fn dupes(tree: &Tree, groups: &[anabolic_core::space::dupes::Group]) -> Table {
+    let mut rows = Vec::new();
+    for (g, group) in groups.iter().enumerate() {
+        for &n in group.nodes.iter().filter(|&&n| !tree.is_gone(n)) {
+            rows.push(vec![
+                (g + 1).to_string(),
+                tree.path_of(n).to_string_lossy().into_owned(),
+                group.size.to_string(),
+            ]);
+        }
+    }
+    (vec!["Set", "File", "Size"], rows)
+}
+
 /// Writes `make`'s table as CSV into Anabolic's exports folder, on a
 /// thread of its own; answers the file written.
 pub fn save<F>(name: &'static str, tree: Arc<Tree>, make: F) -> Receiver<Result<PathBuf, String>>

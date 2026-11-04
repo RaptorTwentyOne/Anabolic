@@ -212,6 +212,10 @@ pub fn set_current_thread_priority(priority: ThreadPriority) {
     let priority = match priority {
         ThreadPriority::BelowNormal => THREAD_PRIORITY_BELOW_NORMAL,
         ThreadPriority::AboveNormal => THREAD_PRIORITY_ABOVE_NORMAL,
+        // Lowers the thread's disk and memory priority with its CPU's.
+        ThreadPriority::Background => {
+            windows::Win32::System::Threading::THREAD_MODE_BACKGROUND_BEGIN
+        }
     };
     unsafe {
         let _ = SetThreadPriority(GetCurrentThread(), priority);
