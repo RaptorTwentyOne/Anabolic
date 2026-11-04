@@ -411,6 +411,11 @@ impl McpKind {
             .collect()
     }
 
+    /// Its name in such a list (`--allow end`).
+    pub fn flag(self) -> String {
+        format!("{self:?}").to_lowercase()
+    }
+
     pub const ALL: [McpKind; 10] = [
         McpKind::Read,
         McpKind::Trace,

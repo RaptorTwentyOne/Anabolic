@@ -81,6 +81,16 @@ impl Shared {
     pub fn allowed(&self, kind: McpKind) -> Result<(), String> {
         if self.settings.load().allows(kind) {
             Ok(())
+        } else if self.headless {
+            // Started by a client or in a container: no page to point at.
+            Err(format!(
+                "Not allowed: \"{}\" is not among what this server was started to allow. Tell \
+                 the user what you wanted to do; they can start it with --allow {} (or ALLOW={} \
+                 in a container).",
+                kind.label(),
+                kind.flag(),
+                kind.flag()
+            ))
         } else {
             Err(format!(
                 "Not allowed: \"{}\" is off on Anabolic's MCP page. Tell the user what you \
