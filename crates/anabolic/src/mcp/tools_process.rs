@@ -440,9 +440,14 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Processes whose handles, private memory or threads keep growing in a \
-                       straight line (sampled every minute for two hours, flagged after ten \
-                       minutes or more): the usual sign of a leak.",
+        description = "Processes whose handles (open files on Linux), private memory or threads \
+                       keep growing in a straight line: Anabolic samples every process each minute \
+                       over the last two hours and lists one after ten minutes or more of steady \
+                       growth, with the rate per hour, where it started and where it is, and a \
+                       sentence saying so. The usual sign of a leak. Empty until Anabolic has run \
+                       for ten minutes. Use it when memory or handles creep up over time; \
+                       get_memory shows who holds the most memory now, get_process one process' \
+                       counters.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

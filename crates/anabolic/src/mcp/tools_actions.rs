@@ -28,7 +28,7 @@ use crate::settings::McpKind;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EndArgs {
-    /// The process ID.
+    /// The process ID (list_processes gives it).
     pub pid: u32,
     /// Also every process under it (they end first).
     #[serde(default)]
@@ -40,7 +40,7 @@ pub struct EndArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PidForce {
-    /// The process ID.
+    /// The process ID (list_processes gives it).
     pub pid: u32,
     /// True only after the user agreed to the risk this tool described.
     #[serde(default)]
@@ -97,18 +97,20 @@ pub struct LimitArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ServiceControl {
-    /// The service's name (as in `sc query`).
+    /// The service's name, as list_services gives it.
     pub name: String,
-    /// start, stop, restart, pause or continue.
+    /// start, stop, restart, pause or continue (pause and continue on
+    /// Windows only).
     pub action: String,
     /// For stop and restart: also stop the running services that depend on
-    /// it (otherwise Windows refuses while any runs).
+    /// it (otherwise stopping it is refused while any runs).
     #[serde(default)]
     pub with_dependents: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ServiceStartup {
+    /// The service's name, as list_services gives it.
     pub name: String,
     /// automatic, automatic_delayed, manual or disabled.
     pub startup: String,
@@ -362,7 +364,13 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Resumes a suspended process.",
+        description = "Resumes a suspended process: its threads run again (on Windows one level of \
+                       suspension, as suspend_process applies it; on Linux SIGCONT). A process that \
+                       is not suspended is left as it is; get_process shows whether one is. It \
+                       undoes suspend_process. Critical processes and Anabolic are refused; a game \
+                       or anti-cheat program needs force=true after the user agreed. Another user's \
+                       or an elevated process needs Anabolic running as administrator (on Linux, \
+                       its full access).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -705,8 +713,7 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Removes the firewall rules block_program (or the Network page) made for \
-                       a program.",
+        description = text::UNBLOCK_PROGRAM,
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -854,18 +861,32 @@ mod text {
      refused; a game or anti-cheat program needs force=true after the user agreed. Another \
      user's process needs Anabolic's full access (cap_sys_nice).";
     #[cfg(windows)]
-    pub const CONTROL_SERVICE: &str = "Starts, stops, restarts, pauses or continues a Windows service. Stopping \
-                       one that others depend on fails unless with_dependents=true.";
+    pub const CONTROL_SERVICE: &str = "Starts, stops, restarts, pauses or continues a Windows service and waits up \
+                       to 30 seconds for it to get there. Stopping one that others depend on fails \
+                       and names them, unless with_dependents=true stops those too. It changes what \
+                       runs now, not how the service starts (set_service_startup); get_service \
+                       shows its state and dependents. Needs Anabolic running as administrator.";
     #[cfg(target_os = "linux")]
-    pub const CONTROL_SERVICE: &str = "Starts, stops or restarts a systemd service (systemd services cannot be paused). \
-     Stopping one that others depend on fails unless with_dependents=true.";
+    pub const CONTROL_SERVICE: &str = "Starts, stops or restarts a systemd service (systemd services cannot be paused) and \
+     waits until systemd has done it. Stopping one that others depend on fails and names \
+     them, unless with_dependents=true stops those too. It changes what runs now, not how the \
+     service starts (set_service_startup); get_service shows its state and dependents. Unless \
+     Anabolic runs as root, pkexec asks for an administrator's password on the desktop, and \
+     the call fails when that dialog is dismissed or cannot be shown.";
     #[cfg(windows)]
-    pub const SERVICE_STARTUP: &str = "Sets how a Windows service starts: automatic, automatic_delayed, manual \
-                       or disabled.";
+    pub const SERVICE_STARTUP: &str = "Sets how a Windows service starts: automatic (with Windows), \
+                       automatic_delayed (with Windows, after the others), manual (when something \
+                       asks for it) or disabled (cannot be started). It changes the startup only: a \
+                       running service keeps running, and control_service starts or stops it; \
+                       get_service shows the current setting. Needs Anabolic running as \
+                       administrator.";
     #[cfg(target_os = "linux")]
     pub const SERVICE_STARTUP: &str = "Sets how a systemd service starts: automatic (enabled), manual (disabled: started on \
-     demand) or disabled (masked: cannot be started). automatic_delayed does not exist on \
-     Linux.";
+     demand) or disabled (masked: cannot be started); automatic_delayed does not exist on \
+     Linux. It changes the startup only: a running service keeps running, and control_service \
+     starts or stops it; get_service shows the current setting. Unless Anabolic runs as root, \
+     pkexec asks for an administrator's password on the desktop, and the call fails when that \
+     dialog is dismissed or cannot be shown.";
     #[cfg(windows)]
     pub const BLOCK_PROGRAM: &str = "Blocks a program from the network with two Windows Firewall rules \
                        (outbound and inbound), for every copy of it that runs, until \
@@ -877,6 +898,15 @@ mod text {
      removes). On Linux it always refuses, so do not call it there: Linux firewalls filter by \
      address, port and user rather than by program. close_connection cuts a single connection \
      instead.";
+    #[cfg(windows)]
+    pub const UNBLOCK_PROGRAM: &str = "Unblocks a program that block_program (or the Network page) blocked: removes \
+                       the two firewall rules Anabolic made for that path, at once, and leaves any \
+                       other firewall rule for the program as it is. Needs Anabolic running as \
+                       administrator.";
+    #[cfg(target_os = "linux")]
+    pub const UNBLOCK_PROGRAM: &str = "Unblocks a program on Windows (removes the firewall rules block_program made). On Linux \
+     it always refuses, so do not call it there: no program can be blocked there to begin \
+     with.";
     #[cfg(windows)]
     pub const STARTUP_ITEM: &str = "Turns a startup program on or off the way Task Manager does (nothing is \
                        deleted; tasks through Task Scheduler).";

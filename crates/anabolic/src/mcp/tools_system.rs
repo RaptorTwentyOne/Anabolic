@@ -438,9 +438,12 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Memory: used, available, commit charge and limit, file cache, pools, the \
-                       standby/modified/free lists, page files, and the processes with the most \
-                       private memory.",
+        description = "Memory right now: used, available, commit charge and limit, file cache, page \
+                       files (swap on Linux), on Windows also the paged and non-paged pools and the \
+                       standby, modified and free lists; and the 15 processes with the most private \
+                       memory and the 10 with the largest working set. A live snapshot, cheap to \
+                       call. For one process' memory in detail use get_process; for memory that \
+                       keeps growing, get_leaks; for how it looked earlier, get_history.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -539,8 +542,12 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "GPUs: each adapter's usage, engines (3D, copy, video...), dedicated and \
-                       shared memory, temperature, and the processes using the GPU most.",
+        description = "GPUs right now: each adapter's usage, its engines (3D, copy, video...), \
+                       dedicated and shared memory and temperature, as far as its driver reports \
+                       them, and the 10 processes using the GPU most. A live snapshot; the list is \
+                       empty on a machine without a GPU the system can read. Use it when a game or \
+                       program is held back on the GPU side; get_displays covers the monitors, \
+                       get_sensors every temperature, get_hardware the processor and board.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -560,9 +567,13 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Monitors: each one's own name, GPU, connection, position, mode and refresh \
-                       rate against the best it offers, native resolution, HDR and scaling. \
-                       Points out a monitor left below its refresh rate or resolution.",
+        description = "Monitors right now: each one's name, GPU, connection and position, its \
+                       resolution against its native one, its refresh rate against the best it \
+                       offers at this resolution and at any, HDR and scaling. below_max_refresh and \
+                       below_native_resolution are true for a monitor left below what it can do, \
+                       such as a 144 Hz monitor running at 60 Hz, a common reason a game feels \
+                       slow. The list is empty where no monitor is connected. For the GPU's load \
+                       use get_gpus.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -597,9 +608,13 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "Hardware: the processor (model, cores, caches, clocks, features, \
-                       virtualisation), the board and BIOS, memory modules (size, speed and \
-                       configured speed, maker, part number) and the core topology.",
+        description = "What the machine is built from, which does not change while it runs: the \
+                       processor (model, cores, caches, clocks, features, virtualisation), the \
+                       board and BIOS, the memory modules (size, rated and configured speed, maker, \
+                       part number) and the core topology (which cores are performance and which \
+                       efficiency cores). Use it to identify the hardware or to spot memory running \
+                       below its rated speed; for what the processor and memory are doing now use \
+                       get_cpu and get_memory, for temperatures get_sensors.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -740,8 +755,12 @@ impl AnabolicMcp {
     }
 
     #[tool(
-        description = "The days the history (flight recorder) holds: every 10 seconds while \
-                       Anabolic runs, the machine's totals and the processes that led.",
+        description = "Lists the days the history holds, each with its date and size on disk, to \
+                       pick one for get_history. The history is what Anabolic records every 10 \
+                       seconds while its window runs (also hidden in the notification area): the \
+                       machine's totals and the processes that led. It keeps 7 days unless Settings \
+                       says otherwise (1 to 90); the list is empty when the history is turned off. \
+                       Call it first when the user asks about an earlier time.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
