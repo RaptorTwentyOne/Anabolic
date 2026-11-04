@@ -138,6 +138,8 @@ pub mod icon {
     pub const OVERVIEW: &str = "\u{E80F}";
     /// A plus: Run new task.
     pub const RUN: &str = "\u{E710}";
+    /// A hard drive: the Disk space page.
+    pub const SPACE: &str = "\u{EDA2}";
 }
 
 /// The symbols in egui's own fonts (its emoji and icon fonts), which come
@@ -179,6 +181,8 @@ pub mod icon {
     pub const OVERVIEW: &str = "\u{1F3E0}";
     /// A plus: Run new task.
     pub const RUN: &str = "\u{2795}";
+    /// A disk: the Disk space page.
+    pub const SPACE: &str = "\u{1F4BE}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

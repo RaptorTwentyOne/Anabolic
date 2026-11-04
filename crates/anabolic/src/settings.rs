@@ -264,6 +264,8 @@ pub enum Tab {
     Stutters,
     Network,
     Activity,
+    /// What fills the drives.
+    Space,
     Mcp,
     Settings,
 }

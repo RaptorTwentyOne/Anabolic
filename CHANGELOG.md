@@ -4,6 +4,16 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
+## Unreleased
+
+- **Disk space** (Ctrl+D): what fills a drive or a folder, in the manner
+  of WinDirStat and WizTree: the folders as a tree, the file types and the
+  largest files, above a treemap of the whole. On Windows an NTFS drive is
+  read from its master file table when Anabolic runs as administrator, a
+  drive of seven million files in seconds; otherwise folders are read on
+  several threads at once. The map is laid out and drawn on a thread of
+  its own, so the window never waits for it.
+
 ## 0.6.0 (2026-11-04)
 
 Anabolic in a terminal, its MCP server for an assistant to start without

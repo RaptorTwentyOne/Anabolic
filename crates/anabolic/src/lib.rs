@@ -48,6 +48,7 @@ mod session;
 mod settings;
 #[cfg(debug_assertions)]
 mod shot;
+mod space_page;
 mod stalls;
 mod startup_page;
 mod stutters_page;

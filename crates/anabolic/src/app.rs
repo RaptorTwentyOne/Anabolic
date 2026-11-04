@@ -169,6 +169,7 @@ pub struct App {
     /// When the service list was last asked for.
     services_at: Option<Instant>,
     startup: crate::startup_page::StartupPage,
+    space: crate::space_page::SpacePage,
     startup_watch: anabolic_core::startup::StartupWatch,
     startup_events: Receiver<StartupEvent>,
     /// When the startup entries were last read.
@@ -385,6 +386,7 @@ impl App {
                     | "--stutters"
                     | "--network"
                     | "--activity"
+                    | "--space"
                     | "--activity-filter"
                     | "--record"
                     | "--mcp-port"
@@ -417,6 +419,15 @@ impl App {
         }
         if args.iter().any(|a| a == "--mcp") {
             settings.tab = Tab::Mcp;
+        }
+        // `--space`, or `--space PATH` to scan PATH at once.
+        let mut space = crate::space_page::SpacePage::default();
+        if let Some(at) = args.iter().position(|a| a == "--space") {
+            settings.tab = Tab::Space;
+            space.start = args
+                .get(at + 1)
+                .filter(|a| !a.starts_with("--"))
+                .map(std::path::PathBuf::from);
         }
         if args.iter().any(|a| a == "--settings") {
             settings.tab = Tab::Settings;
@@ -676,6 +687,7 @@ impl App {
             service_events,
             services_at: None,
             startup: Default::default(),
+            space,
             startup_watch,
             startup_events,
             startup_at: None,
@@ -1313,6 +1325,7 @@ impl eframe::App for App {
             Tab::Stutters => "Stutters".to_string(),
             Tab::Network => "Network".to_string(),
             Tab::Activity => "Activity".to_string(),
+            Tab::Space => "Disk space".to_string(),
             Tab::Mcp => "MCP".to_string(),
             Tab::Settings => "Settings".to_string(),
         };
@@ -1628,6 +1641,11 @@ impl eframe::App for App {
                         self.elevated,
                         &mut cmds,
                     );
+                });
+            }
+            Tab::Space => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::space_page::show(ui, &mut self.space, self.elevated, &mut cmds);
                 });
             }
             Tab::Activity => {

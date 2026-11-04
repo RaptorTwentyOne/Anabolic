@@ -57,6 +57,7 @@ pub mod sensors;
 pub mod services;
 pub mod signin;
 pub mod sockets;
+pub mod space;
 pub mod startup;
 pub mod sysinfo;
 pub mod threads;

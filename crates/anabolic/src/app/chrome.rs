@@ -94,6 +94,9 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::Num0) {
                 self.settings.tab = Tab::Mcp;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::D) {
+                self.settings.tab = Tab::Space;
+            }
             if i.consume_key(Modifiers::COMMAND, Key::Comma) {
                 self.settings.tab = Tab::Settings;
             }
@@ -236,6 +239,7 @@ impl App {
             (Tab::Stutters, theme::icon::STUTTERS, "Stutters", "Ctrl+7"),
             (Tab::Network, theme::icon::NETWORK, "Network", "Ctrl+8"),
             (Tab::Activity, theme::icon::RECORD, "Activity", "Ctrl+9"),
+            (Tab::Space, theme::icon::SPACE, "Disk space", "Ctrl+D"),
             (Tab::Mcp, theme::icon::MCP, "MCP", "Ctrl+0"),
         ];
         for (tab, icon, label, keys) in pages {
