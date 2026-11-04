@@ -79,13 +79,16 @@ struct Step {
     at: f32,
     what: String,
     pos: egui::Pos2,
+    /// What a `text` step types.
+    text: String,
 }
 
 /// ANABOLIC_SCRIPT=<steps>: pointer input played into the window as the
 /// mouse would give it, to try what takes a click or a drag. The steps,
 /// separated by ';', are `seconds:what:x,y`; `what` is `move`, `down` or `up`
 /// (the left button), `right` (a right click) or `shot` (a picture saved as
-/// `<ANABOLIC_SCREENSHOT's name>-<n>.bmp`).
+/// `<ANABOLIC_SCREENSHOT's name>-<n>.bmp`). `seconds:text:<characters>`
+/// types into the field that has the focus.
 pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
     static STEPS: OnceLock<std::sync::Mutex<(Instant, Vec<Step>, usize)>> = OnceLock::new();
     let steps = STEPS.get_or_init(|| {
@@ -96,11 +99,21 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
                 let mut parts = step.trim().splitn(3, ':');
                 let at = parts.next()?.parse().ok()?;
                 let what = parts.next()?.to_string();
-                let (x, y) = parts.next().unwrap_or("0,0").split_once(',')?;
+                let rest = parts.next().unwrap_or("0,0");
+                if what == "text" {
+                    return Some(Step {
+                        at,
+                        what,
+                        pos: egui::Pos2::ZERO,
+                        text: rest.to_string(),
+                    });
+                }
+                let (x, y) = rest.split_once(',')?;
                 Some(Step {
                     at,
                     what,
                     pos: egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?),
+                    text: String::new(),
                 })
             })
             .collect();
@@ -130,6 +143,7 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
             "shot" => ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
                 egui::UserData::new(*next),
             )),
+            "text" => raw.events.push(egui::Event::Text(step.text.clone())),
             _ => {}
         }
         *next += 1;
