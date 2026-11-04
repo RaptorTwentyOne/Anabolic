@@ -4,13 +4,12 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
-## Unreleased
+## 0.6.0 (2026-11-04)
 
-- **Services: new, properties, delete.** Create a service, change
-  everything about one (program, account and password, dependencies, what
-  it does when it fails), or delete one; Windows' own services can be
-  disabled, not deleted. On Linux a new unit goes where systemd keeps the
-  administrator's own, and a package's unit is changed through a drop-in.
+Anabolic in a terminal, its MCP server for an assistant to start without
+the window, and services made, changed in full and deleted from the
+Services page.
+
 - **Terminal commands:** `anabolic-cli ps`, `kill`, `services`, `service
   restart NAME`, `ports` and more (on Linux `anabolic ps`): what the
   window shows, as tables, or as JSON for scripts (`--json`). Each answers
@@ -21,6 +20,11 @@ new since the one before.
   (`anabolic-cli mcp`) and speak to it over standard input and output: no
   port, no key, no window. The MCP page shows the command and the JSON
   for it. It may do what the page allows, except setting limits.
+- **Services: new, properties, delete.** Create a service, change
+  everything about one (program, account and password, dependencies, what
+  it does when it fails), or delete one; Windows' own services can be
+  disabled, not deleted. On Linux a new unit goes where systemd keeps the
+  administrator's own, and a package's unit is changed through a drop-in.
 - Each release file carries a build attestation, which `gh attestation
   verify` checks.
 
