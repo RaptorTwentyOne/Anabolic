@@ -56,6 +56,7 @@ of them freeze, and when they do answer, they say *how much*, not *who* or
 - [AI assistants (MCP)](#ai-assistants-mcp)
 - [Games and anti-cheat](#games-and-anti-cheat)
 - [Privacy](#privacy)
+- [Code signing policy](#code-signing-policy)
 - [Building from source](#building-from-source)
 - [Contributing](#contributing)
 - [Reusing the code](#reusing-the-code)
@@ -166,7 +167,8 @@ what is missing and why; Settings has **Restart as admin**.
 > [!NOTE]
 > Releases are not code-signed yet, so Windows SmartScreen may warn when the
 > installer or the program first runs. Choose **More info** → **Run anyway**,
-> or build it yourself.
+> or build it yourself. The [code signing policy](#code-signing-policy) says
+> how they will be.
 
 ### Linux
 
@@ -396,6 +398,28 @@ Everything it keeps stays on this computer:
 What the MCP server's tools return goes to the program that called them,
 and on to the service it uses. The full policy is in
 [PRIVACY.md](PRIVACY.md).
+
+## Code signing policy
+
+Windows releases are to be signed by SignPath Foundation, which Anabolic
+has applied to; until it signs one, they are unsigned. Then: free code
+signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+- **What is signed:** `anabolic.exe`, `anabolic-cli.exe` and the installer
+  of each release, as the [release workflow](.github/workflows/release.yml)
+  builds them on GitHub's runners from the tagged commit. Nothing built
+  anywhere else is signed. Each file also carries a build attestation (see
+  [Getting started](#getting-started)) naming the workflow run and commit
+  that made it.
+- **Committers and reviewers:** the
+  [members of RaptorTwentyOne](https://github.com/orgs/RaptorTwentyOne/people).
+  A change from anyone else comes as a pull request and is reviewed by one
+  of them.
+- **Approvers:** [Coşkun Bağrıaçık](https://github.com/cbagriacik), who
+  approves each release before it is signed.
+- **Privacy:** [PRIVACY.md](PRIVACY.md) says what Anabolic sends anywhere
+  (the update check to GitHub, which Settings turns off) and what it keeps.
 
 ## Building from source
 

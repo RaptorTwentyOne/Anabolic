@@ -120,7 +120,7 @@ jobs:
           cat >> notes.md <<'EOF'
 
           > [!NOTE]
-          > This release is not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info** → **Run anyway**, or build it from source. On PCs with Smart App Control on, Windows blocks unsigned programs outright.
+          > This release is not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info** → **Run anyway**, or build it from source. On PCs with Smart App Control on, Windows blocks unsigned programs outright. The [code signing policy](https://github.com/RaptorTwentyOne/Anabolic#code-signing-policy) says how releases will be signed.
           EOF
       - uses: actions/download-artifact@v8
         with:
