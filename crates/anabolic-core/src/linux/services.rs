@@ -23,6 +23,7 @@ use zbus::proxy::{CacheProperties, MethodFlags};
 use zbus::zvariant::OwnedObjectPath;
 
 use super::*;
+use crate::unitfile;
 
 const SYSTEMD: &str = "org.freedesktop.systemd1";
 const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
@@ -777,9 +778,636 @@ pub(super) fn control(
     }
 }
 
+// Creating, changing and deleting services: unit files written where the
+// administrator's (or the user's) own go, a package's units changed by a
+// drop-in beside them. A system unit's files are written by root through
+// pkexec, which asks for an administrator's password once per change.
+
+/// The administrator's own system units, and drop-ins for a package's.
+const ADMIN_DIR: &str = "/etc/systemd/system";
+
+/// Where a manager keeps the units made for it by hand, and drop-ins.
+fn own_dir(scope: Scope) -> Option<PathBuf> {
+    match scope {
+        Scope::System => Some(PathBuf::from(ADMIN_DIR)),
+        Scope::User => xdg("XDG_CONFIG_HOME", ".config").map(|d| d.join("systemd/user")),
+    }
+}
+
+pub(super) fn canonical(name: &str, own: bool) -> String {
+    let unit = name.trim();
+    let unit = if unit.ends_with(".service") {
+        unit.to_string()
+    } else {
+        format!("{unit}.service")
+    };
+    if own {
+        format!("{unit}{USER_MARK}")
+    } else {
+        unit
+    }
+}
+
+pub(super) fn check_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Give it a name".into());
+    }
+    let unit = canonical(name, false);
+    if unit.contains('@') {
+        return Err("A name with @ is a template's; Anabolic makes plain services only".into());
+    }
+    if !unitfile::valid_unit(&unit) {
+        return Err(
+            "A unit's name may hold letters, digits and : _ . - only, and cannot start with - or ."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// The template an instance (`getty@tty1.service`) comes from.
+fn template_of(unit: &str) -> Option<String> {
+    let (prefix, rest) = unit.split_once('@')?;
+    let suffix = rest.rsplit_once('.')?.1;
+    (!rest.starts_with('.')).then(|| format!("{prefix}@.{suffix}"))
+}
+
+/// A unit's files: the one that defines it, whether a link masks it, and
+/// the drop-ins that change it, in the order systemd reads them.
+#[derive(Default)]
+struct Files {
+    fragment: Option<PathBuf>,
+    /// The fragment was reached through a link (a linked unit file).
+    linked: bool,
+    masked: bool,
+    drop_ins: Vec<PathBuf>,
+}
+
+fn files(unit: &str, scope: Scope) -> Files {
+    let dirs = search_path(scope);
+    let names: Vec<String> = std::iter::once(unit.to_string())
+        .chain(template_of(unit))
+        .collect();
+    let mut found = Files::default();
+    'names: for name in &names {
+        for dir in &dirs {
+            let path = dir.join(name);
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                if std::fs::read_link(&path).is_ok_and(|t| t == Path::new("/dev/null")) {
+                    found.masked = true;
+                    continue;
+                }
+                found.fragment = std::fs::canonicalize(&path).ok();
+                found.linked = true;
+            } else {
+                found.fragment = Some(path);
+            }
+            break 'names;
+        }
+    }
+    // Drop-ins by file name across every directory, the first directory's
+    // winning for a name; the instance's over the template's.
+    let mut by_name: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    for name in &names {
+        for dir in &dirs {
+            let Ok(entries) = std::fs::read_dir(dir.join(format!("{name}.d"))) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                if file.ends_with(".conf") {
+                    by_name.entry(file).or_insert_with(|| entry.path());
+                }
+            }
+        }
+    }
+    found.drop_ins = by_name.into_values().collect();
+    found
+}
+
+/// Why a unit file cannot be deleted from here: a package's (or another
+/// place's), or an instance of a template.
+fn keep_reason(unit: &str, fragment: &Path, in_own: bool) -> Option<String> {
+    if template_of(unit).is_some() {
+        return Some(
+            "It is an instance of a template; there is no file of its own to delete. Set it to \
+             Masked so that nothing starts it."
+                .into(),
+        );
+    }
+    if in_own {
+        return None;
+    }
+    let path = fragment.to_string_lossy();
+    Some(match crate::packages::owner(&path) {
+        Some(package) => format!(
+            "It comes with the {} package: remove the package to remove it, or set it to Masked \
+             so that nothing starts it.",
+            package.name
+        ),
+        None => format!(
+            "Its unit file, {path}, is not one made by hand; set it to Masked so that nothing \
+             starts it."
+        ),
+    })
+}
+
+pub(super) fn detail(name: &str) -> Result<ServiceDetail, String> {
+    let (unit, scope) = unit_of(name);
+    let found = files(unit, scope);
+    let Some(fragment) = found.fragment.clone() else {
+        return Err(if found.masked {
+            "It is masked, and has no unit file of its own".into()
+        } else {
+            "It has no unit file: systemd makes it itself (a generated or transient unit)".into()
+        });
+    };
+    let mut settings = unitfile::Settings::default();
+    settings.read(
+        &std::fs::read_to_string(&fragment)
+            .map_err(|e| format!("Could not read {}: {e}", fragment.display()))?,
+    );
+    for drop_in in &found.drop_ins {
+        if let Ok(text) = std::fs::read_to_string(drop_in) {
+            settings.read(&text);
+        }
+    }
+    let start = if found.masked {
+        StartType::Disabled
+    } else if enabled_units(scope).contains(unit) {
+        StartType::Automatic
+    } else if settings.install {
+        StartType::Manual
+    } else {
+        StartType::System
+    };
+    let in_own = !found.linked
+        && template_of(unit).is_none()
+        && own_dir(scope).is_some_and(|dir| fragment.parent() == Some(dir.as_path()));
+    let spec = ServiceSpec {
+        name: name.to_string(),
+        display: if settings.description.is_empty() {
+            unit.to_string()
+        } else {
+            settings.description.clone()
+        },
+        description: String::new(),
+        program: settings.exec_start.clone(),
+        start,
+        account: match scope {
+            Scope::System => settings.account(),
+            Scope::User => Account::User(user_name()),
+        },
+        password: None,
+        dependencies: settings.requires.clone(),
+        error_control: ErrorControl::Normal,
+        recovery: settings.recovery(),
+        own: scope == Scope::User,
+    };
+    let mut source = fragment.display().to_string();
+    match found.drop_ins.len() {
+        0 => {}
+        1 => source.push_str(", with a drop-in"),
+        n => source.push_str(&format!(", with {n} drop-ins")),
+    }
+    Ok(ServiceDetail {
+        spec,
+        keep: keep_reason(unit, &fragment, in_own),
+        fixed: None,
+        source,
+        drop_in: !in_own,
+    })
+}
+
+/// A file Anabolic writes for root to put in place, removed when dropped.
+struct Staged(PathBuf);
+
+impl Staged {
+    fn new(text: &str) -> Result<Self, String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("anabolic-unit-{}-{n}", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        file.write_all(text.as_bytes())
+            .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Puts a staged file in place (unless `-`), reloads the system manager and
+/// changes how the unit starts (an operation below, or `-`). `$5` = `new`
+/// refuses to write over a file that is there.
+const INSTALL_SCRIPT: &str = r#"set -e
+unit=$1 src=$2 dst=$3 op=$4 new=$5
+case "$unit" in ''|-*|*/*) echo "not a unit name: $unit" >&2; exit 2;; esac
+if [ "$dst" != - ]; then
+  case "$dst" in /etc/systemd/system/*) ;; *) echo "not a place for units: $dst" >&2; exit 2;; esac
+  case "$dst" in *..*) echo "not a place for units: $dst" >&2; exit 2;; esac
+  if [ "$new" = new ] && [ -e "$dst" ]; then echo "$dst is there already" >&2; exit 3; fi
+  mkdir -p -- "${dst%/*}"
+  install -m 0644 -- "$src" "$dst.anabolic-new"
+  mv -f -- "$dst.anabolic-new" "$dst"
+fi
+systemctl daemon-reload
+case "$op" in
+  enable) systemctl enable -- "$unit" ;;
+  disable) systemctl disable -- "$unit" ;;
+  mask) systemctl mask -- "$unit" ;;
+  unmask-enable) systemctl unmask -- "$unit"; systemctl enable -- "$unit" ;;
+  unmask-disable) systemctl unmask -- "$unit"; systemctl disable -- "$unit" ;;
+esac
+"#;
+
+/// Stops (when `$3` = `stop`), disables and deletes a unit made by hand in
+/// /etc/systemd/system, with its drop-ins.
+const DELETE_SCRIPT: &str = r#"set -e
+unit=$1 file=$2 stop=$3
+case "$unit" in ''|-*|*/*) echo "not a unit name: $unit" >&2; exit 2;; esac
+case "$file" in /etc/systemd/system/*/*|*..*) echo "not a unit file to delete: $file" >&2; exit 2;; esac
+case "$file" in /etc/systemd/system/*.service) ;; *) echo "not a unit file to delete: $file" >&2; exit 2;; esac
+if [ "$stop" = stop ]; then systemctl stop -- "$unit"; fi
+systemctl disable -- "$unit" >/dev/null 2>&1 || true
+rm -f -- "$file"
+rm -rf -- "$file.d"
+systemctl daemon-reload
+systemctl reset-failed -- "$unit" >/dev/null 2>&1 || true
+"#;
+
+/// Runs `script` as root through pkexec, which asks for an administrator's
+/// password through the desktop's agent. What the user typed reaches the
+/// script only as its arguments ($1…), never inside it.
+fn as_root(script: &str, args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("pkexec")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .arg("anabolic")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("pkexec could not start: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr);
+    let said = said
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    match output.status.code() {
+        // pkexec: the dialog was dismissed, or the password refused.
+        Some(126 | 127) if said.is_empty() || said.contains("Not authorized") => {
+            Err("no administrator's password was given".into())
+        }
+        _ if !said.is_empty() => Err(said.to_string()),
+        _ => Err(format!("it failed ({})", output.status)),
+    }
+}
+
+/// How a change of start type is carried out: with systemctl, for a
+/// system unit; None when it does not change.
+fn start_operation(before: StartType, after: StartType, masked: bool) -> Option<&'static str> {
+    if before == after {
+        return None;
+    }
+    match after {
+        StartType::Automatic if masked => Some("unmask-enable"),
+        StartType::Automatic => Some("enable"),
+        StartType::Manual if masked => Some("unmask-disable"),
+        StartType::Manual => Some("disable"),
+        StartType::Disabled => Some("mask"),
+        _ => None,
+    }
+}
+
+/// Writes a file of the user's own in one step: a reader sees the old one
+/// or the new one, never half of it.
+fn write_atomic(path: &Path, text: &str, new: bool) -> Result<(), String> {
+    if new && path.exists() {
+        return Err(format!("{} is there already", path.display()));
+    }
+    let dir = path.parent().ok_or("no folder")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Could not make {}: {e}", dir.display()))?;
+    let staged = path.with_extension("anabolic-new");
+    std::fs::write(&staged, text)
+        .and_then(|_| std::fs::rename(&staged, path))
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))
+}
+
+/// Whether a unit runs now (false when that cannot be told).
+fn running(scope: Scope, unit: &str) -> bool {
+    let Ok(conn) = scope.connect() else {
+        return false;
+    };
+    let Ok(manager) = proxy(&conn, MANAGER_PATH, MANAGER) else {
+        return false;
+    };
+    let Ok(path) = unit_path(&manager, unit) else {
+        return false;
+    };
+    proxy(&conn, path.as_str(), UNIT)
+        .and_then(|u| u.get_property::<String>("ActiveState"))
+        .is_ok_and(|a| !matches!(a.as_str(), "inactive" | "failed"))
+}
+
+/// Has the user's own manager read its unit files again.
+fn reload_user() -> Result<Connection, String> {
+    let conn = Scope::User.connect().map_err(|e| words(&e))?;
+    {
+        let manager = proxy(&conn, MANAGER_PATH, MANAGER).map_err(|e| words(&e))?;
+        manage::<_, ()>(&manager, "Reload", &())?;
+    }
+    Ok(conn)
+}
+
+pub(super) fn create(spec: &ServiceSpec) -> ChangeOutcome {
+    let scope = if spec.own { Scope::User } else { Scope::System };
+    let unit = canonical(&spec.name, false);
+    let display = match spec.display.trim() {
+        "" => unit.clone(),
+        shown => shown.to_string(),
+    };
+    let refused =
+        |why: String| ChangeOutcome::refused(format!("Could not create {display}: {why}"));
+    let found = files(&unit, scope);
+    if found.fragment.is_some() || found.masked {
+        return refused("a service of that name exists already".into());
+    }
+    let operation = match spec.start {
+        StartType::Automatic => "enable",
+        StartType::Manual => "-",
+        _ => {
+            return refused(format!(
+                "a new service starts {} or {}",
+                StartType::Automatic.label(),
+                StartType::Manual.label()
+            ));
+        }
+    };
+    let text = unitfile::render(spec, &unit, scope == Scope::System);
+    let Some(dir) = own_dir(scope) else {
+        return refused("there is no home folder for your own units".into());
+    };
+    let file = dir.join(&unit);
+    match scope {
+        Scope::System => {
+            let staged = match Staged::new(&text) {
+                Ok(staged) => staged,
+                Err(e) => return refused(e),
+            };
+            let target = file.to_string_lossy().into_owned();
+            let source = staged.0.to_string_lossy().into_owned();
+            let args = [
+                unit.as_str(),
+                source.as_str(),
+                target.as_str(),
+                operation,
+                "new",
+            ];
+            match as_root(INSTALL_SCRIPT, &args) {
+                Ok(()) => ChangeOutcome::done(format!("Created {display}")),
+                Err(e) => refused(e),
+            }
+        }
+        Scope::User => {
+            if let Err(e) = write_atomic(&file, &text, true) {
+                return refused(e);
+            }
+            let enabled = reload_user().and_then(|conn| match spec.start {
+                StartType::Automatic => set_start(&conn, &unit, StartType::Automatic),
+                _ => Ok(()),
+            });
+            match enabled {
+                Ok(()) => ChangeOutcome::done(format!("Created {display}")),
+                Err(e) => ChangeOutcome::partly(format!(
+                    "Created {display}, but systemd did not take it up: {e}"
+                )),
+            }
+        }
+    }
+}
+
+pub(super) fn configure(before: &ServiceSpec, after: &ServiceSpec) -> ChangeOutcome {
+    let (unit, scope) = unit_of(&before.name);
+    let display = match after.display.trim() {
+        "" => before.display.clone(),
+        shown => shown.to_string(),
+    };
+    let refused =
+        |why: String| ChangeOutcome::refused(format!("Could not change {display}: {why}"));
+    if !unitfile::valid_unit(unit) {
+        return refused(format!(
+            "Anabolic does not write files for a unit named {unit}"
+        ));
+    }
+    let detail = match detail(&before.name) {
+        Ok(detail) => detail,
+        Err(e) => return refused(e),
+    };
+    let Some(dir) = own_dir(scope) else {
+        return refused("there is no home folder for your own units".into());
+    };
+    let found = files(unit, scope);
+    let target = if detail.drop_in {
+        dir.join(format!("{unit}.d")).join("override.conf")
+    } else {
+        match found.fragment.clone() {
+            Some(fragment) => fragment,
+            None => return refused("its unit file is gone".into()),
+        }
+    };
+    let settings = unitfile::changes(before, after, scope == Scope::System);
+    let text = (!settings.is_empty()).then(|| {
+        let now = std::fs::read_to_string(&target).unwrap_or_default();
+        unitfile::apply(&now, &settings, detail.drop_in)
+    });
+    let operation = start_operation(before.start, after.start, found.masked);
+    if text.is_none() && operation.is_none() {
+        return ChangeOutcome {
+            result: Ok(format!("Nothing changed for {display}")),
+            written: false,
+        };
+    }
+    let result = match scope {
+        Scope::System => {
+            let staged = match text.as_deref().map(Staged::new).transpose() {
+                Ok(staged) => staged,
+                Err(e) => return refused(e),
+            };
+            let source = staged
+                .as_ref()
+                .map_or("-".into(), |s| s.0.to_string_lossy().into_owned());
+            let target = if staged.is_some() {
+                target.to_string_lossy().into_owned()
+            } else {
+                "-".into()
+            };
+            let args = [
+                unit,
+                source.as_str(),
+                target.as_str(),
+                operation.unwrap_or("-"),
+                "-",
+            ];
+            as_root(INSTALL_SCRIPT, &args).map_err(|e| (e, false))
+        }
+        Scope::User => {
+            let written = match &text {
+                Some(text) => write_atomic(&target, text, false).map_err(|e| (e, false)),
+                None => Ok(()),
+            };
+            written.and_then(|()| {
+                let conn = reload_user().map_err(|e| (e, text.is_some()))?;
+                if before.start != after.start {
+                    set_start(&conn, unit, after.start).map_err(|e| (e, true))?;
+                }
+                Ok(())
+            })
+        }
+    };
+    let program_changed = before.program.trim() != after.program.trim()
+        || before.account != after.account
+        || before.dependencies != after.dependencies;
+    match result {
+        Ok(()) => {
+            let later = if program_changed && running(scope, unit) {
+                "; restart it for the new settings to count"
+            } else {
+                ""
+            };
+            ChangeOutcome::done(format!("Changed {display}{later}"))
+        }
+        Err((e, true)) => ChangeOutcome::partly(format!("Changed {display}, but: {e}")),
+        Err((e, false)) => refused(e),
+    }
+}
+
+pub(super) fn delete(name: &str, display: &str, stop_first: bool) -> ChangeOutcome {
+    let (unit, scope) = unit_of(name);
+    let refused =
+        |why: String| ChangeOutcome::refused(format!("Could not delete {display}: {why}"));
+    let detail = match detail(name) {
+        Ok(detail) => detail,
+        Err(e) => return refused(e),
+    };
+    if let Some(keep) = detail.keep {
+        return refused(keep);
+    }
+    let Some(file) = files(unit, scope).fragment else {
+        return refused("its unit file is gone".into());
+    };
+    let runs = running(scope, unit);
+    if runs && !stop_first {
+        return refused("it is running; stop it first".into());
+    }
+    match scope {
+        Scope::System => {
+            let file = file.to_string_lossy().into_owned();
+            let stop = if runs { "stop" } else { "-" };
+            match as_root(DELETE_SCRIPT, &[unit, file.as_str(), stop]) {
+                Ok(()) => ChangeOutcome::done(format!("Deleted {display}")),
+                Err(e) => refused(e),
+            }
+        }
+        Scope::User => {
+            let conn = match Scope::User.connect() {
+                Ok(conn) => conn,
+                Err(e) => return refused(words(&e)),
+            };
+            if runs && let Err(e) = run_job(&conn, unit, "StopUnit") {
+                return refused(format!("it did not stop: {e}"));
+            }
+            if let Ok(manager) = proxy(&conn, MANAGER_PATH, MANAGER) {
+                let files = vec![unit];
+                let _: Result<Vec<(String, String, String)>, String> =
+                    manage(&manager, "DisableUnitFiles", &(&files, false));
+            }
+            if let Err(e) = std::fs::remove_file(&file) {
+                return refused(format!("Could not delete {}: {e}", file.display()));
+            }
+            let _ = std::fs::remove_dir_all(file.with_file_name(format!("{unit}.d")));
+            let _ = reload_user();
+            ChangeOutcome::done(format!("Deleted {display}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manages_files_and_names() {
+        assert_eq!(canonical("backup", false), "backup.service");
+        assert_eq!(canonical("backup.service", true), "backup.service (user)");
+        assert!(check_name("backup").is_ok());
+        assert!(check_name("getty@").is_err());
+        assert!(check_name("-x").is_err());
+        assert!(check_name("  ").is_err());
+        assert_eq!(
+            template_of("getty@tty1.service").as_deref(),
+            Some("getty@.service")
+        );
+        assert_eq!(template_of("getty@.service"), None);
+        assert_eq!(template_of("sshd.service"), None);
+        assert_eq!(
+            start_operation(StartType::Manual, StartType::Automatic, false),
+            Some("enable")
+        );
+        assert_eq!(
+            start_operation(StartType::Disabled, StartType::Manual, true),
+            Some("unmask-disable")
+        );
+        assert_eq!(
+            start_operation(StartType::Manual, StartType::Manual, false),
+            None
+        );
+        // What the user typed reaches the scripts as quoted arguments.
+        assert!(INSTALL_SCRIPT.contains(r#""$dst.anabolic-new""#));
+        assert!(DELETE_SCRIPT.contains(r#"rm -f -- "$file""#));
+    }
+
+    #[test]
+    fn reads_a_packaged_service_in_full() {
+        // Every systemd machine has its journal's unit.
+        let Ok(found) = detail("systemd-journald.service") else {
+            eprintln!("skipped: no systemd-journald unit");
+            return;
+        };
+        assert!(
+            found.spec.program.contains("systemd-journald"),
+            "{:?}",
+            found.spec
+        );
+        assert!(
+            found.keep.is_some(),
+            "a package's unit is not deleted from here"
+        );
+        assert!(found.drop_in);
+        assert!(
+            found.source.contains("systemd-journald.service"),
+            "{}",
+            found.source
+        );
+    }
 
     #[test]
     fn lists_system_and_user_services() {

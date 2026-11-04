@@ -107,6 +107,11 @@ mod ptrace;
 #[cfg(target_os = "linux")]
 #[path = "linux/syscalls.rs"]
 mod syscalls;
+// systemd's unit files as text, which the services read and write. Plain
+// text work: its tests run on Windows too.
+#[cfg(any(target_os = "linux", test))]
+#[path = "linux/unitfile.rs"]
+mod unitfile;
 
 #[cfg_attr(windows, path = "windows/util.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/util.rs")]

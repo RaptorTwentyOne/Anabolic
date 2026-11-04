@@ -199,6 +199,16 @@ impl App {
                     self.services.busy.insert(name.clone());
                     self.service_watch.control(name, display, op);
                 }
+                UiCmd::NewService => {
+                    self.service_dialog =
+                        Some(crate::services_edit::ServiceDialog::create(self.elevated));
+                }
+                UiCmd::EditService(name) => {
+                    self.open_service_dialog(crate::services_edit::Purpose::Edit, name)
+                }
+                UiCmd::DeleteService(name) => {
+                    self.open_service_dialog(crate::services_edit::Purpose::Delete, name)
+                }
                 UiCmd::ConfirmBlock { path, name } => {
                     let dialog = ConfirmDialog {
                         title: format!("Block {name} from the network?"),

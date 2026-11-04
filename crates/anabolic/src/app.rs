@@ -214,6 +214,8 @@ pub struct App {
     /// and the one being set.
     limits_seen: Option<u64>,
     limit_dialog: Option<crate::limits::LimitDialog>,
+    /// A new service, a service's properties, or deleting one.
+    service_dialog: Option<crate::services_edit::ServiceDialog>,
     /// A question waiting for an answer, and what to do on yes.
     confirm: Option<(ConfirmDialog, Pending)>,
     module_view: ModuleView,
@@ -376,6 +378,9 @@ impl App {
                     | "--detail-sort"
                     | "--services"
                     | "--service"
+                    | "--service-new"
+                    | "--service-edit"
+                    | "--service-delete"
                     | "--startup"
                     | "--stutters"
                     | "--network"
@@ -604,6 +609,29 @@ impl App {
         let repaint = cc.egui_ctx.clone();
         let (service_watch, service_events) =
             anabolic_core::services::ServiceWatch::start(move || crate::stalls::wake(&repaint));
+        // `--service-new`, `--service-edit NAME`, `--service-delete NAME`:
+        // the Services page with its dialog open (screenshots, tests).
+        let mut service_dialog = None;
+        if args.iter().any(|a| a == "--service-new") {
+            settings.tab = Tab::Services;
+            service_dialog = Some(crate::services_edit::ServiceDialog::create(elevated));
+        }
+        for (flag, purpose) in [
+            ("--service-edit", crate::services_edit::Purpose::Edit),
+            ("--service-delete", crate::services_edit::Purpose::Delete),
+        ] {
+            if let Some(name) = value(flag) {
+                let name: Arc<str> = name.into();
+                settings.tab = Tab::Services;
+                service_watch.detail(name.clone());
+                service_dialog = Some(crate::services_edit::ServiceDialog::open(
+                    purpose,
+                    name.clone(),
+                    name,
+                    elevated,
+                ));
+            }
+        }
         let repaint = cc.egui_ctx.clone();
         let (startup_watch, startup_events) =
             anabolic_core::startup::StartupWatch::start(move || crate::stalls::wake(&repaint));
@@ -672,6 +700,7 @@ impl App {
             affinity_dialog: None,
             limits_seen: None,
             limit_dialog: None,
+            service_dialog,
             confirm: None,
             module_view: ModuleView::default(),
             find: FindView {
@@ -839,7 +868,13 @@ impl App {
                     }
                 }
                 Outcome::Browsed(path) => {
-                    if let Some(dialog) = &mut self.run_dialog {
+                    if let Some(dialog) = &mut self.service_dialog
+                        && let Some(field) = dialog.browsing.take()
+                    {
+                        if let Some(path) = path {
+                            dialog.fill(field, path);
+                        }
+                    } else if let Some(dialog) = &mut self.run_dialog {
                         dialog.browsing = false;
                         dialog.focus = true;
                         if let Some(path) = path {
@@ -1007,7 +1042,8 @@ impl App {
                 }
             }
         }
-        for event in self.service_events.try_iter() {
+        let service_events: Vec<ServiceEvent> = self.service_events.try_iter().collect();
+        for event in service_events {
             match event {
                 ServiceEvent::List(list) => self.services.list = Some(list),
                 ServiceEvent::Done {
@@ -1062,6 +1098,15 @@ impl App {
                         }
                     }
                 }
+                ServiceEvent::Detail { name, detail } => {
+                    if let Some(dialog) = &mut self.service_dialog
+                        && dialog.name.as_ref() == Some(&name)
+                        && dialog.detail.is_none()
+                    {
+                        dialog.loaded(detail.map(|d| *d));
+                    }
+                }
+                ServiceEvent::Changed { name, outcome } => self.service_changed(name, outcome),
             }
         }
 

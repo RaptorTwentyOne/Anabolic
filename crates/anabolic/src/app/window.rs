@@ -439,6 +439,101 @@ impl App {
                 LimitChoice::Cancel => self.limit_dialog = None,
             }
         }
+        if let Some(dialog) = &mut self.service_dialog {
+            use crate::services_edit::ServiceChoice;
+            let running = dialog.name.as_ref().is_some_and(|name| {
+                self.services.list.as_ref().is_some_and(|list| {
+                    list.services.iter().any(|s| {
+                        s.name == *name && s.state != anabolic_core::services::State::Stopped
+                    })
+                })
+            });
+            match dialog.show(ctx, running) {
+                ServiceChoice::Pending => {}
+                ServiceChoice::Apply(change) => {
+                    dialog.busy = true;
+                    dialog.error = None;
+                    self.service_watch.change(change);
+                }
+                ServiceChoice::Disable => {
+                    if let Some(name) = dialog.name.clone() {
+                        let display = dialog.display.clone();
+                        self.handle(vec![UiCmd::Service {
+                            name,
+                            display,
+                            op: ServiceOp::SetStart(anabolic_core::services::StartType::Disabled),
+                        }]);
+                    }
+                    self.service_dialog = None;
+                }
+                ServiceChoice::Browse(field) => {
+                    dialog.browsing = Some(field);
+                    self.actions.run(Action::BrowseProgram);
+                }
+                ServiceChoice::Cancel => self.service_dialog = None,
+            }
+        }
+    }
+
+    /// Opens a service's properties, or the question before deleting it,
+    /// while its settings are read.
+    pub(super) fn open_service_dialog(
+        &mut self,
+        purpose: crate::services_edit::Purpose,
+        name: Arc<str>,
+    ) {
+        let display = self
+            .services
+            .list
+            .as_ref()
+            .and_then(|l| l.services.iter().find(|s| s.name == name))
+            .map_or_else(|| name.clone(), |s| s.display.clone());
+        self.service_watch.detail(name.clone());
+        self.service_dialog = Some(crate::services_edit::ServiceDialog::open(
+            purpose,
+            name,
+            display,
+            self.elevated,
+        ));
+    }
+
+    /// A service was created, changed or deleted: the dialog closes with
+    /// a word on how it went, or stays to put right what was refused.
+    pub(super) fn service_changed(
+        &mut self,
+        name: Arc<str>,
+        outcome: anabolic_core::services::ChangeOutcome,
+    ) {
+        use crate::services_edit::Purpose;
+        let purpose = self.service_dialog.as_ref().map(|d| d.purpose);
+        if let Some(dialog) = &mut self.service_dialog
+            && dialog.busy
+            && !outcome.written
+        {
+            dialog.busy = false;
+            if let Err(text) = outcome.result {
+                let next = next_step(&text, self.elevated);
+                dialog.error = Some((text, next));
+            }
+            return;
+        }
+        self.service_dialog = None;
+        if outcome.written {
+            match purpose {
+                Some(Purpose::Delete) if self.services.selected.as_ref() == Some(&name) => {
+                    self.services.selected = None;
+                }
+                Some(Purpose::New) => self.services.selected = Some(name),
+                _ => {}
+            }
+        }
+        match outcome.result {
+            Ok(text) => self.toasts.info(text),
+            Err(text) => {
+                let next = next_step(&text, self.elevated);
+                self.toasts.error_with(text, next);
+            }
+        }
     }
 
     /// Once the UI is fully warmed up (fonts, GL, first textures), forbid

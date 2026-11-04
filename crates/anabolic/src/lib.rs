@@ -40,6 +40,7 @@ mod platform;
 mod proc_table;
 mod rules;
 mod runaway;
+mod services_edit;
 mod services_page;
 #[cfg(windows)]
 #[path = "windows/session.rs"]

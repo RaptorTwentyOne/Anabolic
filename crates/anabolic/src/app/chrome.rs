@@ -13,6 +13,7 @@ impl App {
         if self.kill_dialog.is_some()
             || self.affinity_dialog.is_some()
             || self.limit_dialog.is_some()
+            || self.service_dialog.is_some()
             || self.confirm.is_some()
             || self.run_dialog.is_some()
         {

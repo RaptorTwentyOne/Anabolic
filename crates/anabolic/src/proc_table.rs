@@ -43,6 +43,12 @@ pub enum UiCmd {
     },
     /// Select a service on the Services page.
     SelectService(Arc<str>),
+    /// Open the dialog that creates a service.
+    NewService,
+    /// Open a service's properties to change them.
+    EditService(Arc<str>),
+    /// Ask before deleting a service.
+    DeleteService(Arc<str>),
     /// Turn a startup entry on or off.
     SetStartup(Box<anabolic_core::startup::StartupItem>, bool),
     /// Start Anabolic again as administrator.

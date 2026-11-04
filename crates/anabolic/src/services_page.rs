@@ -6,7 +6,8 @@
 //! The Services page: every service (Windows' services, or systemd's units
 //! on Linux, the user's own included), its state, how it starts, and the
 //! process it runs in with what that process costs. Start, stop, restart
-//! and the startup type from the row's menu or the side pane.
+//! and the startup type from the row's menu or the side pane; a new
+//! service, a service's properties and deleting one in `services_edit`.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -254,6 +255,22 @@ pub fn service_menu(ui: &mut Ui, s: &Service, busy: bool, out: &mut Vec<UiCmd>) 
             }
         });
     });
+    ui.add_enabled_ui(!busy, |ui| {
+        item(
+            ui,
+            out,
+            "Properties\u{2026}",
+            "",
+            UiCmd::EditService(s.name.clone()),
+        );
+        item(
+            ui,
+            out,
+            "Delete\u{2026}",
+            "",
+            UiCmd::DeleteService(s.name.clone()),
+        );
+    });
     ui.separator();
     if s.pid != 0 {
         item(ui, out, "Go to process", "", UiCmd::GoToPid(s.pid));
@@ -320,6 +337,11 @@ fn pane(
                 }
             });
         }
+        ui.add_enabled_ui(!busy, |ui| {
+            if ui.button("Properties\u{2026}").clicked() {
+                out.push(UiCmd::EditService(s.name.clone()));
+            }
+        });
         if busy {
             ui.spinner();
         }
@@ -538,6 +560,19 @@ pub fn show(
             {
                 page.show = choice;
             }
+        }
+        ui.add_space(6.0);
+        if ui
+            .button("New service\u{2026}")
+            .on_hover_text(if cfg!(windows) {
+                "A service of your own: a program Windows runs in the background, as an account \
+                 you choose"
+            } else {
+                "A systemd service of your own: the system's, or yours alone"
+            })
+            .clicked()
+        {
+            out.push(UiCmd::NewService);
         }
         ui.add_space(6.0);
         ui.label(
