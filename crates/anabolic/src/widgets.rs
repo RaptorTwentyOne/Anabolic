@@ -210,6 +210,60 @@ pub fn rail_icon(ui: &mut Ui, icon: &str, label: &str) -> egui::Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// A text field with a button inside its right end that empties it.
+/// `edit` makes the field from the text (hint, width, password…); the
+/// response is the field's, changed when the button emptied it. The
+/// button shows only while there is something to clear, but its room is
+/// kept, so the text does not move when it comes.
+pub fn clearable(
+    ui: &mut Ui,
+    text: &mut String,
+    edit: impl for<'a> FnOnce(&'a mut String) -> egui::TextEdit<'a>,
+) -> egui::Response {
+    const SIZE: f32 = 16.0;
+    let mut response = ui.add(edit(text).margin(egui::Margin {
+        left: 4,
+        right: 4 + SIZE as i8,
+        top: 2,
+        bottom: 2,
+    }));
+    if text.is_empty() || !response.enabled() {
+        return response;
+    }
+    // On the first line: a multi-line field keeps it at its top.
+    let row = ui.spacing().interact_size.y.min(response.rect.height());
+    let rect = Rect::from_center_size(
+        pos2(
+            response.rect.right() - 2.0 - SIZE / 2.0,
+            response.rect.top() + row / 2.0,
+        ),
+        vec2(SIZE, SIZE),
+    );
+    let clear = ui
+        .interact(rect, response.id.with("clear"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Clear");
+    clear.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Clear"));
+    let color = if clear.hovered() {
+        ui.painter().rect_filled(rect, 3.0, theme::HOVER);
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        theme::icon::CLOSE,
+        theme::icon_font(9.0),
+        color,
+    );
+    if clear.clicked() {
+        text.clear();
+        response.mark_changed();
+    }
+    response
+}
+
 /// An icon glyph inline with text.
 pub fn icon(glyph: &str, size: f32) -> RichText {
     RichText::new(glyph).font(theme::icon_font(size))

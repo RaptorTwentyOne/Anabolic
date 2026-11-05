@@ -307,12 +307,12 @@ impl App {
                             Align::Max,
                             widgets::strong(format!(":{}", w.port), theme::BODY),
                         );
-                        ui.add(
-                            egui::TextEdit::singleline(&mut w.name)
+                        widgets::clearable(ui, &mut w.name, |t| {
+                            egui::TextEdit::singleline(t)
                                 .hint_text("name")
                                 .char_limit(crate::settings::PORT_NAME)
-                                .desired_width(120.0),
-                        );
+                                .desired_width(136.0)
+                        });
                         if ui
                             .small_button(widgets::icon(theme::icon::CLOSE, 9.0))
                             .on_hover_text("Stop watching it")
@@ -324,19 +324,19 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     let (port, name) = &mut self.port_entry;
-                    ui.add(
-                        egui::TextEdit::singleline(port)
+                    widgets::clearable(ui, port, |t| {
+                        egui::TextEdit::singleline(t)
                             .hint_text("port")
-                            .desired_width(52.0),
-                    );
+                            .desired_width(68.0)
+                    });
                     port.retain(|c| c.is_ascii_digit());
                     port.truncate(5);
-                    ui.add(
-                        egui::TextEdit::singleline(name)
+                    widgets::clearable(ui, name, |t| {
+                        egui::TextEdit::singleline(t)
                             .hint_text("name (optional)")
                             .char_limit(crate::settings::PORT_NAME)
-                            .desired_width(120.0),
-                    );
+                            .desired_width(136.0)
+                    });
                     let parsed = port.parse::<u16>().ok().filter(|&p| p != 0);
                     if ui
                         .add_enabled(parsed.is_some(), egui::Button::new("Add"))

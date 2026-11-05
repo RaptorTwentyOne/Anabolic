@@ -143,16 +143,16 @@ fn watched_strip(
                     }
                 });
         }
-        let port = ui.add(
-            egui::TextEdit::singleline(&mut page.add_port)
+        let port = widgets::clearable(ui, &mut page.add_port, |t| {
+            egui::TextEdit::singleline(t)
                 .hint_text("port")
-                .desired_width(56.0),
-        );
-        let name = ui.add(
-            egui::TextEdit::singleline(&mut page.add_name)
+                .desired_width(72.0)
+        });
+        let name = widgets::clearable(ui, &mut page.add_name, |t| {
+            egui::TextEdit::singleline(t)
                 .hint_text("name (optional)")
-                .desired_width(140.0),
-        );
+                .desired_width(156.0)
+        });
         page.add_port.retain(|c| c.is_ascii_digit());
         page.add_port.truncate(5);
         let parsed = page.add_port.parse::<u16>().ok().filter(|&p| p != 0);

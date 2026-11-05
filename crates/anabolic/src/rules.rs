@@ -968,11 +968,11 @@ fn editor(ui: &mut Ui, d: &mut Draft, snap: &Snapshot) -> Option<bool> {
                 .show(ui, |ui| {
                     ui.label("Program");
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut d.rule.image)
+                        widgets::clearable(ui, &mut d.rule.image, |t| {
+                            egui::TextEdit::singleline(t)
                                 .hint_text("chrome.exe")
-                                .desired_width(220.0),
-                        );
+                                .desired_width(236.0)
+                        });
                         let mut names: Vec<&str> = snap
                             .processes
                             .iter()
@@ -1053,11 +1053,11 @@ fn editor(ui: &mut Ui, d: &mut Draft, snap: &Snapshot) -> Option<bool> {
 
                     ui.label("Cores");
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut d.cores)
+                        widgets::clearable(ui, &mut d.cores, |t| {
+                            egui::TextEdit::singleline(t)
                                 .hint_text("all")
-                                .desired_width(160.0),
-                        );
+                                .desired_width(176.0)
+                        });
                         let last = snap.system.cores.len().saturating_sub(1);
                         ui.label(
                             RichText::new(format!(

@@ -66,6 +66,18 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("Double-click", "Go into the folder under the mouse"),
             ("Backspace", "Back up a folder; the mouse's back button too"),
             (
+                "↑ ↓",
+                "Move through the list above the map; Page Up, Page Down, Home and End too",
+            ),
+            (
+                "← →",
+                "Close or open the folder; then to the folder above, or into it",
+            ),
+            (
+                "Enter",
+                "Open or close the folder; on a largest file, find it among the folders",
+            ),
+            (
                 "Del",
                 "Move the selected file or folder to the Recycle Bin (the trash on Linux), after asking",
             ),

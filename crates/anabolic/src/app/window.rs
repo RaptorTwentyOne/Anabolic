@@ -195,12 +195,12 @@ impl App {
                 let find = &mut self.find;
                 ui.horizontal(|ui| {
                     ui.label("Name contains");
-                    let query = ui.add(TextEdit::singleline(&mut find.query).hint_text("file, key or object name").desired_width(340.0));
+                    let query = widgets::clearable(ui, &mut find.query, |t| TextEdit::singleline(t).hint_text("file, key or object name").desired_width(340.0));
                     if std::mem::take(&mut find.focus) {
                         query.request_focus();
                     }
                     ui.label("Skip");
-                    ui.add(TextEdit::singleline(&mut find.exclude).hint_text("e.g. game.exe, avp.exe").desired_width(260.0));
+                    widgets::clearable(ui, &mut find.exclude, |t| TextEdit::singleline(t).hint_text("e.g. game.exe, avp.exe").desired_width(260.0));
                     let go = query.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                     if find.pending {
                         ui.spinner();

@@ -79,7 +79,7 @@ struct Step {
     at: f32,
     what: String,
     pos: egui::Pos2,
-    /// What a `text` step types.
+    /// What a `text` step types, or the key a `key` step presses.
     text: String,
 }
 
@@ -88,7 +88,8 @@ struct Step {
 /// separated by ';', are `seconds:what:x,y`; `what` is `move`, `down` or `up`
 /// (the left button), `right` (a right click) or `shot` (a picture saved as
 /// `<ANABOLIC_SCREENSHOT's name>-<n>.bmp`). `seconds:text:<characters>`
-/// types into the field that has the focus.
+/// types into the field that has the focus; `seconds:key:<name>` presses
+/// and lets go of a key, named as egui names it (`ArrowDown`, `Enter`).
 pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
     static STEPS: OnceLock<std::sync::Mutex<(Instant, Vec<Step>, usize)>> = OnceLock::new();
     let steps = STEPS.get_or_init(|| {
@@ -100,7 +101,7 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
                 let at = parts.next()?.parse().ok()?;
                 let what = parts.next()?.to_string();
                 let rest = parts.next().unwrap_or("0,0");
-                if what == "text" {
+                if what == "text" || what == "key" {
                     return Some(Step {
                         at,
                         what,
@@ -144,6 +145,19 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
                 egui::UserData::new(*next),
             )),
             "text" => raw.events.push(egui::Event::Text(step.text.clone())),
+            "key" => {
+                if let Some(key) = egui::Key::from_name(&step.text) {
+                    for pressed in [true, false] {
+                        raw.events.push(egui::Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
         *next += 1;

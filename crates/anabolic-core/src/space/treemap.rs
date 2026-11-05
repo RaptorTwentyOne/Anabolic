@@ -435,7 +435,10 @@ fn draw(
                         let c = &cells[i as usize];
                         let x0 = (c.rect.x0.round().max(0.0) as usize).min(w);
                         let x1 = (c.rect.x1.round().max(0.0) as usize).min(w);
-                        let y0 = (c.rect.y0.round().max(0.0) as usize).clamp(top, top + rows);
+                        // The piece's own top, for its edge: y0 is where
+                        // this band starts drawing it.
+                        let edge = c.rect.y0.round().max(0.0) as usize;
+                        let y0 = edge.clamp(top, top + rows);
                         let y1 = (c.rect.y1.round().max(0.0) as usize).clamp(top, top + rows);
                         if x0 >= x1 || y0 >= y1 {
                             continue;
@@ -452,7 +455,7 @@ fn draw(
                                         / (nx * nx + ny * ny + 1.0).sqrt();
                                     (style.ambient + (1.0 - style.ambient) * cos.max(0.0))
                                         * style.brightness
-                                } else if x == x0 || y == y0 {
+                                } else if x == x0 || y == edge {
                                     0.6
                                 } else {
                                     1.0
@@ -613,6 +616,28 @@ mod tests {
         let r = map.cells[c as usize].rect;
         let at = |x: f32, y: f32| map.pixels[(y as u32 * 160 + x as u32) as usize][0];
         assert!(at((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0) > at(r.x1 - 1.0, r.y1 - 1.0));
+    }
+
+    #[test]
+    fn flat_pieces_have_an_edge_only_at_their_own_top() {
+        let tree = sample();
+        let style = Style {
+            cushion: false,
+            ..Style::default()
+        };
+        let map = render(&tree, ROOT, 160, 90, &style, &|_| [200, 100, 50], &|| false).unwrap();
+        let big = tree.node(tree.node(ROOT).first).first;
+        let r = map.cells[map.cell_of(&tree, big).unwrap() as usize].rect;
+        assert!(r.y1 - r.y0 > BAND as f32, "the piece crosses a band");
+        let x = ((r.x0 + r.x1) / 2.0) as usize;
+        let at = |y: f32| map.pixels[y.round() as usize * 160 + x][0];
+        assert!(at(r.y0) < at(r.y0 + 1.0), "its top edge is darker");
+        for band in (BAND..90).step_by(BAND) {
+            let y = band as f32;
+            if y > r.y0.round() + 1.0 && y < r.y1.round() {
+                assert_eq!(at(y), at(y - 1.0), "no line where band {band} starts");
+            }
+        }
     }
 
     #[test]

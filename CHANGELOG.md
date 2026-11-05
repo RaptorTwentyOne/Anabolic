@@ -34,6 +34,11 @@ new since the one before.
   that wrote it when the disk trace sees it.
 - The folder picker chooses a folder to scan; the lists save as CSV; the
   line between the lists and the map moves, and stays where it was put.
+  The arrows move through the lists as in Explorer: Left and Right close
+  and open the folders, Enter too. The map's pieces are flat at first;
+  WinDirStat's cushions are a click away.
+- Every text field has a button at its end that empties it, the process
+  filter's among them.
 - `anabolic-cli space [PATH]` shows the same in a terminal: the folders as
   a tree, or the largest files (`--files`) or file types (`--types`). MCP
   clients get it as `get_disk_usage`, which keeps a scan for ten minutes so

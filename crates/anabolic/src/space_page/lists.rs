@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use anabolic_core::space::{DIR, EXTRA_LINK, Node, REMOVED, ROOT, Tree};
 use anabolic_core::sysinfo::local_time;
-use eframe::egui::{self, Align, Label, Layout, RichText, Sense, Ui};
+use eframe::egui::{self, Align, Key, Label, Layout, Modifiers, RichText, Sense, Ui};
 
 use super::{Data, color32};
 use crate::proc_table::{UiCmd, item};
@@ -41,8 +41,9 @@ pub struct Lists {
     stale: bool,
     /// The version of the tree the rows were made from.
     made_for: u64,
-    /// Scroll this row into view next frame.
-    scroll_to: Option<usize>,
+    /// Scroll this row into view next frame: to the middle, or (moved to
+    /// with the keys) just into view.
+    scroll_to: Option<(usize, Option<Align>)>,
     /// Clean-up suggestions shown with all their places.
     open_clean: HashSet<usize>,
 }
@@ -63,7 +64,11 @@ impl Lists {
         }
         self.tab = Tab::Folders;
         self.rebuild(tree);
-        self.scroll_to = self.rows.iter().position(|&(n, _)| n == node);
+        self.scroll_to = self
+            .rows
+            .iter()
+            .position(|&(n, _)| n == node)
+            .map(|i| (i, Some(Align::Center)));
     }
 
     fn rebuild(&mut self, tree: &Tree) {
@@ -126,6 +131,88 @@ const LARGEST_COLUMNS: [Spec; 4] = [
     Spec::new(130.0),
     Spec::new(400.0).clip(),
 ];
+
+/// Whether the list may take the keys: not while a field is typed in, a
+/// menu or list is open, or a question is asked over the page.
+fn keys_free(ui: &Ui) -> bool {
+    let ctx = ui.ctx();
+    !ctx.egui_wants_keyboard_input()
+        && !egui::Popup::is_any_open(ctx)
+        && ctx.memory(|m| m.allows_interaction(ui.layer_id()))
+}
+
+/// How many rows the list shows, for Page Up and Page Down.
+fn page(ui: &Ui) -> usize {
+    (((ui.available_height() - 24.0) / widgets::ROW) as usize)
+        .saturating_sub(1)
+        .max(1)
+}
+
+/// Up and Down, Page Up and Page Down, Home and End, as the rows to move.
+fn step(ui: &Ui) -> Option<isize> {
+    let page = page(ui) as isize;
+    ui.input_mut(|i| {
+        let mut step = None;
+        for (key, delta) in [
+            (Key::ArrowUp, -1),
+            (Key::ArrowDown, 1),
+            (Key::PageUp, -page),
+            (Key::PageDown, page),
+            (Key::Home, isize::MIN / 2),
+            (Key::End, isize::MAX / 2),
+        ] {
+            if i.consume_key(Modifiers::NONE, key) {
+                step = Some(delta);
+            }
+        }
+        step
+    })
+}
+
+/// The row `delta` rows from `from`, in a list of `len`; with none
+/// selected, Down starts at the top and Up at the bottom.
+fn moved(from: Option<usize>, delta: isize, len: usize) -> usize {
+    let from = from.map_or(if delta > 0 { -1 } else { len as isize }, |r| r as isize);
+    from.saturating_add(delta).clamp(0, len as isize - 1) as usize
+}
+
+/// The keys of the folder tree, as in Explorer's: Left closes a folder or
+/// goes to the one above, Right opens it or goes to its first row, Enter
+/// opens or closes it.
+fn folder_keys(ui: &Ui, lists: &mut Lists, data: &mut Data, toggle: &mut Option<u32>) {
+    let len = lists.rows.len();
+    if len == 0 {
+        return;
+    }
+    let at = data
+        .selected
+        .and_then(|n| lists.rows.iter().position(|&(r, _)| r == n));
+    let (left, right, enter) = ui.input_mut(|i| {
+        (
+            i.consume_key(Modifiers::NONE, Key::ArrowLeft),
+            i.consume_key(Modifiers::NONE, Key::ArrowRight),
+            i.consume_key(Modifiers::NONE, Key::Enter),
+        )
+    });
+    let mut to = step(ui).map(|d| moved(at, d, len));
+    if let Some(i) = at {
+        let (n, depth) = lists.rows[i];
+        let node = data.tree.node(n);
+        let folder = node.is_dir() && node.count > 0;
+        let open = lists.open.contains(&n);
+        if (right && folder && !open) || (left && open) || (enter && folder) {
+            *toggle = Some(n);
+        } else if right && open && lists.rows.get(i + 1).is_some_and(|&(_, d)| d == depth + 1) {
+            to = Some(i + 1);
+        } else if left && n != ROOT {
+            to = lists.rows.iter().position(|&(r, _)| r == node.parent);
+        }
+    }
+    if let Some(i) = to {
+        data.selected = Some(lists.rows[i].0);
+        lists.scroll_to = Some((i, None));
+    }
+}
 
 fn right(ui: &mut Ui, text: impl Into<egui::WidgetText>) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -273,9 +360,12 @@ fn folders(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
         lists.made_for = data.version;
         lists.rebuild(&data.tree);
     }
+    let mut toggle = None;
+    if keys_free(ui) {
+        folder_keys(ui, lists, data, &mut toggle);
+    }
     let scroll_to = lists.scroll_to.take();
     let tree = data.tree.clone();
-    let mut toggle = None;
     Columns::load(ui.ctx(), "space-folders", &FOLDER_COLUMNS).show(ui, |table, columns| {
         let mut table = table
             .striped(true)
@@ -283,8 +373,8 @@ fn folders(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
             .auto_shrink([false, false])
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center));
-        if let Some(row) = scroll_to {
-            table = table.scroll_to_row(row, Some(Align::Center));
+        if let Some((row, align)) = scroll_to {
+            table = table.scroll_to_row(row, align);
         }
         table
             .header(20.0, |mut h| {
@@ -378,13 +468,30 @@ fn folders(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
 fn types(ui: &mut Ui, data: &mut Data) {
     let total = data.tree.node(ROOT).size.max(1);
     let mut pick = None;
+    // The keys move the map's highlight from type to type.
+    let mut scroll = None;
+    if keys_free(ui)
+        && !data.exts.is_empty()
+        && let Some(d) = step(ui)
+    {
+        let at = data
+            .highlight
+            .and_then(|h| data.exts.iter().position(|e| e.ext == h));
+        let to = moved(at, d, data.exts.len());
+        data.highlight = Some(data.exts[to].ext);
+        scroll = Some(to);
+    }
     Columns::load(ui.ctx(), "space-types", &TYPE_COLUMNS).show(ui, |table, columns| {
-        table
+        let mut table = table
             .striped(true)
             .resizable(true)
             .auto_shrink([false, false])
             .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
+            .cell_layout(Layout::left_to_right(Align::Center));
+        if let Some(row) = scroll {
+            table = table.scroll_to_row(row, None);
+        }
+        table
             .header(20.0, |mut h| {
                 columns.titles(&mut h, |ui, c| {
                     let (title, numeric) = TYPE_TITLES[c];
@@ -445,13 +552,33 @@ fn largest(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd>
         .filter(|&n| !tree.is_gone(n))
         .collect();
     let mut reveal = None;
+    // Enter finds the file among the folders, as a double click does.
+    let mut scroll = None;
+    if keys_free(ui) && !files.is_empty() {
+        let at = data
+            .selected
+            .and_then(|n| files.iter().position(|&f| f == n));
+        if let Some(d) = step(ui) {
+            let to = moved(at, d, files.len());
+            data.selected = Some(files[to]);
+            scroll = Some(to);
+        } else if let Some(i) = at
+            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+        {
+            reveal = Some(files[i]);
+        }
+    }
     Columns::load(ui.ctx(), "space-largest", &LARGEST_COLUMNS).show(ui, |table, columns| {
-        table
+        let mut table = table
             .striped(true)
             .resizable(true)
             .auto_shrink([false, false])
             .sense(Sense::click())
-            .cell_layout(Layout::left_to_right(Align::Center))
+            .cell_layout(Layout::left_to_right(Align::Center));
+        if let Some(row) = scroll {
+            table = table.scroll_to_row(row, None);
+        }
+        table
             .header(20.0, |mut h| {
                 columns.titles(&mut h, |ui, c| {
                     let (title, numeric) = LARGEST_TITLES[c];

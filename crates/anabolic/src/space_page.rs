@@ -53,7 +53,7 @@ pub struct SpaceSettings {
 impl Default for SpaceSettings {
     fn default() -> Self {
         SpaceSettings {
-            flat: false,
+            flat: true,
             duplicates_from_mb: 1,
             keep_scans: true,
             split: 0.42,
@@ -580,15 +580,15 @@ fn chooser(ui: &mut Ui, page: &mut SpacePage, elevated: bool, ctx: &egui::Contex
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         ui.label("Folder");
-        let edit = ui.add(
-            egui::TextEdit::singleline(&mut page.folder)
+        let edit = widgets::clearable(ui, &mut page.folder, |t| {
+            egui::TextEdit::singleline(t)
                 .hint_text(if cfg!(windows) {
                     r"C:\Users\you\Downloads"
                 } else {
                     "/home/you/Downloads"
                 })
-                .desired_width(420.0),
-        );
+                .desired_width(420.0)
+        });
         let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let go = ui
             .add_enabled(!page.folder.trim().is_empty(), egui::Button::new("Scan"))

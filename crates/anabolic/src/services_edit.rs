@@ -416,15 +416,15 @@ impl ServiceDialog {
                     .show(ui, |ui| {
                         label(ui, "Name");
                         if creating {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut f.name)
+                            widgets::clearable(ui, &mut f.name, |t| {
+                                egui::TextEdit::singleline(t)
                                     .hint_text(hint(if cfg!(windows) {
                                         "a name without spaces is easiest to type"
                                     } else {
                                         ".service is added when it is not there"
                                     }))
-                                    .desired_width(380.0),
-                            );
+                                    .desired_width(380.0)
+                            });
                         } else {
                             ui.label(RichText::new(&f.name).color(theme::TEXT_WEAK));
                         }
@@ -437,29 +437,32 @@ impl ServiceDialog {
                                 "Description"
                             },
                         );
-                        ui.add(egui::TextEdit::singleline(&mut f.display).desired_width(380.0));
+                        widgets::clearable(ui, &mut f.display, |t| {
+                            egui::TextEdit::singleline(t).desired_width(380.0)
+                        });
                         ui.end_row();
                         if cfg!(windows) {
                             label(ui, "Description");
-                            ui.add(
-                                egui::TextEdit::multiline(&mut f.description)
+                            widgets::clearable(ui, &mut f.description, |t| {
+                                egui::TextEdit::multiline(t)
                                     .desired_rows(2)
-                                    .desired_width(380.0),
-                            );
+                                    .desired_width(380.0)
+                            });
                             ui.end_row();
                         }
                         label(ui, "Program");
                         ui.horizontal(|ui| {
-                            ui.add_enabled(
-                                fixed.is_none(),
-                                egui::TextEdit::singleline(&mut f.program)
-                                    .hint_text(hint(if cfg!(windows) {
-                                        r#"for example "C:\Program Files\App\svc.exe" --run"#
-                                    } else {
-                                        "for example /usr/local/bin/svc --run"
-                                    }))
-                                    .desired_width(if cfg!(windows) { 300.0 } else { 380.0 }),
-                            );
+                            ui.add_enabled_ui(fixed.is_none(), |ui| {
+                                widgets::clearable(ui, &mut f.program, |t| {
+                                    egui::TextEdit::singleline(t)
+                                        .hint_text(hint(if cfg!(windows) {
+                                            r#"for example "C:\Program Files\App\svc.exe" --run"#
+                                        } else {
+                                            "for example /usr/local/bin/svc --run"
+                                        }))
+                                        .desired_width(if cfg!(windows) { 300.0 } else { 380.0 })
+                                })
+                            });
                             if cfg!(windows)
                                 && ui
                                     .add_enabled(
@@ -538,16 +541,17 @@ impl ServiceDialog {
                         }
                         ui.horizontal(|ui| {
                             ui.radio_value(&mut f.who, Who::User, "This account");
-                            ui.add_enabled(
-                                f.who == Who::User,
-                                egui::TextEdit::singleline(&mut f.user)
-                                    .hint_text(hint(if cfg!(windows) {
-                                        r".\name or DOMAIN\name"
-                                    } else {
-                                        "a user name"
-                                    }))
-                                    .desired_width(260.0),
-                            );
+                            ui.add_enabled_ui(f.who == Who::User, |ui| {
+                                widgets::clearable(ui, &mut f.user, |t| {
+                                    egui::TextEdit::singleline(t)
+                                        .hint_text(hint(if cfg!(windows) {
+                                            r".\name or DOMAIN\name"
+                                        } else {
+                                            "a user name"
+                                        }))
+                                        .desired_width(260.0)
+                                })
+                            });
                         });
                         if cfg!(windows) && f.who == Who::User {
                             let same = found.is_some_and(|d| {
@@ -563,18 +567,18 @@ impl ServiceDialog {
                                     .min_col_width(120.0)
                                     .show(ui, |ui| {
                                         label(ui, "Password");
-                                        ui.add(
-                                            egui::TextEdit::singleline(&mut f.password)
+                                        widgets::clearable(ui, &mut f.password, |t| {
+                                            egui::TextEdit::singleline(t)
                                                 .password(true)
-                                                .desired_width(260.0),
-                                        );
+                                                .desired_width(260.0)
+                                        });
                                         ui.end_row();
                                         label(ui, "Once more");
-                                        ui.add(
-                                            egui::TextEdit::singleline(&mut f.confirm)
+                                        widgets::clearable(ui, &mut f.confirm, |t| {
+                                            egui::TextEdit::singleline(t)
                                                 .password(true)
-                                                .desired_width(260.0),
-                                        );
+                                                .desired_width(260.0)
+                                        });
                                         ui.end_row();
                                     });
                                 note(
@@ -601,11 +605,11 @@ impl ServiceDialog {
                     },
                     theme::TEXT_DIM,
                 );
-                ui.add(
-                    egui::TextEdit::singleline(&mut f.dependencies)
+                widgets::clearable(ui, &mut f.dependencies, |t| {
+                    egui::TextEdit::singleline(t)
                         .hint_text(hint("none"))
-                        .desired_width(f32::INFINITY),
-                );
+                        .desired_width(f32::INFINITY)
+                });
 
                 ui.add_space(10.0);
                 widgets::section(ui, "If it fails");
@@ -671,11 +675,11 @@ impl ServiceDialog {
                             let runs = f.actions.contains(&FailureAction::RunProgram);
                             label(ui, "Program to run");
                             ui.horizontal(|ui| {
-                                ui.add_enabled(
-                                    runs,
-                                    egui::TextEdit::singleline(&mut f.recovery_program)
-                                        .desired_width(300.0),
-                                );
+                                ui.add_enabled_ui(runs, |ui| {
+                                    widgets::clearable(ui, &mut f.recovery_program, |t| {
+                                        egui::TextEdit::singleline(t).desired_width(300.0)
+                                    })
+                                });
                                 if ui
                                     .add_enabled(
                                         runs && !browsing,

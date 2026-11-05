@@ -266,15 +266,15 @@ impl RunDialog {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut self.line)
+                let field = widgets::clearable(ui, &mut self.line, |t| {
+                    egui::TextEdit::singleline(t)
                         .hint_text(if cfg!(windows) {
                             "notepad, cmd /k dir, C:\\Projects, https://…"
                         } else {
                             "gnome-text-editor, htop, ~/Projects, https://…"
                         })
-                        .desired_width(if cfg!(windows) { 330.0 } else { 410.0 }),
-                );
+                        .desired_width(if cfg!(windows) { 346.0 } else { 426.0 })
+                });
                 if std::mem::take(&mut self.focus) {
                     field.request_focus();
                 }

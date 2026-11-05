@@ -258,6 +258,7 @@ one in KDE's shortcut settings.
 | Space | Pause updates |
 | F5 | Refresh now |
 | Del, Shift+Del | End the selected process, or its whole tree; on Disk space, move the selected file or folder to the Recycle Bin, or delete it for good, after asking |
+| ↑ ↓ ← →, Enter | On Disk space, move through the folders, open and close them |
 | Shift+F10 | The selected process' menu |
 | F1 | Every shortcut and what the colours mean |
 

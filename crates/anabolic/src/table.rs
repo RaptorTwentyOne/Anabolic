@@ -112,25 +112,15 @@ impl TableView {
     /// The filter box; `shown` and `total` say how many rows pass. Esc
     /// clears it. Returns true when the filter changed.
     pub fn filter_box(&mut self, ui: &mut Ui, hint: &str, shown: usize, total: usize) -> bool {
-        let edit = ui.add(
-            TextEdit::singleline(&mut self.filter)
-                .hint_text(hint)
-                .desired_width(220.0),
-        );
+        let edit = widgets::clearable(ui, &mut self.filter, |t| {
+            TextEdit::singleline(t).hint_text(hint).desired_width(236.0)
+        });
         let mut changed = edit.changed();
         if edit.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) && !self.filter.is_empty() {
             self.filter.clear();
             changed = true;
         }
         if !self.filter.is_empty() {
-            if ui
-                .small_button(widgets::icon(theme::icon::CLOSE, 10.0))
-                .on_hover_text("Clear the filter (Esc)")
-                .clicked()
-            {
-                self.filter.clear();
-                changed = true;
-            }
             ui.label(
                 egui::RichText::new(format!("{shown} of {total}"))
                     .size(theme::META)

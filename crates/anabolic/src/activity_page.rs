@@ -1123,11 +1123,11 @@ fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Program");
-            ui.add(
-                TextEdit::singleline(&mut page.program)
+            widgets::clearable(ui, &mut page.program, |t| {
+                TextEdit::singleline(t)
                     .hint_text(PROGRAM_HINT)
-                    .desired_width(420.0),
-            );
+                    .desired_width(420.0)
+            });
             if ui
                 .add_enabled(page.picking.is_none(), egui::Button::new("Browse…"))
                 .clicked()
@@ -1141,7 +1141,9 @@ fn start_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
         });
         ui.horizontal(|ui| {
             ui.label("Arguments");
-            ui.add(TextEdit::singleline(&mut page.args).desired_width(420.0));
+            widgets::clearable(ui, &mut page.args, |t| {
+                TextEdit::singleline(t).desired_width(420.0)
+            });
             if ui
                 .button(widgets::strong("Start and record", theme::BODY))
                 .clicked()
@@ -1213,11 +1215,11 @@ fn running_card(ui: &mut Ui, page: &mut ActivityPage, snap: &Snapshot) {
     };
     let mut record = false;
     ui.horizontal(|ui| {
-        ui.add(
-            TextEdit::singleline(&mut page.pick_find)
+        widgets::clearable(ui, &mut page.pick_find, |t| {
+            TextEdit::singleline(t)
                 .hint_text("Find by name or PID")
-                .desired_width(240.0),
-        );
+                .desired_width(256.0)
+        });
         ui.checkbox(&mut page.pick_tree, "With the processes under it");
         let ready = page.pick.is_some_and(alive);
         if ui

@@ -284,11 +284,11 @@ impl App {
     }
 
     pub(super) fn list_controls(&mut self, ui: &mut egui::Ui) {
-        let search = ui.add(
-            TextEdit::singleline(&mut self.table.filter)
+        let search = widgets::clearable(ui, &mut self.table.filter, |t| {
+            TextEdit::singleline(t)
                 .hint_text("Filter by name, PID, path or user  (Ctrl+F)")
-                .desired_width(300.0),
-        );
+                .desired_width(316.0)
+        });
         if std::mem::take(&mut self.focus_search) {
             self.settings.tab = Tab::Processes;
             search.request_focus();
