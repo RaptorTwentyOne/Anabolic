@@ -35,10 +35,13 @@ new since the one before.
 - The folder picker chooses a folder to scan; the lists save as CSV; the
   line between the lists and the map moves, and stays where it was put.
   The arrows move through the lists as in Explorer: Left and Right close
-  and open the folders, Enter too. The map's pieces are flat at first;
-  WinDirStat's cushions are a click away.
+  and open the folders, Enter too.
 - Every text field has a button at its end that empties it, the process
   filter's among them.
+- The Overview shows how full each drive is; a click on one opens Disk
+  space with what fills it.
+- Shift+Delete on the Processes page ends the selected process' tree on
+  Windows too: Windows hands the keys on as Cut, and they did nothing.
 - `anabolic-cli space [PATH]` shows the same in a terminal: the folders as
   a tree, or the largest files (`--files`) or file types (`--types`). MCP
   clients get it as `get_disk_usage`, which keeps a scan for ten minutes so

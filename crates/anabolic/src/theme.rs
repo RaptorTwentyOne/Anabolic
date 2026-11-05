@@ -66,6 +66,8 @@ pub const COMMIT: Color32 = Color32::from_rgb(0x8E, 0x6B, 0xD8);
 pub const MEMORY_STANDBY: Color32 = Color32::from_rgb(0x5E, 0x55, 0x8C);
 pub const DISK_READ: Color32 = Color32::from_rgb(0x66, 0xD1, 0x8F);
 pub const DISK_WRITE: Color32 = Color32::from_rgb(0xFF, 0xB8, 0x4D);
+/// The used part of a drive, blue as in Explorer.
+pub const DRIVE_USED: Color32 = Color32::from_rgb(0x3A, 0x8E, 0xD8);
 pub const NET_RX: Color32 = Color32::from_rgb(0x4D, 0xD0, 0xC8);
 pub const NET_TX: Color32 = Color32::from_rgb(0xF0, 0x7A, 0xC8);
 pub const GPU: Color32 = Color32::from_rgb(0x8B, 0xD3, 0x4F);

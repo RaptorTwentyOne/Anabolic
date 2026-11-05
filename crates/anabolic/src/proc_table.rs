@@ -179,6 +179,8 @@ pub enum UiCmd {
     FindZombies,
     /// Open a page.
     ShowTab(crate::settings::Tab),
+    /// Disk space, with what fills this drive or folder.
+    ShowSpace(std::path::PathBuf),
     /// Open a view of the Performance page.
     ShowPerf(crate::perf::PerfView),
     /// Show every process of a program (by name) in the Apps view.

@@ -53,7 +53,7 @@ pub struct SpaceSettings {
 impl Default for SpaceSettings {
     fn default() -> Self {
         SpaceSettings {
-            flat: true,
+            flat: false,
             duplicates_from_mb: 1,
             keep_scans: true,
             split: 0.42,
@@ -234,6 +234,23 @@ impl SpacePage {
         self.data.is_some() && self.lists.tab == lists::Tab::Live && self.live.following()
     }
 
+    /// Shows what fills `path`: the scan on the page when it is of `path`,
+    /// otherwise a new one.
+    pub fn show_path(&mut self, path: PathBuf) {
+        let shown = self.scanning.is_none()
+            && self.data.as_ref().is_some_and(|d| {
+                d.tree
+                    .path
+                    .as_os_str()
+                    .eq_ignore_ascii_case(path.as_os_str())
+            });
+        if shown {
+            self.choosing = false;
+        } else {
+            self.start = Some(path);
+        }
+    }
+
     fn begin(&mut self, path: PathBuf, ctx: &egui::Context) {
         if let Some(s) = &self.scanning {
             s.progress.cancel();
@@ -396,11 +413,9 @@ pub fn show(
     // Delete and Shift+Delete, as in Explorer.
     if !ctx.egui_wants_keyboard_input()
         && let Some(n) = data.selected
+        && let Some(shift) = ui.input_mut(widgets::take_delete)
     {
-        let (delete, shift) = ui.input(|i| (i.key_pressed(egui::Key::Delete), i.modifiers.shift));
-        if delete {
-            data.ask_delete = Some((n, !shift));
-        }
+        data.ask_delete = Some((n, !shift));
     }
     // The lists above, the map below, and between them a handle that moves
     // the line; the lists keep their height whatever a tab shows.

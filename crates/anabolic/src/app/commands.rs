@@ -680,6 +680,11 @@ impl App {
                     self.jumped();
                     self.settings.tab = tab;
                 }
+                UiCmd::ShowSpace(path) => {
+                    self.jumped();
+                    self.settings.tab = Tab::Space;
+                    self.space.show_path(path);
+                }
                 UiCmd::ShowPerf(view) => {
                     self.jumped();
                     self.settings.tab = Tab::Performance;

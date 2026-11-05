@@ -89,7 +89,8 @@ struct Step {
 /// (the left button), `right` (a right click) or `shot` (a picture saved as
 /// `<ANABOLIC_SCREENSHOT's name>-<n>.bmp`). `seconds:text:<characters>`
 /// types into the field that has the focus; `seconds:key:<name>` presses
-/// and lets go of a key, named as egui names it (`ArrowDown`, `Enter`).
+/// and lets go of a key, named as egui names it (`ArrowDown`, `Enter`,
+/// `Shift+Delete`).
 pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
     static STEPS: OnceLock<std::sync::Mutex<(Instant, Vec<Step>, usize)>> = OnceLock::new();
     let steps = STEPS.get_or_init(|| {
@@ -122,6 +123,12 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
     });
     let Ok(mut state) = steps.lock() else { return };
     let (started, steps, next) = &mut *state;
+    // Shift is held for the frame of its key and let go in the next.
+    static SHIFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if SHIFT.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        raw.events
+            .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    }
     let now = started.elapsed().as_secs_f32();
     while let Some(step) = steps.get(*next).filter(|s| s.at <= now) {
         let button = |pressed, button| egui::Event::PointerButton {
@@ -146,16 +153,36 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
             )),
             "text" => raw.events.push(egui::Event::Text(step.text.clone())),
             "key" => {
-                if let Some(key) = egui::Key::from_name(&step.text) {
-                    for pressed in [true, false] {
-                        raw.events.push(egui::Event::Key {
-                            key,
-                            physical_key: None,
-                            pressed,
-                            repeat: false,
-                            modifiers: egui::Modifiers::NONE,
-                        });
+                let (shift, name) = match step.text.strip_prefix("Shift+") {
+                    Some(name) => (true, name),
+                    None => (false, step.text.as_str()),
+                };
+                let modifiers = egui::Modifiers {
+                    shift,
+                    ..egui::Modifiers::NONE
+                };
+                if shift {
+                    raw.events.push(egui::Event::ModifiersChanged(modifiers));
+                    SHIFT.store(true, std::sync::atomic::Ordering::Relaxed);
+                    ctx.request_repaint();
+                }
+                match egui::Key::from_name(name) {
+                    // As egui-winit gives it on Windows.
+                    Some(egui::Key::Delete) if shift && cfg!(windows) => {
+                        raw.events.push(egui::Event::Cut);
                     }
+                    Some(key) => {
+                        for pressed in [true, false] {
+                            raw.events.push(egui::Event::Key {
+                                key,
+                                physical_key: None,
+                                pressed,
+                                repeat: false,
+                                modifiers,
+                            });
+                        }
+                    }
+                    None => {}
                 }
             }
             _ => {}

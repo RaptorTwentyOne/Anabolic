@@ -124,7 +124,7 @@ impl App {
                 self.table.scroll_to_selected = true;
             }
             if let Some(id) = &group_id {
-                if i.consume_key(Modifiers::NONE, Key::Delete) {
+                if widgets::take_delete(i).is_some() {
                     out.push(UiCmd::KillGroup(id.clone()));
                 }
                 let expanded = current_row.is_some_and(|r| r.expanded);
@@ -134,10 +134,8 @@ impl App {
                     out.push(UiCmd::ToggleGroup(id.clone()));
                 }
             } else if let Some(key) = self.table.selected {
-                if i.consume_key(Modifiers::SHIFT, Key::Delete) {
-                    out.push(UiCmd::Kill { key, tree: true });
-                } else if i.consume_key(Modifiers::NONE, Key::Delete) {
-                    out.push(UiCmd::Kill { key, tree: false });
+                if let Some(tree) = widgets::take_delete(i) {
+                    out.push(UiCmd::Kill { key, tree });
                 }
                 if self.settings.view == View::Tree
                     && let Some(row) = current_row

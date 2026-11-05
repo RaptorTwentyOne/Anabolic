@@ -17,8 +17,8 @@ use anabolic_core::hwinfo::HardwareInfo;
 use anabolic_core::sensors::{Heat, SensorKind};
 use anabolic_core::{InfoLevel, NetActivity, ProcKey, ProcState, Snapshot};
 use eframe::egui::{
-    self, Align, CursorIcon, Frame, Label, Layout, Margin, RichText, Sense, Stroke, StrokeKind, Ui,
-    UiBuilder, vec2,
+    self, Align, CursorIcon, Frame, Label, Layout, Margin, Rect, RichText, Sense, Stroke,
+    StrokeKind, Ui, UiBuilder, vec2,
 };
 
 use crate::graph::Graph;
@@ -38,6 +38,7 @@ const ROW_HEIGHT: f32 = 22.0;
 const APP_ROWS: usize = 10;
 const RECENT_ROWS: usize = 8;
 const PORT_ROWS: usize = 6;
+const DRIVE_ROWS: usize = 6;
 /// "Recently started" goes this far back.
 const RECENT_MINUTES: i64 = 10;
 /// A volume with less free than this, and less than a tenth of it, is full.
@@ -1123,7 +1124,117 @@ fn side_column(ui: &mut Ui, input: &Inputs<'_>, out: &mut Vec<UiCmd>) {
         development(ui, input, activity, out);
     }
     ui.add_space(GAP);
+    drives(ui, input, out);
+    ui.add_space(GAP);
     this_pc(ui, input);
+}
+
+/// How full each drive is; a click shows what fills it.
+fn drives(ui: &mut Ui, input: &Inputs<'_>, out: &mut Vec<UiCmd>) {
+    // A volume spread over several disks is listed under each: once here.
+    let volumes: std::collections::BTreeMap<&str, &anabolic_core::disk::Volume> = input
+        .snap
+        .system
+        .disks
+        .iter()
+        .flat_map(|d| &d.volumes)
+        .filter(|v| v.total > 0 && !v.letter.is_empty())
+        .map(|v| (v.letter.as_str(), v))
+        .collect();
+    if volumes.is_empty() {
+        return;
+    }
+    let (mut all, mut rest) = (false, false);
+    card(
+        ui,
+        "Drives",
+        |ui| {
+            all = ui
+                .small_button("Disk space")
+                .on_hover_text("What fills a drive or a folder (Ctrl+D)")
+                .clicked();
+        },
+        |ui| {
+            for (i, v) in volumes.values().take(DRIVE_ROWS).enumerate() {
+                let used = v.total.saturating_sub(v.free);
+                let share = used as f64 / v.total as f64;
+                let color = if v.free < v.total / 50 {
+                    theme::BAD
+                } else if share >= 0.9 {
+                    theme::ELEVATED_TEXT
+                } else {
+                    theme::DRIVE_USED
+                };
+                let response = row(ui, &v.letter, i, |ui, hovered| {
+                    widgets::text(
+                        ui,
+                        150.0,
+                        Align::Min,
+                        if v.label.is_empty() {
+                            name(&v.letter, hovered)
+                        } else {
+                            name(&format!("{}  {}", v.letter, v.label), hovered)
+                        },
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        widgets::text(
+                            ui,
+                            84.0,
+                            Align::Max,
+                            weak(format!("{} free", fmt::bytes(v.free))),
+                        );
+                        widgets::text(
+                            ui,
+                            40.0,
+                            Align::Max,
+                            RichText::new(format!("{:.0} %", share * 100.0)).color(
+                                if color == theme::DRIVE_USED {
+                                    theme::TEXT
+                                } else {
+                                    color
+                                },
+                            ),
+                        );
+                        let width = (ui.available_width() - 8.0).max(16.0);
+                        let (rect, _) =
+                            ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::hover());
+                        let track = Rect::from_min_size(
+                            rect.left_center() - vec2(0.0, 4.0),
+                            vec2(rect.width(), 8.0),
+                        );
+                        let p = ui.painter();
+                        p.rect_filled(track, 2.0, theme::BUTTON);
+                        p.rect_filled(
+                            Rect::from_min_size(
+                                track.min,
+                                vec2(track.width() * share.clamp(0.0, 1.0) as f32, track.height()),
+                            ),
+                            2.0,
+                            color,
+                        );
+                    });
+                });
+                let response = response.on_hover_text(format!(
+                    "{} used of {}. Click to see what fills it.",
+                    fmt::bytes(used),
+                    fmt::bytes(v.total)
+                ));
+                if response.clicked() {
+                    let path = if v.letter.ends_with(':') {
+                        format!("{}\\", v.letter)
+                    } else {
+                        v.letter.clone()
+                    };
+                    out.push(UiCmd::ShowSpace(path.into()));
+                }
+            }
+            rest = volumes.len() > DRIVE_ROWS
+                && more(ui, volumes.len() - DRIVE_ROWS, "All of them on Disk space");
+        },
+    );
+    if all || rest {
+        out.push(UiCmd::ShowTab(Tab::Space));
+    }
 }
 
 fn development(ui: &mut Ui, input: &Inputs<'_>, activity: &NetActivity, out: &mut Vec<UiCmd>) {

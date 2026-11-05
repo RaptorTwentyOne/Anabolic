@@ -264,6 +264,28 @@ pub fn clearable(
     response
 }
 
+/// Delete or Shift+Delete, taken from the input: `Some(true)` with Shift.
+/// On Windows egui-winit hands Shift+Delete on as Cut, the old shortcut of
+/// Windows' text fields, and never as the key; outside a text field the
+/// Cut stands for it here. Ask only when no text field has the keyboard.
+pub fn take_delete(i: &mut egui::InputState) -> Option<bool> {
+    // Without Shift in the pattern, Shift+Delete matches too: Shift first.
+    if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Delete) {
+        return Some(true);
+    }
+    if i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) {
+        return Some(false);
+    }
+    if cfg!(windows) && i.modifiers.shift && !i.modifiers.command {
+        let before = i.events.len();
+        i.events.retain(|e| !matches!(e, egui::Event::Cut));
+        if i.events.len() != before {
+            return Some(true);
+        }
+    }
+    None
+}
+
 /// An icon glyph inline with text.
 pub fn icon(glyph: &str, size: f32) -> RichText {
     RichText::new(glyph).font(theme::icon_font(size))
