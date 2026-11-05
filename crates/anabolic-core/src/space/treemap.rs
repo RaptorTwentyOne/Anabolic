@@ -232,22 +232,22 @@ fn layout(
         if !split {
             continue;
         }
-        // Largest first: once one child is too small to show, the rest go
-        // into one piece.
+        // The children too small to show go into one piece. The scan lays
+        // them out largest first, but sizes that changed since (the change
+        // journal, a deletion) can leave a small one before larger ones:
+        // all are looked at, and those shown are put in order.
         let per_byte = rect.area() / n.size as f64;
         items.clear();
         let mut shown = 0u64;
         for c in n.children() {
             let size = tree.size(c);
-            if size == 0 {
+            if size == 0 || (size as f64 * per_byte) < MIN_AREA {
                 continue;
-            }
-            if size as f64 * per_byte < MIN_AREA {
-                break;
             }
             items.push((c, size as f64));
             shown += size;
         }
+        items.sort_by(|a, b| b.1.total_cmp(&a.1));
         let rest = n.size.saturating_sub(shown);
         let skip = items.len() as u32;
         if rest > 0 {
@@ -616,6 +616,28 @@ mod tests {
         let r = map.cells[c as usize].rect;
         let at = |x: f32, y: f32| map.pixels[(y as u32 * 160 + x as u32) as usize][0];
         assert!(at((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0) > at(r.x1 - 1.0, r.y1 - 1.0));
+    }
+
+    #[test]
+    fn a_child_that_shrank_since_the_scan_hides_none_after_it() {
+        // Games was the largest; the change journal shrinks it to a byte
+        // and grows the movie, and Games stays first among the children,
+        // too small to show.
+        let mut tree = sample();
+        let games = tree.node(ROOT).first;
+        let big = tree.node(games).first;
+        let movie = games + 1;
+        tree.resize(big, 1, 1);
+        tree.resize(big + 1, 0, 0);
+        tree.resize(movie, 100_000, 100_000);
+        let style = Style::default();
+        let map = render(&tree, ROOT, 160, 90, &style, &|_| [200, 100, 50], &|| false).unwrap();
+        assert_eq!(
+            map.cell_of(&tree, movie)
+                .map(|c| map.cells[c as usize].node),
+            Some(movie),
+            "the movie is a piece of its own, not lost among the small files"
+        );
     }
 
     #[test]

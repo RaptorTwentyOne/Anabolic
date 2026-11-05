@@ -147,6 +147,50 @@ impl Volume {
     /// A record's size now, from the volume (the file is not opened):
     /// (folder, size, alloc), or None when the record is no longer in use.
     fn sizes_of(&self, record: u64) -> Option<(bool, u64, u64)> {
+        let rec = self.file_record(record)?;
+        let mut parsed = Parsed::default();
+        parse_fixed(&rec, record as u32, self.cluster, &mut parsed);
+        let mut r = *parsed.recs.first()?;
+        // A record too full for all its attributes continues in others,
+        // named by its attribute list: a much fragmented file keeps its
+        // data's layout, and its sizes with it, in one of those.
+        let mut list = None;
+        attributes(&rec, |kind, a| {
+            if kind == ATTR_ATTRIBUTE_LIST {
+                list = Some(a.to_vec());
+            }
+        });
+        if let Some(list) = list {
+            let value = self.list_value(&list).ok()?;
+            let mut more = list_records(&value);
+            more.retain(|&m| m != record & REF_MASK);
+            more.sort_unstable();
+            more.dedup();
+            for m in more {
+                let Some(ext) = self.file_record(m) else {
+                    continue;
+                };
+                // Only a record that says it continues this one.
+                if u64_at(&ext, 0x20) & REF_MASK != record & REF_MASK {
+                    continue;
+                }
+                let mut p = Parsed::default();
+                parse_fixed(&ext, m as u32, self.cluster, &mut p);
+                if let Some(e) = p.recs.first() {
+                    r.alloc += e.alloc;
+                    if e.has_size && !r.has_size {
+                        r.size = e.size;
+                        r.has_size = true;
+                    }
+                }
+            }
+        }
+        Some((r.dir, r.size, r.alloc))
+    }
+
+    /// One record as the volume has it now, its check values put back; None
+    /// when it is not in use.
+    fn file_record(&self, record: u64) -> Option<Vec<u8>> {
         let input = NTFS_FILE_RECORD_INPUT_BUFFER {
             FileReferenceNumber: record as i64,
         };
@@ -179,10 +223,31 @@ impl Volume {
         }
         // The system may hand it over with its check values put back.
         let _ = fixup(rec);
-        let mut parsed = Parsed::default();
-        parse_fixed(rec, record as u32, self.cluster, &mut parsed);
-        let r = parsed.recs.first()?;
-        Some((r.dir, r.size, r.alloc))
+        Some(rec.to_vec())
+    }
+
+    /// An attribute list's entries, kept in its record or, for a very
+    /// fragmented file, outside it.
+    fn list_value(&self, list: &[u8]) -> Result<Vec<u8>, String> {
+        if list[8] == 0 {
+            return Ok(resident_value(list)
+                .ok_or("unreadable attribute list")?
+                .to_vec());
+        }
+        let at = u16_at(list, 0x20) as usize;
+        let size = u64_at(list, 0x30) as usize;
+        let mut value = Vec::with_capacity(size);
+        for (lcn, clusters) in
+            runs(list.get(at..).unwrap_or(&[])).ok_or("unreadable attribute list")?
+        {
+            let lcn = lcn.ok_or("the attribute list has a hole")?;
+            value.extend(self.read_bytes(
+                lcn as u64 * self.cluster,
+                (clusters * self.cluster) as usize,
+            )?);
+        }
+        value.truncate(size);
+        Ok(value)
     }
 
     /// Whether the disk under the volume seeks (a hard disk).
@@ -239,26 +304,7 @@ impl Volume {
         // named by its attribute list, which a very fragmented one keeps
         // outside its record too.
         if let Some(list) = list {
-            let value = if list[8] == 0 {
-                resident_value(&list)
-                    .ok_or("unreadable attribute list")?
-                    .to_vec()
-            } else {
-                let at = u16_at(&list, 0x20) as usize;
-                let size = u64_at(&list, 0x30) as usize;
-                let mut value = Vec::with_capacity(size);
-                for (lcn, clusters) in
-                    runs(list.get(at..).unwrap_or(&[])).ok_or("unreadable attribute list")?
-                {
-                    let lcn = lcn.ok_or("the attribute list has a hole")?;
-                    value.extend(self.read_bytes(
-                        lcn as u64 * self.cluster,
-                        (clusters * self.cluster) as usize,
-                    )?);
-                }
-                value.truncate(size);
-                value
-            };
+            let value = self.list_value(&list)?;
             let mut at = 0;
             while at + 0x1A <= value.len() {
                 let kind = u32_at(&value, at);
@@ -446,6 +492,33 @@ fn le(b: &[u8], signed: bool) -> i64 {
         v -= 1 << bits;
     }
     v
+}
+
+/// For a test: a record's size as the change journal's follower reads it,
+/// and whether the record continues in others.
+#[cfg(test)]
+pub(super) fn sizes_now(device: &str, record: u64) -> Option<((bool, u64, u64), bool)> {
+    let volume = Volume::open(device).ok()?;
+    let mut list = false;
+    attributes(&volume.file_record(record)?, |kind, _| {
+        list |= kind == ATTR_ATTRIBUTE_LIST;
+    });
+    Some((volume.sizes_of(record)?, list))
+}
+
+/// The records an attribute list's entries are kept in.
+fn list_records(value: &[u8]) -> Vec<u64> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 0x18 <= value.len() {
+        let len = usize::from(u16_at(value, at + 4));
+        if len == 0 {
+            break;
+        }
+        out.push(u64_at(value, at + 0x10) & REF_MASK);
+        at += len;
+    }
+    out
 }
 
 /// Decodes a data run list into (first cluster, clusters); `None` for a

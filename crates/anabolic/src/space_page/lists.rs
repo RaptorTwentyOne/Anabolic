@@ -74,16 +74,25 @@ impl Lists {
     fn rebuild(&mut self, tree: &Tree) {
         self.rows.clear();
         let mut stack = vec![(ROOT, 0u16)];
+        let mut children = Vec::new();
         while let Some((n, depth)) = stack.pop() {
             self.rows.push((n, depth));
-            let node = &tree.node(n);
-            if self.open.contains(&n) {
-                for c in node.children().rev() {
-                    if tree.node(c).flags & REMOVED == 0 {
-                        stack.push((c, depth + 1));
-                    }
-                }
+            if !self.open.contains(&n) {
+                continue;
             }
+            children.clear();
+            children.extend(
+                tree.node(n)
+                    .children()
+                    .filter(|&c| tree.flags(c) & REMOVED == 0),
+            );
+            // Largest first, as the scan laid them out; sizes that changed
+            // since (the change journal, a deletion) can leave them out of
+            // order, and checking costs less than sorting.
+            if !children.is_sorted_by_key(|&c| std::cmp::Reverse(tree.size(c))) {
+                children.sort_by_key(|&c| std::cmp::Reverse(tree.size(c)));
+            }
+            stack.extend(children.iter().rev().map(|&c| (c, depth + 1)));
         }
         self.stale = false;
     }

@@ -558,7 +558,8 @@ pub(crate) struct Builder {
     names: String,
     ext_ids: HashMap<Box<str>, u32>,
     exts: Vec<Box<str>>,
-    links: HashSet<(u64, u64)>,
+    /// The nodes of files with more than one name, with the file's id.
+    linked: Vec<(u32, (u64, u64))>,
 }
 
 #[derive(Clone, Copy)]
@@ -593,7 +594,7 @@ impl Builder {
             names: String::with_capacity(1 << 20),
             ext_ids: HashMap::new(),
             exts: vec!["".into()],
-            links: HashSet::new(),
+            linked: Vec::new(),
         };
         b.push(
             NONE,
@@ -607,13 +608,9 @@ impl Builder {
     }
 
     /// Adds a node under `parent` (NONE while its parent is not known yet).
-    pub fn push(&mut self, parent: u32, name: &str, mut e: Entry) -> u32 {
-        if let Some(id) = e.link
-            && !self.links.insert(id)
-        {
-            e.size = 0;
-            e.alloc = 0;
-            e.flags |= EXTRA_LINK;
+    pub fn push(&mut self, parent: u32, name: &str, e: Entry) -> u32 {
+        if let Some(id) = e.link {
+            self.linked.push((self.raw.len() as u32, id));
         }
         let ext = if e.flags & DIR == 0 {
             self.ext_of(name)
@@ -680,7 +677,7 @@ impl Builder {
     /// root (a broken chain of parents) are left out.
     pub fn finish(self, progress: &Progress) -> Parts {
         progress.set_phase(Phase::Building);
-        let raw = self.raw;
+        let mut raw = self.raw;
         let n = raw.len();
         // Children of each node, unsorted: kids[start[p]..start[p + 1]].
         let mut start = vec![0u32; n + 1];
@@ -716,6 +713,24 @@ impl Builder {
             order
         };
         let top_down = order(&kids);
+        // A file with more than one name counts once, at the first of its
+        // names the root reaches: a folder's scan keeps a file whose first
+        // name is outside it (System32's drivers, first named in WinSxS).
+        if !self.linked.is_empty() {
+            let mut reached = vec![false; n];
+            for &u in &top_down {
+                reached[u as usize] = true;
+            }
+            let mut counted = HashSet::new();
+            for &(u, id) in &self.linked {
+                let r = &mut raw[u as usize];
+                if reached[u as usize] && !counted.insert(id) {
+                    r.size = 0;
+                    r.alloc = 0;
+                    r.flags |= EXTRA_LINK;
+                }
+            }
+        }
         let mut size: Vec<u64> = raw.iter().map(|r| r.size).collect();
         let mut alloc: Vec<u64> = raw.iter().map(|r| r.alloc).collect();
         let mut files: Vec<u32> = raw.iter().map(|r| u32::from(r.flags & DIR == 0)).collect();
@@ -1004,6 +1019,24 @@ mod tests {
         let t = Tree::assemble(b.finish(&Progress::default()), Path::new("R"), Method::Walk);
         assert_eq!(t.node(ROOT).size, 100);
         assert_eq!(t.node(2).flags & EXTRA_LINK, EXTRA_LINK);
+    }
+
+    #[test]
+    fn a_file_named_first_outside_the_root_counts_inside_it() {
+        // A folder's scan: the file's first name is in a folder the root
+        // does not reach, its second inside.
+        let mut b = Builder::new("drivers", dir());
+        let linked = Entry {
+            link: Some((1, 42)),
+            ..file(100)
+        };
+        let outside = b.push(NONE, "WinSxS", dir());
+        b.push(outside, "one.sys", linked);
+        b.push(ROOT, "one.sys", linked);
+        let t = Tree::assemble(b.finish(&Progress::default()), Path::new("R"), Method::Walk);
+        assert_eq!(t.node(ROOT).size, 100);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.node(1).flags & EXTRA_LINK, 0);
     }
 
     #[test]

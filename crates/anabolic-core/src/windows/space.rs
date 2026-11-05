@@ -628,6 +628,70 @@ mod tests {
         panic!("not followed: {seen:?}");
     }
 
+    /// A file in so many pieces that its record continues in others keeps
+    /// its sizes there: the journal's follower read it as empty (WSL's
+    /// ext4.vhdx, 100 GB, showed as nothing). Needs an administrator.
+    /// ANABOLIC_FRAGMENTED names another such file to try as well.
+    #[test]
+    #[ignore]
+    fn the_journal_reads_the_size_of_a_file_in_many_pieces() {
+        use std::os::windows::fs::FileExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::IO::DeviceIoControl;
+        use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+
+        let size_of = |path: &Path| {
+            let file = std::fs::File::open(path).unwrap();
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.unwrap();
+            let record = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+            let (_, device) = volume_of(path).unwrap();
+            mft::sizes_now(&device, record).unwrap()
+        };
+        let dir = std::env::temp_dir().join(format!("anabolic-pieces-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pieces.bin");
+        {
+            let file = std::fs::File::create(&path).unwrap();
+            let mut got = 0u32;
+            unsafe {
+                DeviceIoControl(
+                    HANDLE(file.as_raw_handle()),
+                    FSCTL_SET_SPARSE,
+                    None,
+                    0,
+                    None,
+                    0,
+                    Some(&mut got),
+                    None,
+                )
+            }
+            .unwrap();
+            // A byte every megabyte, holes between: a piece each.
+            for i in 0..1500u64 {
+                file.seek_write(&[1], i << 20).unwrap();
+            }
+        }
+        let length = std::fs::metadata(&path).unwrap().len();
+        let ((dir_flag, size, alloc), list) = size_of(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(list, "the record continues in others");
+        assert!(!dir_flag);
+        assert_eq!(size, length);
+        assert!(alloc > 0);
+        if let Some(other) = std::env::var_os("ANABOLIC_FRAGMENTED") {
+            let other = Path::new(&other);
+            let ((_, size, alloc), list) = size_of(other);
+            println!(
+                "{}: {size} bytes, {alloc} on disk, list {list}",
+                other.display()
+            );
+            assert_eq!(size, std::fs::metadata(other).unwrap().len());
+        }
+    }
+
     #[test]
     #[ignore]
     fn the_table_and_the_folders_agree() {
