@@ -171,6 +171,25 @@ fn help() -> String {
     text
 }
 
+/// The boots' columns; the system's part is named for what it ends at.
+const BOOT_COLUMNS: &[&str] = if cfg!(windows) {
+    &[
+        "started",
+        "kind",
+        "firmware_seconds=Firmware s",
+        "to_sign_in_seconds=To sign-in s",
+        "shutdown_before=Before it",
+    ]
+} else {
+    &[
+        "started",
+        "kind",
+        "firmware_seconds=Firmware s",
+        "to_desktop_seconds=To desktop s",
+        "shutdown_before=Before it",
+    ]
+};
+
 const COMMANDS: &[Command] = &[
     Command {
         name: "overview",
@@ -452,6 +471,25 @@ const COMMANDS: &[Command] = &[
                 View::Table {
                     list: "items",
                     columns: &["name", "enabled=On", "where", "publisher", "command"],
+                },
+            ))
+        },
+    },
+    Command {
+        name: "boots",
+        usage: "[--limit N]",
+        about: "How long the last boots took, and how the shutdown before each went",
+        details: "  --limit N  how many, newest first (default 15)",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.number("--limit", "limit", &mut args)?;
+            Ok(tool(
+                "get_boot_history",
+                args,
+                View::Table {
+                    list: "boots",
+                    columns: BOOT_COLUMNS,
                 },
             ))
         },
@@ -791,6 +829,7 @@ fn refusal(text: &str, raw: bool) -> String {
             ("list_listening_ports", "ports"),
             ("list_connections", "connections"),
             ("list_startup_items", "startup"),
+            ("get_boot_history", "boots"),
             ("get_system_overview", "overview"),
         ] {
             text = text.replace(tool, &format!("`{PROGRAM} {command}`"));

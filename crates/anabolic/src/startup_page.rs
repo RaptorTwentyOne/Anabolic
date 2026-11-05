@@ -18,6 +18,8 @@ use anabolic_core::sysinfo::local_time;
 use anabolic_core::{ProcState, ProcessDetails, ProcessInfo, Snapshot};
 use eframe::egui::{self, Align, Label, Layout, RichText, Sense, Ui};
 
+mod boots;
+
 use crate::proc_table::{UiCmd, item};
 use crate::table::{Columns, Spec, TableView, text_cmp};
 use crate::{fmt, panes, theme, widgets};
@@ -32,6 +34,9 @@ pub struct StartupPage {
     pub selected: Option<(String, String)>,
     /// A change was sent and has not answered yet.
     pub busy: bool,
+    /// The boots are shown instead of the entries.
+    pub show_boots: bool,
+    boots: boots::BootsView,
 }
 
 /// What a person calls the entry: the program's own description, unless
@@ -266,6 +271,27 @@ pub fn show(
     elevated: bool,
     out: &mut Vec<UiCmd>,
 ) {
+    ui.horizontal(|ui| {
+        if ui
+            .selectable_label(!page.show_boots, "Programs")
+            .on_hover_text("What starts with the system and the sign-in")
+            .clicked()
+        {
+            page.show_boots = false;
+        }
+        if ui
+            .selectable_label(page.show_boots, "Boots")
+            .on_hover_text("How long each start took, and how the shutdown before it went")
+            .clicked()
+        {
+            page.show_boots = true;
+        }
+    });
+    ui.add_space(4.0);
+    if page.show_boots {
+        boots::show(ui, &mut page.boots);
+        return;
+    }
     let Some(list) = page.list.clone() else {
         ui.add_space(20.0);
         ui.horizontal(|ui| {

@@ -383,6 +383,7 @@ impl App {
                     | "--service-edit"
                     | "--service-delete"
                     | "--startup"
+                    | "--boots"
                     | "--stutters"
                     | "--network"
                     | "--activity"
@@ -408,8 +409,13 @@ impl App {
             settings.tab = Tab::Services;
             services.selected = Some(name.into());
         }
+        let mut startup = crate::startup_page::StartupPage::default();
         if args.iter().any(|a| a == "--startup") {
             settings.tab = Tab::Startup;
+        }
+        if args.iter().any(|a| a == "--boots") {
+            settings.tab = Tab::Startup;
+            startup.show_boots = true;
         }
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
@@ -686,7 +692,7 @@ impl App {
             service_watch,
             service_events,
             services_at: None,
-            startup: Default::default(),
+            startup,
             space,
             startup_watch,
             startup_events,

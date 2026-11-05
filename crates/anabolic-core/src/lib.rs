@@ -18,6 +18,7 @@ compile_error!("Anabolic runs on Windows and Linux.");
 
 pub mod actions;
 pub mod activity;
+pub mod boot;
 pub mod collector;
 pub mod coretrace;
 pub mod cpu;

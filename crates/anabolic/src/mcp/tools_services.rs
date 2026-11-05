@@ -70,6 +70,81 @@ const LIST_STARTUP: &str = if cfg!(windows) {
      it costs now if it runs."
 };
 
+const BOOTS: &str = "Lists the machine's last boots, newest first, from the system's own \
+logs: when each started, what kind of start it was (full, fast startup, from hibernation), how \
+long the firmware took before the system's loader, how long until the first sign-in on Windows \
+(the time the sign-in screen waited is part of it) or the graphical target on Linux, and how the \
+shutdown before it went: clean, a stop error (blue screen) with its code, the power button held, \
+or not shut down at all (power lost, a hang, a reset). Where Windows still keeps its own boot \
+measurement it adds that, and what it found slower than usual (programs, drivers, services, \
+devices); on Linux, the units that took longest at this boot. Use it when a PC starts slowly or \
+restarted by itself; list_startup_items lists what starts at sign-in. It only reads.";
+
+/// The system's part of a boot, by its name on each system.
+const READY_KEY: &str = if cfg!(windows) {
+    "to_sign_in_seconds"
+} else {
+    "to_desktop_seconds"
+};
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct BootArgs {
+    /// How many boots, newest first (1 to 60, default 15).
+    pub limit: Option<u32>,
+}
+
+/// Milliseconds as seconds with a tenth.
+fn seconds(ms: u64) -> f64 {
+    (ms as f64 / 100.0).round() / 10.0
+}
+
+fn boot_row(b: &anabolic_core::boot::Boot) -> Value {
+    use anabolic_core::boot::{BootKind, Shutdown};
+    let mut row = json!({
+        "started": anabolic_core::sysinfo::local_time(b.started),
+        "kind": match b.kind {
+            BootKind::Cold => "full",
+            BootKind::FastStartup => "fast_startup",
+            BootKind::Hibernation => "from_hibernation",
+            BootKind::Unknown => "unknown",
+        },
+        "firmware_seconds": b.firmware_ms.map(seconds),
+        "shutdown_before": match b.before {
+            Shutdown::Clean => "clean",
+            Shutdown::Crashed(_) => "stop_error",
+            Shutdown::PowerButton => "power_button_held",
+            Shutdown::Unexpected => "not_shut_down",
+            Shutdown::Unknown => "unknown",
+        },
+    });
+    row[READY_KEY] = json!(b.ready_ms.map(seconds));
+    if let Shutdown::Crashed(code) = b.before {
+        row["stop_code"] = json!(format!("0x{code:X}"));
+    }
+    if let Some(m) = b.measured {
+        row["windows_measure"] = json!({
+            "whole_seconds": seconds(m.total_ms),
+            "to_desktop_seconds": seconds(m.main_path_ms),
+            "after_desktop_seconds": seconds(m.after_ms),
+        });
+    }
+    if !b.slowed.is_empty() {
+        row["slowest"] = json!(
+            b.slowed
+                .iter()
+                .map(|s| json!({
+                    "kind": s.kind.label(),
+                    "name": s.name,
+                    "took_seconds": seconds(s.took_ms),
+                    "more_than_usual_seconds": seconds(s.over_ms),
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    row
+}
+
 fn service_row(s: &Service, process: Option<&str>) -> Value {
     json!({
         "name": &*s.name,
@@ -234,5 +309,37 @@ impl AnabolicMcp {
             })
             .collect();
         ok(json!({ "items": items, "errors": list.errors }))
+    }
+
+    #[tool(
+        description = BOOTS,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_boot_history(
+        &self,
+        Parameters(args): Parameters<BootArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let limit = args.limit.unwrap_or(15).clamp(1, 60) as usize;
+        let read = match blocking(anabolic_core::boot::read).await {
+            Ok(read) => read,
+            Err(e) => return fail(format!("The boots could not be read: {e}")),
+        };
+        let shown = &read.boots[..read.boots.len().min(limit)];
+        let mut out = json!({
+            "boots": shown.iter().map(boot_row).collect::<Vec<_>>(),
+            "not_shut_down_cleanly_before": shown.iter().filter(|b| b.before.bad()).count(),
+        });
+        if let Some(note) = &read.note {
+            out["note"] = json!(note);
+        }
+        ok(out)
     }
 }

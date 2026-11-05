@@ -40,6 +40,13 @@ new since the one before.
   filter's among them.
 - The Overview shows how full each drive is; a click on one opens Disk
   space with what fills it.
+- **Boots** (Startup page): how long each of the last boots took, the
+  firmware's part and the system's to the sign-in, what kind of start it
+  was, and how the shutdown before it went: clean, a blue screen with its
+  stop code, the power button held, or none at all. Where Windows still
+  keeps its own boot measurement, what it found slower than usual. From
+  the system's own logs (systemd on Linux). `anabolic-cli boots`, and
+  `get_boot_history` for MCP clients.
 - Shift+Delete on the Processes page ends the selected process' tree on
   Windows too: Windows hands the keys on as Cut, and they did nothing.
 - `anabolic-cli space [PATH]` shows the same in a terminal: the folders as
