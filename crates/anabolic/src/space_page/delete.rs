@@ -239,17 +239,8 @@ impl Deleter {
                         }
                     }
                     data.version += 1;
-                    let (tx, rx) = bounded(1);
-                    let (tree, version, ctx) = (data.tree.clone(), data.version, ctx.clone());
-                    let _ = std::thread::Builder::new()
-                        .name("space-recount".into())
-                        .spawn(move || {
-                            let exts = tree.by_extension();
-                            let clean = space::clean::suggest(&tree);
-                            let _ = tx.send((version, exts, clean));
-                            ctx.request_repaint();
-                        });
-                    self.recount = Some(rx);
+                    self.recount = None;
+                    self.recount(ctx, data);
                 }
                 None => ctx.request_repaint_after(Duration::from_millis(50)),
             }
@@ -263,6 +254,25 @@ impl Deleter {
             }
             self.recount = None;
         }
+    }
+
+    /// The file types and the clean-up counted again, on a thread, after
+    /// the tree changed.
+    pub fn recount(&mut self, ctx: &egui::Context, data: &Data) {
+        if self.recount.is_some() {
+            return;
+        }
+        let (tx, rx) = bounded(1);
+        let (tree, version, ctx) = (data.tree.clone(), data.version, ctx.clone());
+        let _ = std::thread::Builder::new()
+            .name("space-recount".into())
+            .spawn(move || {
+                let exts = tree.by_extension();
+                let clean = space::clean::suggest(&tree);
+                let _ = tx.send((version, exts, clean));
+                ctx.request_repaint();
+            });
+        self.recount = Some(rx);
     }
 
     fn start(&mut self, ctx: &egui::Context, data: &Data, job: Job) {

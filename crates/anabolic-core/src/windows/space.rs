@@ -330,8 +330,9 @@ pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
             };
             if let Some(record) = record {
                 match mft::scan(device, record, &name, progress) {
-                    Ok(builder) => {
+                    Ok((builder, journal)) => {
                         return Ok(finish(
+                            journal,
                             builder,
                             &path,
                             Method::Mft,
@@ -375,6 +376,7 @@ pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
     };
     let (builder, unreadable) = walk(&path, &name, root_entry, threads, progress, list)?;
     Ok(finish(
+        None,
         builder,
         &path,
         Method::Walk,
@@ -385,6 +387,13 @@ pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
         total,
         free,
     ))
+}
+
+/// Follows the changes after a scan read from the master file table; None
+/// for one read folder by folder, which has no records to follow.
+pub fn watch(tree: &Tree, wake: Box<dyn Fn() + Send>) -> Option<crate::space::Watch> {
+    let (nodes, seqs) = tree.records();
+    mft::watch(tree.journal.clone()?, nodes.to_vec(), seqs.to_vec(), wake)
 }
 
 /// Why a path is not deleted from the Disk space page, if it is not:
@@ -521,6 +530,7 @@ pub fn empty_recycle_bin(root: &Path, owner: isize) -> Result<(), String> {
 
 #[allow(clippy::too_many_arguments)]
 fn finish(
+    journal: Option<crate::space::JournalStart>,
     builder: Builder,
     path: &Path,
     method: Method,
@@ -532,6 +542,7 @@ fn finish(
     free: u64,
 ) -> Tree {
     let mut tree = Tree::assemble(builder.finish(progress), path, method);
+    tree.journal = journal;
     tree.note = note;
     tree.unreadable = unreadable;
     tree.total = total;
@@ -578,6 +589,43 @@ mod tests {
             "gone already"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs an administrator: `cargo test -p anabolic-core journal -- --ignored`.
+    #[test]
+    #[ignore]
+    fn the_journal_follows_what_changes_after_the_scan() {
+        use crate::space::{Batch, ChangeKind};
+        let dir = std::env::temp_dir().join(format!("anabolic-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("old.bin"), vec![0u8; 10_000]).unwrap();
+        let tree = scan(&dir, &Progress::default()).unwrap();
+        assert_eq!(tree.method, Method::Mft, "{:?}", tree.note);
+        let watch = watch(&tree, Box::new(|| {})).expect("a watcher");
+        std::fs::write(dir.join("new.bin"), vec![1u8; 300_000]).unwrap();
+        std::fs::remove_file(dir.join("old.bin")).unwrap();
+        let mut seen = Vec::new();
+        let until = Instant::now() + std::time::Duration::from_secs(6);
+        while Instant::now() < until {
+            if let Ok(Batch::Changes(c)) =
+                watch.rx.recv_timeout(std::time::Duration::from_millis(500))
+            {
+                seen.extend(c);
+            }
+            let made = seen
+                .iter()
+                .any(|c| c.name == "new.bin" && c.kind == ChangeKind::Written && c.size == 300_000);
+            let gone = seen
+                .iter()
+                .any(|c| c.name == "old.bin" && c.kind == ChangeKind::Deleted);
+            if made && gone {
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        panic!("not followed: {seen:?}");
     }
 
     #[test]

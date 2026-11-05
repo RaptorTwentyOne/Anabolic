@@ -27,6 +27,7 @@ pub enum Tab {
     Duplicates,
     Clean,
     Compare,
+    Live,
 }
 
 #[derive(Default)]
@@ -219,7 +220,7 @@ pub fn show(ui: &mut Ui, lists: &mut Lists, data: &mut Data, out: &mut Vec<UiCmd
         Tab::Largest => largest(ui, lists, data, out),
         Tab::Clean => super::clean::show(ui, data, &mut lists.open_clean),
         // Drawn by the page, which keeps their work.
-        Tab::Duplicates | Tab::Compare => {}
+        Tab::Duplicates | Tab::Compare | Tab::Live => {}
     }
 }
 
@@ -233,6 +234,7 @@ pub fn tabs(ui: &mut Ui, lists: &mut Lists, data: &mut Data) {
             (Tab::Duplicates, "Duplicates"),
             (Tab::Clean, "Clean up"),
             (Tab::Compare, "Changes since"),
+            (Tab::Live, "Live"),
         ] {
             if ui.selectable_label(lists.tab == tab, label).clicked() {
                 lists.tab = tab;

@@ -213,6 +213,7 @@ impl App {
         }
         let want = (shown(self, Tab::Performance)
             && matches!(self.perf_view, PerfView::Disk | PerfView::PhysicalDisk(_)))
+            || (shown(self, Tab::Space) && self.space.wants_disk_trace())
             || self.mcp.wants(Trace::Disks);
         if want != self.disks_traced {
             self.disks_traced = want;

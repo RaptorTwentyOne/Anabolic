@@ -25,14 +25,17 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::{DeviceIoControl, OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 use windows::Win32::System::Ioctl::{
-    DEVICE_SEEK_PENALTY_DESCRIPTOR, FSCTL_GET_NTFS_VOLUME_DATA, IOCTL_STORAGE_QUERY_PROPERTY,
-    NTFS_VOLUME_DATA_BUFFER, PropertyStandardQuery, STORAGE_PROPERTY_QUERY,
-    StorageDeviceSeekPenaltyProperty,
+    DEVICE_SEEK_PENALTY_DESCRIPTOR, FSCTL_GET_NTFS_FILE_RECORD, FSCTL_GET_NTFS_VOLUME_DATA,
+    FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_USN_JOURNAL, IOCTL_STORAGE_QUERY_PROPERTY,
+    NTFS_FILE_RECORD_INPUT_BUFFER, NTFS_VOLUME_DATA_BUFFER, PropertyStandardQuery,
+    READ_USN_JOURNAL_DATA_V0, STORAGE_PROPERTY_QUERY, StorageDeviceSeekPenaltyProperty,
+    USN_JOURNAL_DATA_V0,
 };
 use windows::core::PCWSTR;
 
 use crate::space::{
-    Builder, CANCELLED, DIR, Entry, HIDDEN, LINK, META, NONE, ORPHANS, Progress, ROOT, SYSTEM,
+    Batch, Builder, CANCELLED, Change, ChangeKind, DIR, Entry, HIDDEN, JournalStart, LINK, META,
+    NONE, ORPHANS, Progress, ROOT, SYSTEM, Watch,
 };
 use crate::util::{OwnedHandle, wide};
 
@@ -118,6 +121,68 @@ impl Volume {
             cluster,
             data,
         })
+    }
+
+    /// The change journal's id and where it is now; None when the volume
+    /// keeps none.
+    fn journal(&self) -> Option<(u64, i64)> {
+        let mut data = USN_JOURNAL_DATA_V0::default();
+        let mut got = 0u32;
+        unsafe {
+            DeviceIoControl(
+                self.handle.raw(),
+                FSCTL_QUERY_USN_JOURNAL,
+                None,
+                0,
+                Some((&raw mut data).cast()),
+                size_of::<USN_JOURNAL_DATA_V0>() as u32,
+                Some(&mut got),
+                None,
+            )
+        }
+        .ok()?;
+        Some((data.UsnJournalID, data.NextUsn))
+    }
+
+    /// A record's size now, from the volume (the file is not opened):
+    /// (folder, size, alloc), or None when the record is no longer in use.
+    fn sizes_of(&self, record: u64) -> Option<(bool, u64, u64)> {
+        let input = NTFS_FILE_RECORD_INPUT_BUFFER {
+            FileReferenceNumber: record as i64,
+        };
+        let mut out = vec![0u64; (16 + self.record).div_ceil(8)];
+        let mut got = 0u32;
+        unsafe {
+            DeviceIoControl(
+                self.handle.raw(),
+                FSCTL_GET_NTFS_FILE_RECORD,
+                Some((&raw const input).cast()),
+                size_of::<NTFS_FILE_RECORD_INPUT_BUFFER>() as u32,
+                Some(out.as_mut_ptr().cast()),
+                (out.len() * 8) as u32,
+                Some(&mut got),
+                None,
+            )
+        }
+        .ok()?;
+        let bytes: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len() * 8) };
+        // The record asked for, or the nearest in use below it: then it
+        // is gone.
+        if (u64_at(bytes, 0) & REF_MASK) != record & REF_MASK {
+            return None;
+        }
+        let len = (u32_at(bytes, 8) as usize).min(bytes.len() - 12);
+        let rec = &mut bytes[12..12 + len];
+        if u32_at(rec, 0) != FILE_SIG {
+            return None;
+        }
+        // The system may hand it over with its check values put back.
+        let _ = fixup(rec);
+        let mut parsed = Parsed::default();
+        parse_fixed(rec, record as u32, self.cluster, &mut parsed);
+        let r = parsed.recs.first()?;
+        Some((r.dir, r.size, r.alloc))
     }
 
     /// Whether the disk under the volume seeks (a hard disk).
@@ -458,6 +523,11 @@ fn parse(rec: &mut [u8], number: u32, cluster: u64, out: &mut Parsed) {
     if u32_at(rec, 0) != FILE_SIG || !fixup(rec) {
         return;
     }
+    parse_fixed(rec, number, cluster, out);
+}
+
+/// A record whose check values are already put back.
+fn parse_fixed(rec: &[u8], number: u32, cluster: u64, out: &mut Parsed) {
     let flags = u16_at(rec, 0x16);
     if flags & 1 == 0 {
         return;
@@ -553,8 +623,15 @@ pub fn scan(
     root_record: u64,
     root_name: &str,
     progress: &Progress,
-) -> Result<Builder, String> {
+) -> Result<(Builder, Option<JournalStart>), String> {
     let volume = Volume::open(device)?;
+    // Where the change journal is before the table is read: what changes
+    // while it is read is followed afterwards.
+    let journal = volume.journal().map(|(id, next)| JournalStart {
+        device: device.to_string(),
+        id,
+        next,
+    });
     let extents = volume.extents()?;
     let record = volume.record;
     let total = (volume.data.MftValidDataLength as u64 / record as u64) as usize;
@@ -682,12 +759,235 @@ pub fn scan(
     if let Some(e) = error.into_inner().unwrap() {
         return Err(e);
     }
-    Ok(build(
-        parsed.into_inner().unwrap(),
-        total,
-        root_record as u32,
-        root_name,
+    Ok((
+        build(
+            parsed.into_inner().unwrap(),
+            total,
+            root_record as u32,
+            root_name,
+        ),
+        journal,
     ))
+}
+
+const USN_REASON_DATA: u32 =
+    0x0000_0001 | 0x0000_0002 | 0x0000_0004 | 0x0000_0010 | 0x0000_0020 | 0x0000_0040;
+const USN_REASON_FILE_CREATE: u32 = 0x0000_0100;
+const USN_REASON_FILE_DELETE: u32 = 0x0000_0200;
+const USN_REASON_RENAME_NEW_NAME: u32 = 0x0000_2000;
+/// The journal no longer has the change asked for.
+const ERROR_JOURNAL_ENTRY_DELETED: i32 = 1181;
+
+/// Follows the volume's change journal from where a scan read the table:
+/// each second, what changed in the scanned folder, with the sizes now.
+/// `nodes` is the tree's node per record: a change elsewhere on the volume
+/// is passed over without a look (a busy drive changes thousands of files
+/// a second). The sizes come from the files' records, so no file is
+/// opened.
+pub fn watch(
+    start: JournalStart,
+    nodes: Vec<u32>,
+    seqs: Vec<u16>,
+    wake: Box<dyn Fn() + Send>,
+) -> Option<Watch> {
+    // Asked here so a volume that cannot be opened gives no watcher; the
+    // thread opens its own (a handle stays on the thread that made it).
+    drop(Volume::open(&start.device).ok()?);
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stopped = stop.clone();
+    std::thread::Builder::new()
+        .name("space-journal".into())
+        .spawn(move || {
+            crate::hardening::set_current_thread_priority(
+                crate::hardening::ThreadPriority::BelowNormal,
+            );
+            let Ok(volume) = Volume::open(&start.device) else {
+                return;
+            };
+            let mut next = start.next;
+            let mut id = start.id;
+            // Files and folders made in the scanned folder since, by their
+            // whole reference: a deleted file's record is soon another
+            // file's, with the next sequence number.
+            let mut new: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            let ours = |r: u64, new: &std::collections::HashSet<u64>| {
+                let number = (r & REF_MASK) as usize;
+                let seq = (r >> 48) as u16;
+                nodes.get(number).is_some_and(|&n| n != NONE)
+                    && seqs.get(number).is_some_and(|&s| s == seq || seq == 0)
+                    || new.contains(&r)
+            };
+            let mut buf = vec![0u64; 8192];
+            while !stopped.load(Ordering::Relaxed) {
+                for _ in 0..10 {
+                    if stopped.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                // What happened to each record this second, the latest
+                // name and folder.
+                let mut seen: HashMap<u64, (u64, String, u32, u32, i64)> = HashMap::new();
+                for _ in 0..256 {
+                    let input = READ_USN_JOURNAL_DATA_V0 {
+                        StartUsn: next,
+                        ReasonMask: u32::MAX,
+                        ReturnOnlyOnClose: 0,
+                        Timeout: 0,
+                        BytesToWaitFor: 0,
+                        UsnJournalID: id,
+                    };
+                    let mut got = 0u32;
+                    let read = unsafe {
+                        DeviceIoControl(
+                            volume.handle.raw(),
+                            FSCTL_READ_USN_JOURNAL,
+                            Some((&raw const input).cast()),
+                            size_of::<READ_USN_JOURNAL_DATA_V0>() as u32,
+                            Some(buf.as_mut_ptr().cast()),
+                            (buf.len() * 8) as u32,
+                            Some(&mut got),
+                            None,
+                        )
+                    };
+                    if let Err(e) = read {
+                        if e.code().0 & 0xFFFF == ERROR_JOURNAL_ENTRY_DELETED {
+                            let _ = tx.send(Batch::Lost(
+                                "The change journal moved past changes made meanwhile: \
+                                 sizes may be off until the next scan."
+                                    .into(),
+                            ));
+                        }
+                        // Start again from where the journal is now.
+                        match volume.journal() {
+                            Some((now_id, now_next)) => {
+                                id = now_id;
+                                next = now_next;
+                            }
+                            None => return,
+                        }
+                        break;
+                    }
+                    let bytes: &[u8] =
+                        unsafe { std::slice::from_raw_parts(buf.as_ptr().cast(), got as usize) };
+                    if bytes.len() < 8 {
+                        break;
+                    }
+                    next = u64_at(bytes, 0) as i64;
+                    let mut at = 8;
+                    while at + 60 <= bytes.len() {
+                        let len = u32_at(bytes, at) as usize;
+                        if len < 60 || at + len > bytes.len() {
+                            break;
+                        }
+                        let r = &bytes[at..at + len];
+                        // USN_RECORD_V2.
+                        if u16_at(r, 4) == 2 {
+                            let record = u64_at(r, 8);
+                            let parent = u64_at(r, 16);
+                            let when = filetime_to_unix(u64_at(r, 32));
+                            let reason = u32_at(r, 40);
+                            let attrs = u32_at(r, 52);
+                            let name_len = usize::from(u16_at(r, 56));
+                            let name_at = usize::from(u16_at(r, 58));
+                            let name = r
+                                .get(name_at..name_at + name_len)
+                                .map(|raw| {
+                                    let units: Vec<u16> = raw
+                                        .as_chunks::<2>()
+                                        .0
+                                        .iter()
+                                        .map(|c| u16::from_le_bytes(*c))
+                                        .collect();
+                                    String::from_utf16_lossy(&units)
+                                })
+                                .unwrap_or_default();
+                            let e = seen.entry(record).or_insert((
+                                parent,
+                                String::new(),
+                                0,
+                                attrs,
+                                when,
+                            ));
+                            e.0 = parent;
+                            e.1 = name;
+                            e.2 |= reason;
+                            e.3 = attrs;
+                            e.4 = when;
+                        }
+                        at += len;
+                    }
+                    if got as usize <= 8 {
+                        break;
+                    }
+                }
+                if seen.is_empty() {
+                    continue;
+                }
+                // What was made in a folder made this same second counts as
+                // ours too: until nothing more is found.
+                loop {
+                    let found: Vec<u64> = seen
+                        .iter()
+                        .filter(|(r, v)| !ours(**r, &new) && ours(v.0, &new))
+                        .map(|(r, _)| *r)
+                        .collect();
+                    if found.is_empty() {
+                        break;
+                    }
+                    new.extend(found);
+                }
+                let mut changes = Vec::with_capacity(seen.len());
+                for (record, (parent, name, reason, attrs, at)) in seen {
+                    if !ours(record, &new) {
+                        continue;
+                    }
+                    let dir = attrs & 0x10 != 0;
+                    let deleted = reason & USN_REASON_FILE_DELETE != 0;
+                    if deleted {
+                        new.remove(&record);
+                    }
+                    let wanted = reason
+                        & (USN_REASON_DATA | USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME)
+                        != 0;
+                    if !deleted && !wanted {
+                        continue;
+                    }
+                    let now = if deleted {
+                        None
+                    } else {
+                        volume.sizes_of(record & REF_MASK)
+                    };
+                    let kind = match now {
+                        None => ChangeKind::Deleted,
+                        Some(_) if reason & USN_REASON_RENAME_NEW_NAME != 0 => ChangeKind::Moved,
+                        Some(_) => ChangeKind::Written,
+                    };
+                    let (dir, size, alloc) = now.unwrap_or((dir, 0, 0));
+                    changes.push(Change {
+                        record,
+                        parent,
+                        name,
+                        kind,
+                        dir,
+                        size,
+                        alloc,
+                        at,
+                    });
+                }
+                if !changes.is_empty() {
+                    // Folders before the files in them, deletions last.
+                    changes.sort_by_key(|c| (c.kind == ChangeKind::Deleted, !c.dir));
+                    if tx.send(Batch::Changes(changes)).is_err() {
+                        return;
+                    }
+                    wake();
+                }
+            }
+        })
+        .ok()?;
+    Some(Watch::new(rx, stop))
 }
 
 /// Joins the pieces into one tree under `root`.
@@ -814,6 +1114,13 @@ fn build(pieces: Vec<Parsed>, total: usize, root: u32, root_name: &str) -> Build
         }
     }
 
+    let mut seqs = vec![0u16; total];
+    for r in recs.iter().filter(|r| r.base == NONE) {
+        if let Some(s) = seqs.get_mut(r.number as usize) {
+            *s = r.seq;
+        }
+    }
+    b.set_records(node_of.clone(), seqs);
     let mut orphans = NONE;
     for (id, parent) in pending {
         let number = (parent & REF_MASK) as usize;

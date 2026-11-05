@@ -19,6 +19,7 @@ mod delete;
 mod dupes;
 mod files;
 mod lists;
+mod live;
 mod map;
 
 use std::path::PathBuf;
@@ -216,6 +217,7 @@ pub struct SpacePage {
     pub deleter: delete::Deleter,
     dupes: dupes::Dupes,
     compare: compare::Compare,
+    live: live::Live,
     /// The setting that keeps outlines, as the last frame saw it.
     keep: bool,
     /// The folder picker, while it is open.
@@ -227,6 +229,11 @@ pub struct SpacePage {
 }
 
 impl SpacePage {
+    /// The disk trace names who writes what on the Live tab.
+    pub fn wants_disk_trace(&self) -> bool {
+        self.data.is_some() && self.lists.tab == lists::Tab::Live && self.live.following()
+    }
+
     fn begin(&mut self, path: PathBuf, ctx: &egui::Context) {
         if let Some(s) = &self.scanning {
             s.progress.cancel();
@@ -291,6 +298,9 @@ impl SpacePage {
                 self.dupes.stop();
                 self.dupes = dupes::Dupes::default();
                 self.compare = compare::Compare::default();
+                if let Some(data) = &self.data {
+                    self.live.start(ctx, &data.tree);
+                }
                 self.scanning = None;
             }
             Ok(Err(e)) => {
@@ -314,6 +324,7 @@ pub fn show(
     ui: &mut Ui,
     page: &mut SpacePage,
     settings: &mut SpaceSettings,
+    snap: &anabolic_core::Snapshot,
     elevated: bool,
     out: &mut Vec<UiCmd>,
 ) {
@@ -378,6 +389,10 @@ pub fn show(
     ui.add_space(4.0);
     let data = page.data.as_mut().expect("checked above");
     page.deleter.frame(&ctx, data);
+    page.live.open = page.lists.tab == lists::Tab::Live;
+    if page.live.poll(&ctx, data, snap) {
+        page.deleter.recount(&ctx, data);
+    }
     // Delete and Shift+Delete, as in Explorer.
     if !ctx.egui_wants_keyboard_input()
         && let Some(n) = data.selected
@@ -414,6 +429,10 @@ pub fn show(
             lists::Tab::Compare => {
                 lists::tabs(&mut ui, &mut page.lists, data);
                 compare::show(&mut ui, &mut page.compare, data, &mut settings.keep_scans);
+            }
+            lists::Tab::Live => {
+                lists::tabs(&mut ui, &mut page.lists, data);
+                live::show(&mut ui, &mut page.live, data);
             }
             _ => lists::show(&mut ui, &mut page.lists, data, out),
         }
@@ -466,6 +485,8 @@ pub fn show(
                 let diff = page.compare.diff().unwrap_or_default();
                 files::save("changes", tree, move |_| files::changes(&diff))
             }
+            // The live list is saved as the folders it changed.
+            lists::Tab::Live => files::save("folders", tree, files::folders),
         });
     }
     if let Some((n, recycle)) = data.ask_delete.take() {

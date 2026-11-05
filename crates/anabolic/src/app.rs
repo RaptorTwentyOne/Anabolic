@@ -1650,6 +1650,7 @@ impl eframe::App for App {
                         ui,
                         &mut self.space,
                         &mut self.settings.space,
+                        &self.snapshot,
                         self.elevated,
                         &mut cmds,
                     );

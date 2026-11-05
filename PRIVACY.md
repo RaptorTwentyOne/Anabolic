@@ -4,7 +4,7 @@ Anabolic runs on your computer and has no account, no telemetry and no
 server of its own. This page says what it sends anywhere, what it keeps,
 and what its MCP server hands to the programs you connect to it.
 
-Last updated: 2026-10-21.
+Last updated: 2026-11-05.
 
 ## What leaves the computer
 
@@ -36,6 +36,10 @@ Nothing else: no usage statistics, no crash reports, no identifiers.
     them. Recordings list the files, registry keys and connections a
     program used; a full memory dump holds everything the process had in
     memory, passwords and keys included;
+  - the outlines of disk space scans (in `space`): the names and sizes of
+    the folders of a megabyte or more of each scanned drive or folder, the
+    last 40 of each, to compare a later scan with. Turned off on the Disk
+    space page's *Changes since* tab;
   - `stalls.log`: the moments Anabolic's own window fell behind.
 
 Delete these folders to remove all of it.

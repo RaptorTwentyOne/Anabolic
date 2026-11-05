@@ -15,7 +15,7 @@
 #[cfg_attr(windows, path = "windows/space.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/space.rs")]
 mod imp;
-pub use imp::{delete, delete_all, empty_recycle_bin, protected, scan, targets};
+pub use imp::{delete, delete_all, empty_recycle_bin, protected, scan, targets, watch};
 
 pub mod clean;
 pub mod dupes;
@@ -67,6 +67,75 @@ impl Method {
             Method::Mft => "master file table",
             Method::Walk => "folder by folder",
         }
+    }
+}
+
+/// Where a scan read NTFS's change journal up to, to follow the changes
+/// after it.
+// Linux keeps no change journal: nothing reads these there.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Debug)]
+pub struct JournalStart {
+    pub(crate) device: String,
+    pub(crate) id: u64,
+    pub(crate) next: i64,
+}
+
+/// What changed on the drive since the scan, as the change journal says.
+#[derive(Clone, Debug)]
+pub struct Change {
+    /// The file's master file table reference: its record and, in the top
+    /// 16 bits, which file in that record it is.
+    pub record: u64,
+    /// Its folder's reference.
+    pub parent: u64,
+    pub name: String,
+    pub kind: ChangeKind,
+    pub dir: bool,
+    /// The size now (for Written and Moved).
+    pub size: u64,
+    pub alloc: u64,
+    /// When, Unix seconds.
+    pub at: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// Made, or its contents changed: `size` is what it is now.
+    Written,
+    Deleted,
+    /// Renamed or moved: `parent` and `name` are the new ones.
+    Moved,
+}
+
+/// What the watcher hands over.
+#[derive(Clone, Debug)]
+pub enum Batch {
+    Changes(Vec<Change>),
+    /// Changes were missed (the journal moved past them): sizes may be off
+    /// until the next scan.
+    Lost(String),
+}
+
+/// A thread following the change journal; it stops when dropped.
+pub struct Watch {
+    pub rx: crossbeam_channel::Receiver<Batch>,
+    stop: std::sync::Arc<AtomicBool>,
+}
+
+impl Watch {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn new(
+        rx: crossbeam_channel::Receiver<Batch>,
+        stop: std::sync::Arc<AtomicBool>,
+    ) -> Watch {
+        Watch { rx, stop }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -146,6 +215,8 @@ pub(crate) struct Parts {
     dirs: Vec<Dir>,
     names: String,
     exts: Vec<Box<str>>,
+    records: Vec<u32>,
+    seqs: Vec<u16>,
 }
 
 /// Everything under the scanned folder.
@@ -154,6 +225,13 @@ pub struct Tree {
     dirs: Vec<Dir>,
     names: String,
     exts: Vec<Box<str>>,
+    /// The node of each master file table record (NONE where none), and
+    /// the record's sequence number then: only for a tree read from the
+    /// table.
+    records: Vec<u32>,
+    seqs: Vec<u16>,
+    /// Where the change journal was when the table was read.
+    pub journal: Option<JournalStart>,
     /// What was scanned, as given.
     pub path: PathBuf,
     pub method: Method,
@@ -334,6 +412,56 @@ impl Tree {
         files
     }
 
+    /// The node of each master file table record (NONE where none).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn records(&self) -> (&[u32], &[u16]) {
+        (&self.records, &self.seqs)
+    }
+
+    /// The node of a master file table reference (record and sequence
+    /// number), for a tree read from the table; None for another file
+    /// that has the record since.
+    pub fn node_of_record(&self, reference: u64) -> Option<u32> {
+        let number = usize::try_from(reference & 0xFFFF_FFFF_FFFF).ok()?;
+        let seq = (reference >> 48) as u16;
+        if seq != 0 && self.seqs.get(number) != Some(&seq) {
+            return None;
+        }
+        self.records
+            .get(number)
+            .copied()
+            .filter(|&n| n != NONE && !self.is_gone(n))
+    }
+
+    /// Sets a file's size as it is now, every folder above following.
+    pub fn resize(&mut self, i: u32, size: u64, alloc: u64) {
+        let s = &self.slots[i as usize];
+        let (ds, da) = (size as i64 - s.size as i64, alloc as i64 - s.alloc as i64);
+        self.slots[i as usize].size = size;
+        self.slots[i as usize].alloc = alloc;
+        let parent = self.slots[i as usize].parent;
+        if parent != NONE {
+            self.grow(parent, ds, da, 0);
+        }
+    }
+
+    /// Adds to (or takes from) a folder and every folder above it: what
+    /// appeared in it since the scan, which has no node of its own.
+    pub fn grow(&mut self, folder: u32, size: i64, alloc: i64, files: i32) {
+        let mut at = folder;
+        while at != NONE {
+            let s = &mut self.slots[at as usize];
+            s.size = s.size.saturating_add_signed(size);
+            s.alloc = s.alloc.saturating_add_signed(alloc);
+            let (extra, parent, dir) = (s.extra, s.parent, s.flags & DIR != 0);
+            if dir {
+                let d = &mut self.dirs[extra as usize];
+                d.files = d.files.saturating_add_signed(files);
+            }
+            at = parent;
+        }
+    }
+
     /// Takes a node out after its file or folder was deleted: its size
     /// leaves every folder above it. The node stays where it is, empty,
     /// childless and flagged, so indexes held elsewhere stay valid; the
@@ -423,6 +551,10 @@ pub const CANCELLED: &str = "Stopped.";
 /// Collects nodes in any order with their parents, then makes the tree.
 pub(crate) struct Builder {
     raw: Vec<Raw>,
+    /// The node made for each master file table record (NONE for none),
+    /// and the record's sequence number then.
+    records: Vec<u32>,
+    seqs: Vec<u16>,
     names: String,
     ext_ids: HashMap<Box<str>, u32>,
     exts: Vec<Box<str>>,
@@ -456,6 +588,8 @@ impl Builder {
     pub fn new(root_name: &str, root: Entry) -> Self {
         let mut b = Builder {
             raw: Vec::with_capacity(1 << 16),
+            records: Vec::new(),
+            seqs: Vec::new(),
             names: String::with_capacity(1 << 20),
             ext_ids: HashMap::new(),
             exts: vec!["".into()],
@@ -507,6 +641,12 @@ impl Builder {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn set_parent(&mut self, id: u32, parent: u32) {
         self.raw[id as usize].parent = parent;
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn set_records(&mut self, records: Vec<u32>, seqs: Vec<u16>) {
+        self.records = records;
+        self.seqs = seqs;
     }
 
     pub fn add_flags(&mut self, id: u32, flags: u16) {
@@ -639,11 +779,18 @@ impl Builder {
                 extra,
             });
         }
+        let records = self
+            .records
+            .iter()
+            .map(|&r| new_id.get(r as usize).copied().unwrap_or(NONE))
+            .collect();
         Parts {
             slots,
             dirs,
             names: self.names,
             exts: self.exts,
+            records,
+            seqs: self.seqs,
         }
     }
 }
@@ -667,6 +814,9 @@ impl Tree {
             dirs: parts.dirs,
             names: parts.names,
             exts: parts.exts,
+            records: parts.records,
+            seqs: parts.seqs,
+            journal: None,
             path: path.to_path_buf(),
             method,
             note: None,

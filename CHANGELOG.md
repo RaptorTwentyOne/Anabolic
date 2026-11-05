@@ -16,6 +16,24 @@ new since the one before.
   to the Recycle Bin (the trash on Linux) or is deleted for good, after a
   question, and the sizes follow without scanning again; Windows' own
   files and folders, and the system's on Linux, are refused.
+- **Clean up**: what the scan found that can go, said in words with how
+  safe deleting it is: temporary files, browser, shader and package caches,
+  build output marked as a cache, projects' node_modules, older JetBrains
+  versions, crash dumps, the Recycle Bin. What Windows cleans with its own
+  tools (update downloads, Windows.old, the hibernation file, WSL and
+  Docker disks) comes with the tool to use instead.
+- **Duplicates**: files with the same contents, compared by their start,
+  middle and end and then whole, read in the background at the lowest
+  priority for the processor, the disk and memory. Files kept in the cloud
+  and a file's second names are left out.
+- **Changes since**: each scan leaves an outline of its larger folders, and
+  a later scan of the same folder shows what grew and shrank since.
+- **Live**: after a scan from the master file table, NTFS's change journal
+  is followed, so the sizes stay true as files are made, written and
+  deleted; the Live tab lists what changed since the scan, and the program
+  that wrote it when the disk trace sees it.
+- The folder picker chooses a folder to scan; the lists save as CSV; the
+  line between the lists and the map moves, and stays where it was put.
 - `anabolic-cli space [PATH]` shows the same in a terminal: the folders as
   a tree, or the largest files (`--files`) or file types (`--types`). MCP
   clients get it as `get_disk_usage`, which keeps a scan for ten minutes so

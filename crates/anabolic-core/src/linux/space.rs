@@ -267,6 +267,12 @@ pub fn delete(path: &Path, recycle: bool, _owner: isize) -> Result<(), String> {
     done.map_err(|e| format!("{} could not be deleted: {e}", path.display()))
 }
 
+/// Linux keeps no change journal like NTFS's: the changes after a scan are
+/// seen by scanning again.
+pub fn watch(_tree: &Tree, _wake: Box<dyn Fn() + Send>) -> Option<crate::space::Watch> {
+    None
+}
+
 /// Reads everything under `path`.
 pub fn scan(path: &Path, progress: &Progress) -> Result<Tree, String> {
     let started = Instant::now();
