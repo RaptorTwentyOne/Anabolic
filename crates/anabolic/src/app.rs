@@ -172,6 +172,8 @@ pub struct App {
     space: crate::space_page::SpacePage,
     /// The drives' health, read now and then in the background.
     disk_health: crate::disk_health::DiskHealth,
+    /// The process details' profiler.
+    profile_view: crate::details::ProfileView,
     startup_watch: anabolic_core::startup::StartupWatch,
     startup_events: Receiver<StartupEvent>,
     /// When the startup entries were last read.
@@ -564,6 +566,7 @@ impl App {
             Some("waits") => DetailTab::Waits,
             Some("modules") => DetailTab::Modules,
             Some("network") => DetailTab::Network,
+            Some("profile") => DetailTab::Profile,
             _ if args.iter().any(|a| a == "--handles") => DetailTab::Handles,
             _ => DetailTab::default(),
         };
@@ -697,6 +700,7 @@ impl App {
             startup,
             space,
             disk_health: Default::default(),
+            profile_view: Default::default(),
             startup_watch,
             startup_events,
             startup_at: None,
@@ -1543,6 +1547,7 @@ impl eframe::App for App {
                                     &mut self.tables,
                                     &self.wait_view,
                                     &self.end_view,
+                                    &mut self.profile_view,
                                     &mut self.focus_thread,
                                     &self.services.hosted(key.pid),
                                     &self.growth,

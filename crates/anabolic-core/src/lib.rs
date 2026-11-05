@@ -52,6 +52,7 @@ pub mod net;
 pub mod nettrace;
 pub mod placement;
 pub mod power;
+pub mod profile;
 pub mod recorder;
 pub mod resolver;
 pub mod scan;

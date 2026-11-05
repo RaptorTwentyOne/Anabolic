@@ -32,10 +32,12 @@ use crate::widgets;
 mod end;
 pub(crate) mod handles;
 mod network;
+mod profile;
 mod waits;
 use end::*;
 use handles::*;
 use network::*;
+pub use profile::ProfileView;
 use waits::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -47,6 +49,8 @@ pub enum DetailTab {
     Modules,
     Network,
     Handles,
+    /// Where it spends its processor time (Windows).
+    Profile,
 }
 
 /// Wait chains; reports arrive from the inspector.
@@ -262,6 +266,7 @@ pub fn show(
     tables: &mut DetailTables,
     waits: &WaitView,
     ends: &EndView,
+    profiles: &mut ProfileView,
     focus_thread: &mut Option<(u32, bool)>,
     services: &[(Arc<str>, Arc<str>)],
     growth: &anabolic_core::growth::Growth,
@@ -332,6 +337,10 @@ pub fn show(
             "Wait chain".into()
         };
         ui.selectable_value(tab, DetailTab::Waits, waits_label);
+        if cfg!(windows) && !p.is_pseudo() {
+            ui.selectable_value(tab, DetailTab::Profile, "Profile")
+                .on_hover_text("Where it spends its processor time, sampled for a few seconds");
+        }
         ui.selectable_value(tab, DetailTab::Threads, format!("Threads ({})", p.threads));
         ui.selectable_value(tab, DetailTab::General, "General");
         // Right to left: these end up left of the tabs.
@@ -406,6 +415,12 @@ pub fn show(
             out,
         ),
         DetailTab::Waits => waits_tab(ui, p, snap, waits, out),
+        DetailTab::Profile => profile::tab(
+            ui,
+            profiles,
+            key,
+            p.state != ProcState::Exited && !p.is_pseudo(),
+        ),
         DetailTab::Modules => modules_tab(ui, p, modules, panes, &mut tables.modules, out),
         DetailTab::Handles => handles_tab(ui, p, snap, handles, panes, out),
         DetailTab::Network => {

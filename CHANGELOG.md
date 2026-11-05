@@ -40,6 +40,14 @@ new since the one before.
   filter's among them.
 - The Overview shows how full each drive is; a click on one opens Disk
   space with what fills it.
+- **Profile** (a process' details): where it spends its processor time.
+  For a few seconds the system's own profiler samples what each
+  processor runs, with the call stack, a thousand times a second; the
+  samples are summed by function (its own time and with what it calls),
+  as a call tree, by module and by thread. The process is never opened:
+  the kernel walks its stacks, and names come from the symbols on this PC
+  or the modules' exports. Windows, as administrator. `anabolic-cli
+  profile PID`, and `profile_process` for MCP clients.
 - **Drive health**: each disk on the Performance page shows how it is
   holding up, as the drive reports it: an NVMe drive's health log, a SATA
   drive's SMART attributes. Wear used, temperature, hours, power cycles,

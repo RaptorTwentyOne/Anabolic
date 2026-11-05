@@ -495,6 +495,32 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "profile",
+        usage: "PID [--seconds N]",
+        about: "Where a process spends its processor time",
+        details: "  --seconds N  how long to sample (1 to 30, default 5)\n\nWindows only, from an \
+                  elevated terminal: the system's own profiler samples it; the process is not \
+                  opened.",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = a.pid_only()?;
+            a.number("--seconds", "seconds", &mut args)?;
+            Ok(tool(
+                "profile_process",
+                args,
+                View::Table {
+                    list: "functions",
+                    columns: &[
+                        "own_percent=Own %",
+                        "with_calls_percent=With calls %",
+                        "module",
+                        "function",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
         name: "kill",
         usage: "PID [--tree] [--force]",
         about: "End a process",
@@ -609,7 +635,16 @@ struct Args {
 
 /// The options that take a value.
 const VALUED: &[&str] = &[
-    "--sort", "--limit", "--state", "--pid", "--depth", "--top", "--port", "--allow", "--key",
+    "--sort",
+    "--limit",
+    "--state",
+    "--pid",
+    "--depth",
+    "--top",
+    "--port",
+    "--allow",
+    "--key",
+    "--seconds",
 ];
 /// The options that stand alone.
 const FLAGS: &[&str] = &[

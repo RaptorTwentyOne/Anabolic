@@ -285,6 +285,7 @@ anabolic-cli ps --json                  # the same as JSON, for scripts
 | `services [FILTER]`, `service NAME` | Services, and one in full |
 | `ports`, `connections`, `startup` | Listening ports, connections, startup programs |
 | `boots` | How long the last boots took, and how the shutdown before each went |
+| `profile PID` | Where a process spends its processor time, by function (`--seconds`) |
 | `space [PATH]` | What fills a drive or folder, as a tree (`--depth`, `--top`), or its largest files (`--files`) or file types (`--types`) |
 | `kill PID`, `suspend PID`, `resume PID`, `priority PID LEVEL` | Act on a process |
 | `service start\|stop\|restart\|pause\|continue NAME`, `service startup NAME TYPE` | Act on a service |

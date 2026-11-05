@@ -12,14 +12,14 @@ use std::thread::{self, JoinHandle};
 
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Diagnostics::Etw::{
-    CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
+    CLASSIC_EVENT_ID, CONTROLTRACE_HANDLE, CloseTrace, ControlTraceW, ENABLE_TRACE_PARAMETERS,
     ENABLE_TRACE_PARAMETERS_VERSION_2, EVENT_CONTROL_CODE_CAPTURE_STATE,
     EVENT_CONTROL_CODE_ENABLE_PROVIDER, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_TYPE_EVENT_ID,
     EVENT_RECORD, EVENT_TRACE_CONTROL_QUERY, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_FLAG,
     EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, EnableTraceEx2,
     OpenTraceW, PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_RAW_TIMESTAMP,
     PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE, ProcessTrace, QueryAllTracesW, StartTraceW,
-    WNODE_FLAG_TRACED_GUID,
+    TraceSetInformation, TraceStackTracingInfo, WNODE_FLAG_TRACED_GUID,
 };
 use windows::core::{GUID, PCWSTR, PWSTR};
 
@@ -276,6 +276,34 @@ impl Session {
                 0,
                 0,
                 Some(&parameters),
+            )
+        };
+        if err == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(crate::util::error_text(&windows::core::Error::from(
+                err.to_hresult(),
+            )))
+        }
+    }
+
+    /// Asks a system logger session for a stack with each of these kernel
+    /// events (event class, opcode).
+    pub fn stacks(&self, events: &[(GUID, u8)]) -> Result<(), String> {
+        let ids: Vec<CLASSIC_EVENT_ID> = events
+            .iter()
+            .map(|&(guid, opcode)| CLASSIC_EVENT_ID {
+                EventGuid: guid,
+                Type: opcode,
+                Reserved: [0; 7],
+            })
+            .collect();
+        let err = unsafe {
+            TraceSetInformation(
+                self.handle,
+                TraceStackTracingInfo,
+                ids.as_ptr().cast(),
+                (ids.len() * size_of::<CLASSIC_EVENT_ID>()) as u32,
             )
         };
         if err == ERROR_SUCCESS {

@@ -135,6 +135,10 @@ unsafe extern "system" fn module_base(process: HANDLE, address: u64) -> u64 {
     unsafe { SymGetModuleBase64(process, address) }
 }
 
+/// dbghelp is not safe to call from several threads at once: whoever uses
+/// it holds this.
+pub(crate) static DBGHELP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Ends the symbol session on drop.
 struct Symbols(HANDLE);
 
@@ -246,6 +250,7 @@ pub fn call_stack(
     let _ = unsafe { IsWow64Process(process.raw(), &mut wow64) };
     let wow64 = wow64.as_bool();
 
+    let _dbghelp = DBGHELP.lock().unwrap_or_else(|e| e.into_inner());
     unsafe {
         SymSetOptions(
             SYMOPT_DEFERRED_LOADS

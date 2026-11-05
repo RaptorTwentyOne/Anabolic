@@ -41,13 +41,14 @@ impl AnabolicMcp {
                 + Self::service_tools()
                 + Self::activity_tools()
                 + Self::space_tools()
+                + Self::profile_tools()
                 + Self::action_tools(),
         }
     }
 }
 
 #[cfg(windows)]
-const INSTRUCTIONS: &str = "Anabolic is a performance monitoring and diagnostics tool running on this Windows PC. Its tools read what the machine is doing (processes, CPU per core, memory, disks with their partitions and the files being read and written, what fills each drive, network connections and DNS lookups, GPUs, temperatures, services, startup programs and how long boots take, frame times and driver latency, a 7-day history), record what programs do step by step, and act on it (end, suspend or reprioritise processes, control services, block programs from the network, turn startup programs off, write memory dumps).
+const INSTRUCTIONS: &str = "Anabolic is a performance monitoring and diagnostics tool running on this Windows PC. Its tools read what the machine is doing (processes, CPU per core, memory, disks with their partitions and the files being read and written, what fills each drive, network connections and DNS lookups, GPUs, temperatures, services, startup programs and how long boots take, frame times and driver latency, a 7-day history), record what programs do step by step, sample where a process spends its processor time, and act on it (end, suspend or reprioritise processes, control services, block programs from the network, turn startup programs off, write memory dumps).
 
 Start with get_system_overview, then list_processes or get_process. Times are local. Rates are per second (_bps = bytes per second).
 
@@ -335,6 +336,7 @@ mod tests {
             + AnabolicMcp::service_tools()
             + AnabolicMcp::activity_tools()
             + AnabolicMcp::space_tools()
+            + AnabolicMcp::profile_tools()
             + AnabolicMcp::action_tools();
         let tools = router.list_all();
         let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
@@ -376,6 +378,7 @@ mod tests {
                 "list_processes",
                 "list_services",
                 "list_startup_items",
+                "profile_process",
                 "record_activity",
                 "resume_process",
                 "set_affinity",

@@ -27,6 +27,7 @@ mod tools_activity;
 mod tools_inspect;
 mod tools_network;
 mod tools_process;
+mod tools_profile;
 mod tools_services;
 mod tools_space;
 mod tools_system;
