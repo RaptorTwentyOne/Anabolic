@@ -57,13 +57,19 @@ new since the one before.
   hour; a sleeping drive is not woken. The Overview warns of a failing
   drive, and `get_disks` gives MCP clients the same. On Linux through
   smartmontools.
-- **Boots** (Startup page): how long each of the last boots took, the
-  firmware's part and the system's to the sign-in, what kind of start it
-  was, and how the shutdown before it went: clean, a blue screen with its
-  stop code, the power button held, or none at all. Where Windows still
-  keeps its own boot measurement, what it found slower than usual. From
-  the system's own logs (systemd on Linux). `anabolic-cli boots`, and
-  `get_boot_history` for MCP clients.
+- **Boots** (Startup page): each of the last boots in its steps (the
+  firmware, the loader, Windows to the sign-in screen, the sign-in to the
+  desktop; the time the sign-in screen waited for someone apart), with
+  Group Policy's time and the slow sign-in steps. How the session before
+  ended: who asked for the restart or shutdown and why (Windows Update, an
+  installer, you from the Start menu), how long shutting down took and
+  how long the PC was off; or that it never shut down, with when it was
+  last seen running, a blue screen's stop code and dump. What failed as it
+  started (services that did not start or answer, drivers that did not
+  load), and how the session went: how long it ran, its sleeps, the
+  services that stopped unexpectedly. From the system's own logs (systemd
+  on Linux). `anabolic-cli boots`, and `get_boot_history` for MCP
+  clients.
 - Shift+Delete on the Processes page ends the selected process' tree on
   Windows too: Windows hands the keys on as Cut, and they did nothing.
 - `anabolic-cli space [PATH]` shows the same in a terminal: the folders as

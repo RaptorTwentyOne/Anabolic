@@ -6,7 +6,13 @@
 //! Boots from Windows' event logs. The System log has, for every boot, the
 //! kernel's start (Kernel-General 12), the firmware's timings (Kernel-Boot
 //! 30), the kind of start (Kernel-Boot 27), whether the last shutdown was
-//! clean (Kernel-Boot 20, Kernel-Power 41) and the sign-ins (Winlogon 7001).
+//! clean (Kernel-Boot 20, Kernel-Power 41, EventLog 6008 with the last
+//! moment it ran, a stop error's dump from WER 1001), who asked for the
+//! shutdown before and why (User32 1074) and when the kernel went down
+//! (Kernel-General 13), the services and drivers that failed (Service
+//! Control Manager) and the sleeps (Kernel-Power 42). Winlogon's own log
+//! has the sign-in screen, the sign-in and the desktop, with each step's
+//! time; Group Policy's, its time at the start and at the sign-in.
 //! Diagnostics-Performance adds Windows' own measurement and what slowed a
 //! boot, on the machines where it still keeps them.
 
@@ -18,7 +24,9 @@ use windows::Win32::System::EventLog::{
 };
 use windows::core::PCWSTR;
 
-use crate::boot::{Boot, BootKind, Boots, Measured, Shutdown, Slow, SlowKind, filetime_of_iso};
+use crate::boot::{
+    Boot, BootKind, Boots, Measured, Problem, Shutdown, Slow, SlowKind, filetime_of_iso,
+};
 use crate::util::wide;
 
 /// How far back: the logs are small and roll over long before this.
@@ -34,6 +42,8 @@ struct Event {
     /// When it was logged, as a FILETIME.
     at: i64,
     data: Vec<(String, String)>,
+    /// The event's binary data.
+    binary: Vec<u8>,
 }
 
 impl Event {
@@ -75,13 +85,28 @@ pub fn read() -> Result<Boots, String> {
          System[(Provider[@Name='Microsoft-Windows-Kernel-General'] and EventID=12) or \
          (Provider[@Name='Microsoft-Windows-Kernel-Boot'] and (EventID=20 or EventID=27 or EventID=30)) or \
          (Provider[@Name='Microsoft-Windows-Winlogon'] and EventID=7001) or \
-         (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41)]]</Select>\
+         (Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=41 or EventID=42)) or \
+         (Provider[@Name='Microsoft-Windows-Kernel-General'] and EventID=13) or \
+         (Provider[@Name='User32'] and EventID=1074) or \
+         (Provider[@Name='EventLog'] and EventID=6008) or \
+         (Provider[@Name='Microsoft-Windows-WER-SystemErrorReporting'] and EventID=1001) or \
+         (Provider[@Name='Service Control Manager'] and (EventID=7000 or EventID=7001 or \
+         EventID=7009 or EventID=7011 or EventID=7022 or EventID=7023 or EventID=7024 or \
+         EventID=7026 or EventID=7031 or EventID=7034 or EventID=7038))]]</Select>\
+         <Select Path=\"Microsoft-Windows-Winlogon/Operational\">\
+         *[System[TimeCreated[timediff(@SystemTime) &lt;= {window}]] and \
+         System[EventID=1 or EventID=811 or EventID=812]]</Select>\
+         <Select Path=\"Microsoft-Windows-GroupPolicy/Operational\">\
+         *[System[TimeCreated[timediff(@SystemTime) &lt;= {window}]] and \
+         System[EventID=8000 or EventID=8001]]</Select>\
          <Select Path=\"Microsoft-Windows-Diagnostics-Performance/Operational\">\
          *[System[TimeCreated[timediff(@SystemTime) &lt;= {window}]] and \
          System[EventID &gt;= 100 and EventID &lt;= 110]]</Select>\
          </Query></QueryList>"
     );
-    let events = query_events(&query)?;
+    let mut events = query_events(&query)?;
+    // Each log comes in its own order; one time line for all.
+    events.sort_by_key(|e| e.at);
     let mut boots = assemble(&events);
     boots.truncate(MAX_BOOTS);
     let note = boots
@@ -200,12 +225,100 @@ fn parse(xml: &str) -> Option<Event> {
         };
         data.push((name, unescape(value)));
     }
+    let binary = between(xml, "<Binary>", "</Binary>")
+        .map(|hex| {
+            hex.as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter_map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
+                .collect()
+        })
+        .unwrap_or_default();
     Some(Event {
         provider,
         id,
         at,
         data,
+        binary,
     })
+}
+
+/// A SYSTEMTIME (UTC) as a FILETIME.
+fn filetime_of_systemtime(b: &[u8]) -> Option<i64> {
+    let w = |i: usize| -> Option<u16> {
+        Some(u16::from_le_bytes([*b.get(i * 2)?, *b.get(i * 2 + 1)?]))
+    };
+    let iso = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        w(0)?,
+        w(1)?,
+        w(3)?,
+        w(4)?,
+        w(5)?,
+        w(6)?,
+        w(7)?
+    );
+    filetime_of_iso(&iso)
+}
+
+/// "%%5" (a Windows error number) in words.
+fn error_words(text: &str) -> String {
+    match text.strip_prefix("%%").and_then(|n| n.parse::<u32>().ok()) {
+        Some(code) => windows::core::HRESULT::from_win32(code)
+            .message()
+            .trim()
+            .trim_end_matches('.')
+            .to_string(),
+        None => text.trim().to_string(),
+    }
+}
+
+/// A Service Control Manager event in words.
+fn service_problem(e: &Event) -> Option<String> {
+    let p1 = e.get("param1").unwrap_or("").trim();
+    let p2 = e.get("param2").unwrap_or("").trim();
+    Some(match e.id {
+        7000 | 7023 => format!("{p1} did not start: {}", error_words(p2)),
+        7024 => format!("{p1} stopped with its own error {p2}"),
+        7001 => format!("{p1} did not start: {p2}, which it needs, did not"),
+        7009 | 7011 => {
+            let seconds = p1
+                .parse::<u64>()
+                .map_or(String::new(), |ms| format!(" within {} s", ms / 1000));
+            format!("{p2} did not answer{seconds}")
+        }
+        7022 => format!("{p1} hung as it started"),
+        7026 => {
+            let drivers: Vec<&str> = p1
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            format!("Drivers did not load: {}", drivers.join(", "))
+        }
+        7031 | 7034 => format!("{p1} stopped unexpectedly"),
+        7038 => format!("{p1} could not sign in as its account"),
+        _ => return None,
+    })
+}
+
+/// The program that asked for a shutdown, without the computer's name
+/// after it.
+fn program_of(text: &str) -> String {
+    let t = text.split(" (").next().unwrap_or(text).trim();
+    t.rsplit(['\\', '/']).next().unwrap_or(t).to_string()
+}
+
+/// What a Winlogon notification was about.
+fn notification(n: &str) -> &'static str {
+    match n {
+        "0" => "session",
+        "2" => "sign-in",
+        "12" => "shell",
+        "14" => "after the shell",
+        _ => "other",
+    }
 }
 
 const GENERAL: &str = "Microsoft-Windows-Kernel-General";
@@ -213,6 +326,18 @@ const KBOOT: &str = "Microsoft-Windows-Kernel-Boot";
 const POWER: &str = "Microsoft-Windows-Kernel-Power";
 const WINLOGON: &str = "Microsoft-Windows-Winlogon";
 const DIAG: &str = "Microsoft-Windows-Diagnostics-Performance";
+const USER32: &str = "User32";
+const EVENTLOG: &str = "EventLog";
+const WER: &str = "Microsoft-Windows-WER-SystemErrorReporting";
+const SCM: &str = "Service Control Manager";
+const POLICY: &str = "Microsoft-Windows-GroupPolicy";
+/// A boot's own problems come in its first minutes; later ones are the
+/// session's.
+const STARTING: i64 = 600 * SECOND;
+
+fn ms(ticks: i64) -> u64 {
+    (ticks.max(0) / 10_000) as u64
+}
 
 /// Groups the events into boots, newest first.
 fn assemble(events: &[Event]) -> Vec<Boot> {
@@ -226,6 +351,7 @@ fn assemble(events: &[Event]) -> Vec<Boot> {
     let mut boots = Vec::with_capacity(starts.len());
     for (i, &start) in starts.iter().enumerate() {
         let next = starts.get(i + 1).copied().unwrap_or(i64::MAX);
+        let previous = i.checked_sub(1).map_or(i64::MIN, |p| starts[p]);
         // What a boot logs about itself comes in its first minutes; a
         // little slack before, as the log's clock and the kernel's start
         // differ by a moment.
@@ -249,6 +375,15 @@ fn assemble(events: &[Event]) -> Vec<Boot> {
                     .num("StartOSImageStart")
                     .filter(|&ms| ms > 0)
                     .or_else(|| e.num("LoadOSImageStart").filter(|&ms| ms > 0));
+                // The loader runs from its start to handing the machine
+                // over to the kernel.
+                let handed = e
+                    .num("ExitBootServicesExit")
+                    .filter(|&ms| ms > 0)
+                    .or_else(|| e.num("ExitBootServicesEntry").filter(|&ms| ms > 0));
+                if let (Some(from), Some(to)) = (boot.firmware_ms, handed) {
+                    boot.loader_ms = to.checked_sub(from);
+                }
             } else if e.is(KBOOT, 20) && boot.before == Shutdown::Unknown {
                 if e.get("LastShutdownGood") == Some("true") {
                     boot.before = Shutdown::Clean;
@@ -270,12 +405,139 @@ fn assemble(events: &[Event]) -> Vec<Boot> {
                 Shutdown::Unexpected
             };
         }
-        boot.ready_ms = events
+        // The first sign-in: Winlogon's own log, or the System log's.
+        let signed_in = events
             .iter()
             .filter(within)
-            .filter(|e| e.is(WINLOGON, 7001) && e.at >= start)
-            .map(|e| ((e.at - start) / 10_000) as u64)
+            .filter(|e| (e.is(WINLOGON, 7001) || e.is(WINLOGON, 1)) && e.at >= start)
+            .map(|e| e.at)
             .min();
+        boot.ready_ms = signed_in.map(|t| ms(t - start));
+        // Winlogon sets the session up as the sign-in screen comes.
+        boot.to_screen_ms = events
+            .iter()
+            .filter(within)
+            .find(|e| e.is(WINLOGON, 811) && e.at >= start)
+            .map(|e| ms(e.at - start))
+            .filter(|&t| boot.ready_ms.is_none_or(|r| t <= r));
+        if let Some(t) = signed_in {
+            let steps: Vec<&Event> = events
+                .iter()
+                .filter(|e| {
+                    e.provider == WINLOGON && e.at >= t && e.at < (t + 180 * SECOND).min(next)
+                })
+                .collect();
+            // The desktop is there once the step after the shell ends.
+            boot.to_desktop_ms = steps
+                .iter()
+                .filter(|e| e.id == 812 && e.get("Event") == Some("14"))
+                .map(|e| ms(e.at - t))
+                .next()
+                .or_else(|| {
+                    steps
+                        .iter()
+                        .filter(|e| e.id == 812)
+                        .map(|e| ms(e.at - t))
+                        .max()
+                });
+            // Each step: from its start (811) to its end (812).
+            for begin in steps.iter().filter(|e| e.id == 811) {
+                let key = (begin.get("SubscriberName"), begin.get("Event"));
+                if let Some(end) = steps.iter().find(|e| {
+                    e.id == 812
+                        && e.at >= begin.at
+                        && (e.get("SubscriberName"), e.get("Event")) == key
+                }) {
+                    let took = ms(end.at - begin.at);
+                    if took >= 200 {
+                        boot.sign_in_steps.push((
+                            format!(
+                                "{} ({})",
+                                key.0.unwrap_or("?"),
+                                notification(key.1.unwrap_or(""))
+                            ),
+                            took,
+                        ));
+                    }
+                }
+            }
+            boot.sign_in_steps
+                .sort_by_key(|(_, t)| std::cmp::Reverse(*t));
+            boot.policy_sign_in_ms = events
+                .iter()
+                .find(|e| e.is(POLICY, 8001) && e.at >= t && e.at < (t + STARTING).min(next))
+                .and_then(|e| e.num("PolicyElaspedTimeInSeconds"))
+                .map(|s| s * 1000);
+        }
+        boot.policy_start_ms = events
+            .iter()
+            .find(|e| e.is(POLICY, 8000) && e.at >= start && e.at < (start + STARTING).min(next))
+            .and_then(|e| e.num("PolicyElaspedTimeInSeconds"))
+            .map(|s| s * 1000);
+        // What failed as it started, and what stopped later in the session.
+        for e in events
+            .iter()
+            .filter(within)
+            .filter(|e| e.provider == SCM && e.at >= start)
+        {
+            let Some(what) = service_problem(e) else {
+                continue;
+            };
+            let problem = Problem {
+                after_ms: ms(e.at - start),
+                what,
+            };
+            if e.at < start + STARTING {
+                boot.problems.push(problem);
+            } else if matches!(e.id, 7031 | 7034) {
+                boot.session.crashed.push(problem);
+            }
+        }
+        boot.session.sleeps = events
+            .iter()
+            .filter(within)
+            .filter(|e| e.is(POWER, 42) && e.at >= start)
+            .count() as u32;
+        // How the session before ended: who asked, and when it went down.
+        let before = |e: &&Event| e.at > previous && e.at < start;
+        let went_down = events
+            .iter()
+            .filter(before)
+            .filter(|e| e.is(GENERAL, 13))
+            .map(|e| e.at)
+            .max();
+        if let Some(asked) = events.iter().filter(before).rfind(|e| e.is(USER32, 1074)) {
+            let ended = &mut boot.ended;
+            ended.by = asked.get("param1").map(program_of);
+            ended.action = asked.get("param5").map(str::to_string);
+            ended.reason = asked
+                .get("param3")
+                .filter(|r| !r.starts_with("No title"))
+                .map(str::to_string);
+            ended.comment = asked
+                .get("param6")
+                .filter(|c| !c.is_empty())
+                .map(str::to_string);
+            ended.user = asked.get("param7").map(str::to_string);
+            ended.asked_at = Some(asked.at);
+            ended.shutdown_ms = went_down
+                .filter(|&d| d >= asked.at)
+                .map(|d| ms(d - asked.at));
+        }
+        boot.ended.last_alive = events
+            .iter()
+            .filter(early)
+            .find(|e| e.is(EVENTLOG, 6008))
+            .and_then(|e| e.binary.get(16..32).and_then(filetime_of_systemtime));
+        let off_from = went_down.or(boot.ended.last_alive);
+        boot.ended.off_ms = off_from.filter(|&t| t <= start).map(|t| ms(start - t));
+        if let Some(e) = events.iter().filter(early).find(|e| e.is(WER, 1001)) {
+            boot.ended.crash = e.get("param1").map(str::to_string);
+            boot.ended.dump = e
+                .get("param2")
+                .filter(|d| !d.is_empty())
+                .map(str::to_string);
+        }
         for e in events.iter().filter(within).filter(|e| e.provider == DIAG) {
             match e.id {
                 100 => {
@@ -311,7 +573,15 @@ fn assemble(events: &[Event]) -> Vec<Boot> {
             }
         }
         boot.slowed.sort_by_key(|s| std::cmp::Reverse(s.over_ms));
+        boot.problems.sort_by_key(|p| p.after_ms);
+        boot.session.crashed.sort_by_key(|p| p.after_ms);
         boots.push(boot);
+    }
+    // A session lasted until the next one's start, less the time off.
+    for i in 0..boots.len().saturating_sub(1) {
+        let next = &boots[i + 1];
+        let off = next.ended.off_ms.map_or(0, |o| o as i64 * 10_000);
+        boots[i].session.lasted_ms = Some(ms(next.started - off - boots[i].started));
     }
     boots.reverse();
     boots
@@ -484,6 +754,154 @@ mod tests {
         .filter_map(|x| parse(x))
         .collect();
         assert_eq!(assemble(&events)[0].before, Shutdown::Crashed(209));
+    }
+
+    #[test]
+    fn tells_how_the_session_before_ended_and_how_the_start_went() {
+        let mut list = vec![
+            // A session from 10:00, restarted by Windows Update at 12:00.
+            xml(
+                GENERAL,
+                12,
+                "2026-10-23T10:00:01Z",
+                &[("StartTime", "2026-10-23T10:00:00Z")],
+            ),
+            xml(
+                SCM,
+                7034,
+                "2026-10-23T11:00:00Z",
+                &[("param1", "Everything"), ("param2", "1")],
+            ),
+            xml(POWER, 42, "2026-10-23T11:10:00Z", &[]),
+            xml(
+                USER32,
+                1074,
+                "2026-10-23T12:00:00Z",
+                &[
+                    ("param1", r"C:\Windows\servicing\TrustedInstaller.exe (PC)"),
+                    ("param3", "Operating System: Upgrade (Planned)"),
+                    ("param5", "restart"),
+                    ("param6", ""),
+                    ("param7", r"NT AUTHORITY\SYSTEM"),
+                ],
+            ),
+            xml(GENERAL, 13, "2026-10-23T12:00:50Z", &[]),
+            // The next start, 30 s after the kernel went down.
+            xml(
+                GENERAL,
+                12,
+                "2026-10-23T12:01:21Z",
+                &[("StartTime", "2026-10-23T12:01:20Z")],
+            ),
+            xml(
+                KBOOT,
+                30,
+                "2026-10-23T12:01:21Z",
+                &[
+                    ("LoadOSImageStart", "16190"),
+                    ("StartOSImageStart", "16225"),
+                    ("ExitBootServicesExit", "17168"),
+                ],
+            ),
+            xml(
+                SCM,
+                7009,
+                "2026-10-23T12:02:50Z",
+                &[("param1", "90000"), ("param2", "Steam Client Service")],
+            ),
+            xml(
+                SCM,
+                7026,
+                "2026-10-23T12:01:40Z",
+                &[("param1", "\naehd\ndam\n")],
+            ),
+            xml(
+                WINLOGON,
+                811,
+                "2026-10-23T12:01:43Z",
+                &[("Event", "0"), ("SubscriberName", "GPClient")],
+            ),
+            xml(WINLOGON, 1, "2026-10-23T12:01:48Z", &[]),
+            xml(
+                WINLOGON,
+                811,
+                "2026-10-23T12:01:48.1Z",
+                &[("Event", "2"), ("SubscriberName", "Profiles")],
+            ),
+            xml(
+                WINLOGON,
+                812,
+                "2026-10-23T12:01:49.6Z",
+                &[("Event", "2"), ("SubscriberName", "Profiles")],
+            ),
+            xml(
+                WINLOGON,
+                812,
+                "2026-10-23T12:01:52Z",
+                &[("Event", "14"), ("SubscriberName", "TermSrv")],
+            ),
+        ];
+        // An unexpected stop: 6008 carries when it last ran, local then UTC.
+        let mut lost = xml(EVENTLOG, 6008, "2026-10-23T14:00:20Z", &[]);
+        lost = lost.replace(
+            "</EventData>",
+            "<Binary>EA070A0005001700100031001900790 1EA070A0005001700 0D00310019007901</Binary></EventData>"
+                .replace(' ', "")
+                .as_str(),
+        );
+        list.push(xml(
+            GENERAL,
+            12,
+            "2026-10-23T14:00:01Z",
+            &[("StartTime", "2026-10-23T14:00:00Z")],
+        ));
+        list.push(lost);
+        let events: Vec<Event> = list.iter().filter_map(|x| parse(x)).collect();
+        let boots = assemble(&events);
+        assert_eq!(boots.len(), 3);
+        let (last, middle, first) = (&boots[0], &boots[1], &boots[2]);
+
+        let e = &middle.ended;
+        assert_eq!(e.by.as_deref(), Some("TrustedInstaller.exe"));
+        assert_eq!(e.action.as_deref(), Some("restart"));
+        assert_eq!(
+            e.reason.as_deref(),
+            Some("Operating System: Upgrade (Planned)")
+        );
+        assert_eq!(e.comment, None);
+        assert_eq!(e.shutdown_ms, Some(50_000));
+        assert_eq!(e.off_ms, Some(30_000));
+        assert_eq!(middle.loader_ms, Some(943));
+        assert_eq!(middle.to_screen_ms, Some(23_000));
+        assert_eq!(middle.ready_ms, Some(28_000));
+        assert_eq!(middle.to_desktop_ms, Some(4_000));
+        assert_eq!(
+            middle.sign_in_steps,
+            vec![("Profiles (sign-in)".to_string(), 1_500)]
+        );
+        assert_eq!(middle.problems.len(), 2);
+        assert_eq!(middle.problems[0].what, "Drivers did not load: aehd, dam");
+        assert_eq!(
+            middle.problems[1].what,
+            "Steam Client Service did not answer within 90 s"
+        );
+        assert_eq!(middle.problems[1].after_ms, 90_000);
+
+        assert_eq!(first.session.crashed.len(), 1);
+        assert_eq!(
+            first.session.crashed[0].what,
+            "Everything stopped unexpectedly"
+        );
+        assert_eq!(first.session.sleeps, 1);
+        // 10:00:00 to 12:00:50, when the kernel went down.
+        assert_eq!(first.session.lasted_ms, Some(7_250_000));
+
+        assert_eq!(
+            last.ended.last_alive,
+            filetime_of_iso("2026-10-23T13:49:25.377Z")
+        );
+        assert_eq!(last.ended.by, None);
+        assert_eq!(last.session.lasted_ms, None, "still running");
     }
 
     /// Reads this machine's boots. Some of them need an administrator.

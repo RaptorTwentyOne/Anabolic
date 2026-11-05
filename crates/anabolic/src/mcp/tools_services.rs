@@ -71,14 +71,18 @@ const LIST_STARTUP: &str = if cfg!(windows) {
 };
 
 const BOOTS: &str = "Lists the machine's last boots, newest first, from the system's own \
-logs: when each started, what kind of start it was (full, fast startup, from hibernation), how \
-long the firmware took before the system's loader, how long until the first sign-in on Windows \
-(the time the sign-in screen waited is part of it) or the graphical target on Linux, and how the \
-shutdown before it went: clean, a stop error (blue screen) with its code, the power button held, \
-or not shut down at all (power lost, a hang, a reset). Where Windows still keeps its own boot \
-measurement it adds that, and what it found slower than usual (programs, drivers, services, \
-devices); on Linux, the units that took longest at this boot. Use it when a PC starts slowly or \
-restarted by itself; list_startup_items lists what starts at sign-in. It only reads.";
+logs. Each start in its steps: the firmware, the system's loader, Windows to the sign-in screen, \
+the sign-in, and the sign-in to the desktop, with Group Policy's time and the slow sign-in steps \
+(the time the sign-in screen waited for someone is apart). How the session before it ended: \
+clean, a stop error (blue screen) with its code and dump, the power button held, or not shut down \
+at all with when it was last seen running; who asked for a shutdown or restart (the program, as \
+which user, the reason, its words: Windows Update, an installer, the user), how long shutting down \
+took and how long the machine was off. What failed as it started (services that did not start or \
+answer, drivers that did not load), and how the session went: how long it ran, its sleeps, the \
+services that stopped unexpectedly. Where Windows keeps its own boot measurement it adds that \
+and what it found slower than usual; on Linux, this boot's timings and slowest units from \
+systemd. Use it when a PC starts slowly, restarted by itself or keeps crashing; \
+list_startup_items lists what starts at sign-in. It only reads.";
 
 /// The system's part of a boot, by its name on each system.
 const READY_KEY: &str = if cfg!(windows) {
@@ -129,6 +133,72 @@ fn boot_row(b: &anabolic_core::boot::Boot) -> Value {
             "after_desktop_seconds": seconds(m.after_ms),
         });
     }
+    let steps = [
+        ("loader_seconds", b.loader_ms),
+        ("to_sign_in_screen_seconds", b.to_screen_ms),
+        ("sign_in_to_desktop_seconds", b.to_desktop_ms),
+        ("group_policy_at_start_seconds", b.policy_start_ms),
+        ("group_policy_at_sign_in_seconds", b.policy_sign_in_ms),
+    ];
+    for (key, ms) in steps {
+        if let Some(ms) = ms {
+            row[key] = json!(seconds(ms));
+        }
+    }
+    if !b.sign_in_steps.is_empty() {
+        row["slow_sign_in_steps"] = json!(
+            b.sign_in_steps
+                .iter()
+                .map(|(step, ms)| json!({ "step": step, "seconds": seconds(*ms) }))
+                .collect::<Vec<_>>()
+        );
+    }
+    let e = &b.ended;
+    let mut ended = serde_json::Map::new();
+    let texts = [
+        ("asked_by_program", &e.by),
+        ("as_user", &e.user),
+        ("action", &e.action),
+        ("reason", &e.reason),
+        ("comment", &e.comment),
+        ("stop_error", &e.crash),
+        ("dump", &e.dump),
+    ];
+    for (key, value) in texts {
+        if let Some(v) = value {
+            ended.insert(key.into(), json!(v));
+        }
+    }
+    if let Some(t) = e.asked_at {
+        ended.insert(
+            "asked_at".into(),
+            json!(anabolic_core::sysinfo::local_time(t)),
+        );
+    }
+    if let Some(ms) = e.shutdown_ms {
+        ended.insert("shutting_down_seconds".into(), json!(seconds(ms)));
+    }
+    if let Some(t) = e.last_alive {
+        ended.insert(
+            "last_seen_running".into(),
+            json!(anabolic_core::sysinfo::local_time(t)),
+        );
+    }
+    if let Some(ms) = e.off_ms {
+        ended.insert("off_seconds".into(), json!(seconds(ms)));
+    }
+    if !ended.is_empty() {
+        row["session_before"] = Value::Object(ended);
+    }
+    let problem = |p: &anabolic_core::boot::Problem| json!({ "after_seconds": seconds(p.after_ms), "what": p.what });
+    if !b.problems.is_empty() {
+        row["problems_at_start"] = json!(b.problems.iter().map(problem).collect::<Vec<_>>());
+    }
+    row["session"] = json!({
+        "lasted_seconds": b.session.lasted_ms.map(seconds),
+        "sleeps": b.session.sleeps,
+        "services_stopped_unexpectedly": b.session.crashed.iter().map(problem).collect::<Vec<_>>(),
+    });
     if !b.slowed.is_empty() {
         row["slowest"] = json!(
             b.slowed

@@ -33,6 +33,70 @@ pub struct Boot {
     /// What the system found slower than usual at this boot, slowest
     /// first; on Linux, the units that took longest.
     pub slowed: Vec<Slow>,
+    /// The system's loader, from the firmware's hand-over to the kernel,
+    /// in ms.
+    pub loader_ms: Option<u64>,
+    /// From the kernel's start to the sign-in screen, in ms: the system's
+    /// own part, without anyone's wait.
+    pub to_screen_ms: Option<u64>,
+    /// From the sign-in to the desktop, in ms.
+    pub to_desktop_ms: Option<u64>,
+    /// The sign-in's steps that took a while: who, and ms.
+    pub sign_in_steps: Vec<(String, u64)>,
+    /// Group Policy at the start and at the sign-in, in ms.
+    pub policy_start_ms: Option<u64>,
+    pub policy_sign_in_ms: Option<u64>,
+    /// What went wrong as it started: services, drivers.
+    pub problems: Vec<Problem>,
+    /// How the session before it ended, in full.
+    pub ended: Ending,
+    /// The session this boot began.
+    pub session: Session,
+}
+
+/// Something that went wrong, so long after the kernel's start.
+#[derive(Clone, Debug, Default)]
+pub struct Problem {
+    pub after_ms: u64,
+    pub what: String,
+}
+
+/// How a session ended.
+#[derive(Clone, Debug, Default)]
+pub struct Ending {
+    /// The program that asked for the shutdown or restart, and as whom.
+    pub by: Option<String>,
+    pub user: Option<String>,
+    /// "restart", "power off".
+    pub action: Option<String>,
+    /// Why, as the program said: "Operating System: Upgrade (Planned)".
+    pub reason: Option<String>,
+    pub comment: Option<String>,
+    /// When it was asked for, as a FILETIME.
+    pub asked_at: Option<i64>,
+    /// From the request to the kernel's last moment, in ms.
+    pub shutdown_ms: Option<u64>,
+    /// For one that did not shut down: when the system was last seen
+    /// running, as a FILETIME.
+    pub last_alive: Option<i64>,
+    /// From the end of that session to this kernel's start, in ms; the
+    /// firmware's part included.
+    pub off_ms: Option<u64>,
+    /// A stop error's description and where its dump was written.
+    pub crash: Option<String>,
+    pub dump: Option<String>,
+}
+
+/// What happened in the session a boot began.
+#[derive(Clone, Debug, Default)]
+pub struct Session {
+    /// How long it ran; None while it still runs.
+    pub lasted_ms: Option<u64>,
+    /// Services that stopped unexpectedly after the start: so long in, and
+    /// which.
+    pub crashed: Vec<Problem>,
+    /// Times it went to sleep.
+    pub sleeps: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
