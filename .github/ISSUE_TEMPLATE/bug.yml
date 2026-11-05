@@ -28,7 +28,7 @@ body:
     attributes:
       label: Anabolic version
       description: Settings → About.
-      placeholder: "0.6.0"
+      placeholder: "0.7.0"
     validations:
       required: true
   - type: input

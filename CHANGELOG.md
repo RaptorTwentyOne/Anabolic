@@ -4,7 +4,12 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
-## Unreleased
+## 0.7.0 (2026-11-05)
+
+What fills the drives, in the manner of WinDirStat and WizTree and never
+slower for it; how the drives themselves are holding up; each boot step by
+step, with how the session before it ended; and where a process spends its
+processor time.
 
 - **Disk space** (Ctrl+D): what fills a drive or a folder, in the manner
   of WinDirStat and WizTree: the folders as a tree, the file types and the
