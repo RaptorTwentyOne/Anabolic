@@ -18,6 +18,7 @@ mod desktop;
 mod details;
 mod devports;
 mod dialogs;
+mod disk_health;
 mod displays_view;
 mod fmt;
 mod gamemode;

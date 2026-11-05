@@ -37,6 +37,7 @@ pub mod gpu;
 pub mod growth;
 pub mod handles;
 pub mod hardening;
+pub mod health;
 pub mod history;
 pub mod hotkey;
 pub mod hwinfo;

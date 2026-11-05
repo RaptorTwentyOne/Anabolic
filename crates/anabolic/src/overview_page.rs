@@ -78,6 +78,8 @@ pub struct Inputs<'a> {
     pub blocked: &'a [String],
     pub secrets: bool,
     pub exit_watched: &'a [ProcKey],
+    /// The drives' health, as last read.
+    pub health: &'a [anabolic_core::health::Health],
 }
 
 /// One executable's live processes, summed.
@@ -681,6 +683,26 @@ fn attention(input: &Inputs<'_>, apps: &[App]) -> Vec<Item> {
                 } else {
                     PerfView::Disk
                 }),
+            )],
+        });
+    }
+    // A drive that reports it is failing: back up what is on it.
+    for h in input
+        .health
+        .iter()
+        .filter(|h| h.verdict == anabolic_core::health::Verdict::Bad)
+    {
+        items.push(Item {
+            severe: true,
+            text: format!("Disk {} is failing", h.number),
+            detail: Some(format!(
+                "{}: {}. Back up what is on it.",
+                h.model,
+                h.reasons.join("; ")
+            )),
+            actions: vec![act(
+                "Show",
+                UiCmd::ShowPerf(PerfView::PhysicalDisk(h.number)),
             )],
         });
     }

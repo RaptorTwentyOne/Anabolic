@@ -40,6 +40,15 @@ new since the one before.
   filter's among them.
 - The Overview shows how full each drive is; a click on one opens Disk
   space with what fills it.
+- **Drive health**: each disk on the Performance page shows how it is
+  holding up, as the drive reports it: an NVMe drive's health log, a SATA
+  drive's SMART attributes. Wear used, temperature, hours, power cycles,
+  unsafe shutdowns, what it wrote, spare blocks, and the sectors and
+  errors that mean it is failing, with a verdict in words (Good, Watch it,
+  Failing) and the attributes in full. Read in the background every half
+  hour; a sleeping drive is not woken. The Overview warns of a failing
+  drive, and `get_disks` gives MCP clients the same. On Linux through
+  smartmontools.
 - **Boots** (Startup page): how long each of the last boots took, the
   firmware's part and the system's to the sign-in, what kind of start it
   was, and how the shutdown before it went: clean, a blue screen with its

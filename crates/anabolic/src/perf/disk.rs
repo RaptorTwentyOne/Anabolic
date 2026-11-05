@@ -12,7 +12,13 @@ use eframe::egui::Color32;
 
 use super::*;
 
-pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut Vec<UiCmd>) {
+pub(super) fn disk(
+    ui: &mut Ui,
+    snap: &Snapshot,
+    view: &mut PerfView,
+    health: &mut crate::disk_health::DiskHealth,
+    out: &mut Vec<UiCmd>,
+) {
     let h = &snap.history;
     let s = &snap.system;
     title(ui, "Disk", "all physical disks");
@@ -47,6 +53,7 @@ pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut 
         ("Write", 100.0, Align::Max),
         ("Response", 80.0, Align::Max),
         ("Temp", 60.0, Align::Max),
+        ("Health", 150.0, Align::Min),
         ("Busiest process", 220.0, Align::Min),
     ];
     widgets::header(ui, &columns);
@@ -77,8 +84,27 @@ pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut 
                 ui,
                 columns[6].1,
                 Align::Max,
-                d.temperature.map_or(String::new(), |t| format!("{t} °C")),
+                d.temperature
+                    .or(health.of(d.number).and_then(|h| h.temperature))
+                    .map_or(String::new(), |t| format!("{t} °C")),
             );
+            match health.of(d.number) {
+                Some(h) => {
+                    let text = RichText::new(crate::disk_health::short(h))
+                        .color(crate::disk_health::color(h.verdict));
+                    let shown = widgets::cell(ui, columns[7].1, Align::Min, |ui| {
+                        ui.add(egui::Label::new(text).truncate())
+                    });
+                    let mut tip = h.reasons.join("\n");
+                    if let Some(note) = &h.note {
+                        tip = note.clone();
+                    }
+                    if !tip.is_empty() {
+                        shown.on_hover_text(tip);
+                    }
+                }
+                None => widgets::text(ui, columns[7].1, Align::Min, ""),
+            }
             let busiest = s
                 .disk_activity
                 .iter()
@@ -87,7 +113,7 @@ pub(super) fn disk(ui: &mut Ui, snap: &Snapshot, view: &mut PerfView, out: &mut 
                 .filter(|p| p.io.rate() > 0.0);
             widgets::text(
                 ui,
-                columns[7].1,
+                columns[8].1,
                 Align::Min,
                 RichText::new(busiest.map_or(String::new(), |p| {
                     format!("{}  {}", p.name, fmt::rate_always(p.io.rate()))
@@ -148,7 +174,13 @@ pub(super) fn disk_kind(d: &anabolic_core::disk::DiskStats) -> String {
         .join(" ")
 }
 
-pub(super) fn physical_disk(ui: &mut Ui, snap: &Snapshot, number: u32, out: &mut Vec<UiCmd>) {
+pub(super) fn physical_disk(
+    ui: &mut Ui,
+    snap: &Snapshot,
+    number: u32,
+    health: &mut crate::disk_health::DiskHealth,
+    out: &mut Vec<UiCmd>,
+) {
     let Some(d) = snap.system.disks.iter().find(|d| d.number == number) else {
         ui.label(RichText::new("This disk is gone.").color(theme::TEXT_WEAK));
         return;
@@ -164,6 +196,7 @@ pub(super) fn physical_disk(ui: &mut Ui, snap: &Snapshot, number: u32, out: &mut
             disk_kind(d),
             fmt::bytes(d.size),
             d.temperature
+                .or(health.of(number).and_then(|h| h.temperature))
                 .map_or(String::new(), |t| format!("  ·  {t} °C"))
         ))
         .color(theme::TEXT_WEAK),
@@ -211,10 +244,13 @@ pub(super) fn physical_disk(ui: &mut Ui, snap: &Snapshot, number: u32, out: &mut
             ("Queue depth", d.queue.to_string()),
             (
                 "Temperature",
-                d.temperature.map_or("—".into(), |t| format!("{t} °C")),
+                d.temperature
+                    .or(health.of(number).and_then(|h| h.temperature))
+                    .map_or("—".into(), |t| format!("{t} °C")),
             ),
         ],
     );
+    crate::disk_health::section(ui, health, number);
     if d.partitions.is_empty() {
         volumes(ui, d);
     } else {

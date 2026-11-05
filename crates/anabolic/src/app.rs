@@ -170,6 +170,8 @@ pub struct App {
     services_at: Option<Instant>,
     startup: crate::startup_page::StartupPage,
     space: crate::space_page::SpacePage,
+    /// The drives' health, read now and then in the background.
+    disk_health: crate::disk_health::DiskHealth,
     startup_watch: anabolic_core::startup::StartupWatch,
     startup_events: Receiver<StartupEvent>,
     /// When the startup entries were last read.
@@ -694,6 +696,7 @@ impl App {
             services_at: None,
             startup,
             space,
+            disk_health: Default::default(),
             startup_watch,
             startup_events,
             startup_at: None,
@@ -1319,6 +1322,7 @@ fn recorder_config(settings: &Settings) -> Option<RecorderConfig> {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
+        self.disk_health.tick(ui.ctx());
         crate::bench::frame(ui.ctx(), frame.info().cpu_usage, self.ui_time);
         let page = match self.settings.tab {
             Tab::Overview => "Overview".to_string(),
@@ -1488,6 +1492,7 @@ impl eframe::App for App {
                         blocked: &self.settings.blocked,
                         secrets: self.settings.dump_sign_in_secrets,
                         exit_watched: &self.exit_watch.keys(),
+                        health: self.disk_health.all(),
                     };
                     crate::overview_page::show(
                         ui,
@@ -1578,6 +1583,7 @@ impl eframe::App for App {
                         &self.hardware,
                         &self.zombie_view,
                         self.displays.as_deref().map(Vec::as_slice),
+                        &mut self.disk_health,
                         &mut cmds,
                     );
                 });

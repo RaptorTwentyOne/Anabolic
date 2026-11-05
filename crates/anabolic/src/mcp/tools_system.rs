@@ -109,6 +109,50 @@ fn memory_json(snap: &Snapshot) -> Value {
     })
 }
 
+/// A drive's health as it reports it; missing figures are left out.
+fn health_json(h: &anabolic_core::health::Health) -> Value {
+    use anabolic_core::health::Verdict;
+    let mut v = json!({
+        "verdict": match h.verdict {
+            Verdict::Good => "good",
+            Verdict::Watch => "watch",
+            Verdict::Bad => "failing",
+            Verdict::Unknown => "unknown",
+        },
+        "reasons": h.reasons,
+        "protocol": h.protocol,
+        "drive_reports_failing": h.drive_warns,
+    });
+    let figures = [
+        ("wear_used_percent", h.wear_used.map(u64::from)),
+        ("power_on_hours", h.power_on_hours),
+        ("power_cycles", h.power_cycles),
+        ("unsafe_shutdowns", h.unsafe_shutdowns),
+        ("written_bytes", h.written),
+        ("read_bytes", h.read),
+        ("media_errors", h.media_errors),
+        ("reallocated_sectors", h.reallocated),
+        ("pending_sectors", h.pending),
+        ("uncorrectable_sectors", h.uncorrectable),
+    ];
+    for (key, value) in figures {
+        if let Some(value) = value {
+            v[key] = json!(value);
+        }
+    }
+    if let Some(t) = h.temperature {
+        v["temperature_c"] = json!(t);
+    }
+    if let Some((left, warn)) = h.spare {
+        v["spare_left_percent"] = json!(left);
+        v["spare_warning_percent"] = json!(warn);
+    }
+    if let Some(note) = &h.note {
+        v["note"] = json!(note);
+    }
+    v
+}
+
 fn disks_json(snap: &Snapshot) -> Vec<Value> {
     snap.system
         .disks
@@ -468,7 +512,11 @@ impl AnabolicMcp {
     #[tool(
         description = "Disks: every physical disk with its partitions (type, file system, \
                        where mounted, space) and volumes, activity, throughput, IOPS, \
-                       response time, queue and temperature. With trace_seconds > 0, also which \
+                       response time, queue and temperature, and its health as the drive \
+                       reports it (an NVMe drive's health log, a SATA drive's SMART data): a \
+                       verdict with its reasons, wear used, hours, power cycles, unsafe \
+                       shutdowns, data written, and the errors that mean it is failing; a \
+                       sleeping drive is not woken to ask. With trace_seconds > 0, also which \
                        processes read and write each disk and which files, from a disk I/O \
                        trace.",
         annotations(
@@ -488,9 +536,13 @@ impl AnabolicMcp {
         }
         let secs = args.trace_seconds.unwrap_or(0).min(30);
         let snap = self.traced(Trace::Disks, secs, &context).await;
+        let health = super::handler::blocking(anabolic_core::health::read).await;
         let mut disks = disks_json(&snap);
         for disk in &mut disks {
             let number = disk["disk"].as_u64().unwrap_or(u64::MAX) as u32;
+            if let Some(h) = health.iter().find(|h| h.number == number) {
+                disk["health"] = health_json(h);
+            }
             if let Some(a) = snap.system.disk_activity.iter().find(|a| a.disk == number) {
                 disk["processes"] = json!(a.processes.iter().take(15).map(|u| json!({
                     "pid": u.pid, "name": &*u.name,

@@ -63,6 +63,7 @@ pub fn show(
     hw: &HardwareInfo,
     zombies: &ZombieView,
     displays: Option<&[anabolic_core::displays::Display]>,
+    health: &mut crate::disk_health::DiskHealth,
     out: &mut Vec<UiCmd>,
 ) {
     egui::Panel::left("perf-nav")
@@ -86,8 +87,8 @@ pub fn show(
             PerfView::CpuInfo => cpu_info(ui, snap, hw),
             PerfView::Memory => memory(ui, snap, zombies, out),
             PerfView::MemoryInfo => memory_info(ui, snap, hw),
-            PerfView::Disk => disk(ui, snap, view, out),
-            PerfView::PhysicalDisk(n) => physical_disk(ui, snap, n, out),
+            PerfView::Disk => disk(ui, snap, view, health, out),
+            PerfView::PhysicalDisk(n) => physical_disk(ui, snap, n, health, out),
             PerfView::Network => network(ui, snap, view, out),
             PerfView::Adapter(luid) => adapter(ui, snap, luid),
             PerfView::Io => io(ui, snap, out),
