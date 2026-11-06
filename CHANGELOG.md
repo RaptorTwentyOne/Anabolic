@@ -4,6 +4,14 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
+## Unreleased
+
+- **Starts on a fresh Windows.** The exes carry the Visual C++ runtime
+  inside them. Before, they needed the Visual C++ Redistributable, which
+  most PCs have from some other program but a fresh Windows does not;
+  without it Windows said VCRUNTIME140.dll was not found and Anabolic did
+  not start.
+
 ## 0.7.0 (2026-11-05)
 
 What fills the drives, in the manner of WinDirStat and WizTree and never

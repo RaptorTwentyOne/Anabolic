@@ -1,0 +1,6 @@
+# The C runtime goes inside the exes, so they start on a Windows without the
+# Visual C++ Redistributable (a fresh install, Windows Sandbox, winget's
+# validation). Without it they ask for VCRUNTIME140.dll and fail with
+# STATUS_DLL_NOT_FOUND before any of our code runs.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
