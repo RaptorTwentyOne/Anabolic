@@ -4,7 +4,9 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
-## Unreleased
+## 0.7.1 (2026-11-06)
+
+Anabolic starts on a Windows that has never had the Visual C++ runtime.
 
 - **Starts on a fresh Windows.** The exes carry the Visual C++ runtime
   inside them. Before, they needed the Visual C++ Redistributable, which
