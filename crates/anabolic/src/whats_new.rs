@@ -14,7 +14,7 @@ use eframe::egui::{
 
 use crate::{theme, widgets};
 
-const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 
 /// One release's part of the changelog.
 #[derive(Debug, PartialEq)]

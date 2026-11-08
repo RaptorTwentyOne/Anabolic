@@ -35,8 +35,9 @@ fn install_retry(failures: u32) -> Option<Duration> {
 }
 
 pub(super) struct UpdateState {
-    /// None for a copy built from source: it is updated from its source.
+    /// None for a copy cargo made: it is updated the way it came.
     updater: Option<Updater>,
+    cargo: Option<anabolic_core::update::Cargo>,
     events: Receiver<Event>,
     next_check: Instant,
     checking: bool,
@@ -73,9 +74,9 @@ impl UpdateState {
             .clone()
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
         let ctx = ctx.clone();
-        let (updater, events) = match anabolic_core::update::this_exe()
-            .filter(|exe| !anabolic_core::update::from_source(exe))
-        {
+        let exe = anabolic_core::update::this_exe();
+        let cargo = exe.as_deref().and_then(anabolic_core::update::from_cargo);
+        let (updater, events) = match exe.filter(|_| cargo.is_none()) {
             Some(exe) => {
                 let (updater, events) =
                     Updater::start(current, exe, move || crate::stalls::wake(&ctx));
@@ -85,6 +86,7 @@ impl UpdateState {
         };
         Self {
             updater,
+            cargo,
             events,
             next_check: Instant::now() + FIRST_CHECK,
             checking: false,
@@ -338,13 +340,19 @@ impl App {
     pub(super) fn updates_section(&mut self, ui: &mut egui::Ui) {
         super::settings_page::heading(ui, "Updates");
         if self.update.updater.is_none() {
-            super::settings_page::row(
-                ui,
-                "Built from source",
-                "This copy was built with cargo: it updates with its source (git pull, then \
-                 cargo build), not from the releases.",
-                |_| {},
-            );
+            let (title, text) = match self.update.cargo {
+                Some(anabolic_core::update::Cargo::Installed) => (
+                    "Installed with cargo",
+                    "This copy was installed with cargo: `cargo install anabolic` (or `cargo \
+                     binstall anabolic`) updates it, not the releases.",
+                ),
+                _ => (
+                    "Built from source",
+                    "This copy was built with cargo: it updates with its source (git pull, \
+                     then cargo build), not from the releases.",
+                ),
+            };
+            super::settings_page::row(ui, title, text, |_| {});
             return;
         }
         super::settings_page::row(

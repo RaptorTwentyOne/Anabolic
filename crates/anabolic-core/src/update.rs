@@ -178,14 +178,35 @@ pub fn installed_copy(exe: &Path) -> bool {
     imp::installed(exe)
 }
 
-/// Built by cargo (it sits in a target folder, which cargo marks with
-/// CACHEDIR.TAG): such a copy is updated from its source, not replaced by
-/// a release.
-pub fn from_source(exe: &Path) -> bool {
-    exe.ancestors()
+/// How cargo made a copy that is not a release's: such a copy is updated
+/// the way it came, not replaced by a release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cargo {
+    /// Built in a target folder, which cargo marks with CACHEDIR.TAG:
+    /// updated from its source (git pull, then cargo build).
+    Built,
+    /// Put in cargo's bin folder by `cargo install` or cargo-binstall,
+    /// which keep the list of what they installed beside it.
+    Installed,
+}
+
+/// Whether, and how, cargo made `exe`.
+pub fn from_cargo(exe: &Path) -> Option<Cargo> {
+    if exe
+        .ancestors()
         .skip(1)
         .take(3)
         .any(|dir| dir.join("CACHEDIR.TAG").exists())
+    {
+        return Some(Cargo::Built);
+    }
+    let bin = exe.parent()?;
+    let home = bin.parent()?;
+    (bin.file_name()? == "bin"
+        && [".crates.toml", ".crates2.json"]
+            .iter()
+            .any(|list| home.join(list).exists()))
+    .then_some(Cargo::Installed)
 }
 
 /// Deletes what the last update left: the old executable it moved aside,
@@ -576,4 +597,38 @@ fn unzip(zip: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         files.push((file, data));
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tells_what_cargo_made() {
+        let root = std::env::temp_dir().join(format!("anabolic-cargo-{}", crate::random_hex(8)));
+        let release = root.join("target").join("release");
+        let bin = root.join("cargo-home").join("bin");
+        let elsewhere = root.join("Anabolic");
+        for dir in [&release, &bin, &elsewhere] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(root.join("target").join("CACHEDIR.TAG"), "").unwrap();
+        std::fs::write(root.join("cargo-home").join(".crates2.json"), "{}").unwrap();
+
+        assert_eq!(
+            from_cargo(&release.join("anabolic.exe")),
+            Some(Cargo::Built)
+        );
+        assert_eq!(
+            from_cargo(&bin.join("anabolic.exe")),
+            Some(Cargo::Installed)
+        );
+        assert_eq!(from_cargo(&elsewhere.join("anabolic.exe")), None);
+        // A bin folder of anything else is no cargo's.
+        let other = root.join("tools").join("bin");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(from_cargo(&other.join("anabolic.exe")), None);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

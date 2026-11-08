@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://github.com/RaptorTwentyOne/Anabolic/actions/workflows/ci.yml"><img src="https://github.com/RaptorTwentyOne/Anabolic/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/RaptorTwentyOne/Anabolic/releases"><img src="https://img.shields.io/github/v/release/RaptorTwentyOne/Anabolic?include_prereleases&sort=semver" alt="Release"></a>
+  <a href="https://crates.io/crates/anabolic"><img src="https://img.shields.io/crates/v/anabolic" alt="crates.io"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%C2%B7%20Linux-0078D4" alt="Windows 10 | 11 · Linux">
   <img src="https://img.shields.io/badge/rust-1.95%2B-orange" alt="Rust 1.95+">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT OR Apache-2.0"></a>
@@ -201,7 +202,7 @@ virus scanner holding the file) is tried again after a minute, five and
 thirty. In Settings → Updates it can ask first instead, or not
 check at all. Copies built from source are left to their source. The first
 time a new version starts, a small window says what changed since the one
-before, from [CHANGELOG.md](CHANGELOG.md), which Anabolic carries inside it.
+before, from [CHANGELOG.md](crates/anabolic/CHANGELOG.md), which Anabolic carries inside it.
 
 An installed copy updates through the new release's installer, without a
 window, so that Settings → Apps keeps showing the right version. Changing
@@ -436,6 +437,11 @@ loaded as the program starts.
 ```
 cargo build --release
 ```
+
+Or from [crates.io](https://crates.io/crates/anabolic), into cargo's bin
+folder: `cargo install anabolic`, or on Windows `cargo binstall anabolic`
+for the release build without compiling. A copy installed with cargo is
+updated with cargo, not by Anabolic's updater.
 
 The result is `target\release\anabolic.exe` (with `anabolic-cli.exe`, the
 terminal commands) or `target/release/anabolic`, a single executable with

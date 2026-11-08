@@ -9,10 +9,10 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/RaptorTwentyOne/Anabolic"
 homepage = "https://github.com/RaptorTwentyOne/Anabolic"
-publish = false
 
 [workspace.dependencies]
-anabolic-core = { path = "crates/anabolic-core" }
+# The same version as the application: the two are released together.
+anabolic-core = { path = "crates/anabolic-core", version = "=0.7.1" }
 arc-swap = "1.9"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }

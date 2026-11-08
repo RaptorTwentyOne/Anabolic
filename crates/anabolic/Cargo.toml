@@ -7,7 +7,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish.workspace = true
+readme = "README.md"
+keywords = ["task-manager", "system-monitor", "process-monitor", "performance", "windows"]
+categories = ["command-line-utilities", "development-tools::profiling", "development-tools::debugging"]
+# What makes the logo's files, not what is built.
+exclude = ["assets/logo/*.py", "assets/logo/*.mjs", "assets/logo/*.ps1", "assets/logo/sheet.*"]
+
+# `cargo binstall anabolic` on Windows: the release's zip instead of a
+# build. Elsewhere it builds, as cargo install does.
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/anabolic-v{ version }-windows-x64.zip"
+bin-dir = "anabolic-v{ version }-windows-x64/{ bin }{ binary-ext }"
+pkg-fmt = "zip"
 
 [dependencies]
 anabolic-core.workspace = true

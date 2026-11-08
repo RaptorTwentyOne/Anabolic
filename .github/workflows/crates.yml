@@ -1,0 +1,41 @@
+name: crates.io
+
+# A release goes to crates.io when it is published on GitHub: the release
+# workflow leaves a draft, and publishing it is the go-ahead. crates.io's
+# trusted publishing hands this run a short-lived token, so none is kept in
+# the repository. A version already there is left as it is, so a rerun
+# finishes what a failed run started.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      # The core first: the application depends on this very version of it.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for crate in anabolic-core anabolic; do
+            if curl -sf -A "RaptorTwentyOne/Anabolic crates workflow" \
+                "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
+              echo "$crate $version is on crates.io already"
+            else
+              cargo publish --locked -p "$crate"
+            fi
+          done

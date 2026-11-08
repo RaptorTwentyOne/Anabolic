@@ -112,9 +112,9 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           echo "title=Anabolic $version" >> "$GITHUB_OUTPUT"
-          awk -v v="$version" '$0 ~ "^## " v "( |$)" { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
+          awk -v v="$version" '$0 ~ "^## " v "( |$)" { on = 1; next } /^## / { on = 0 } on' crates/anabolic/CHANGELOG.md > notes.md
           if ! grep -q '[^[:space:]]' notes.md; then
-            echo "CHANGELOG.md has no part for $version" >&2
+            echo "crates/anabolic/CHANGELOG.md has no part for $version" >&2
             exit 1
           fi
           cat >> notes.md <<'EOF'
