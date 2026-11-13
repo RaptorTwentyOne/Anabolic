@@ -518,6 +518,46 @@ impl App {
                     };
                     self.confirm = Some((dialog, Pending::Purge(what)));
                 }
+                UiCmd::ConfirmInterrupts { id, name, change } => {
+                    use anabolic_core::interrupts::Change;
+                    let (title, what) = match change {
+                        Change::Messages(true) => (
+                            format!("Use MSI for {name}?"),
+                            "Windows will start it with message-signalled interrupts. If its \
+                             driver cannot work that way the device stops (Device Manager shows \
+                             a problem): set it back here and restart."
+                                .to_string(),
+                        ),
+                        Change::Messages(false) => (
+                            format!("Use line-based interrupts for {name}?"),
+                            "Windows will start it on a shared interrupt line, the old way. \
+                             Drivers written for messages may run slower or stop."
+                                .to_string(),
+                        ),
+                        Change::Cores(Some(mask)) => (
+                            format!("Hold {name}'s interrupts to one processor?"),
+                            format!(
+                                "Its interrupts will be handled on processor {} only. A setting \
+                                 its driver does not accept is ignored.",
+                                anabolic_core::interrupts::cores_words(mask)
+                            ),
+                        ),
+                        Change::Cores(None) => (
+                            format!("Let Windows choose {name}'s processors?"),
+                            "Its interrupts go back to the processors Windows picks.".to_string(),
+                        ),
+                    };
+                    let dialog = ConfirmDialog {
+                        title,
+                        lines: vec![
+                            what,
+                            "It takes effect at the next restart, and needs administrator rights."
+                                .into(),
+                        ],
+                        confirm: change.words(),
+                    };
+                    self.confirm = Some((dialog, Pending::Interrupts { id, change }));
+                }
                 UiCmd::ConfirmKernelDump => {
                     let dir = crate::data_dir()
                         .map(|d| d.join("dumps").display().to_string())

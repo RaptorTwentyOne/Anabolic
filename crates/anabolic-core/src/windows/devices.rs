@@ -14,10 +14,13 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_CLASS_PROPERTY_INSTALLER, CM_DEVNODE_STATUS_FLAGS, CM_GETIDLIST_FILTER_ENUMERATOR, CM_GETIDLIST_FILTER_NONE, CM_GETIDLIST_FILTER_PRESENT,
-    CM_Get_Class_PropertyW, CM_Get_DevNode_PropertyW, CM_Get_DevNode_Status,
-    CM_Get_Device_ID_List_SizeW, CM_Get_Device_ID_ListW, CM_LOCATE_DEVNODE_PHANTOM,
-    CM_Locate_DevNodeW, CM_PROB, CR_SUCCESS, DN_HAS_PROBLEM, DN_NO_SHOW_IN_DM,
+    ALLOC_LOG_CONF, CM_CLASS_PROPERTY_INSTALLER, CM_DEVNODE_STATUS_FLAGS, CM_Free_Log_Conf_Handle,
+    CM_Free_Res_Des_Handle, CM_GETIDLIST_FILTER_ENUMERATOR, CM_GETIDLIST_FILTER_NONE,
+    CM_GETIDLIST_FILTER_PRESENT, CM_Get_Class_PropertyW, CM_Get_DevNode_PropertyW,
+    CM_Get_DevNode_Status, CM_Get_Device_ID_List_SizeW, CM_Get_Device_ID_ListW,
+    CM_Get_First_Log_Conf, CM_Get_Next_Res_Des, CM_Get_Res_Des_Data, CM_Get_Res_Des_Data_Size,
+    CM_LOCATE_DEVNODE_PHANTOM, CM_Locate_DevNodeW, CM_PROB, CM_RESTYPE, CR_SUCCESS, DN_HAS_PROBLEM,
+    DN_NO_SHOW_IN_DM,
 };
 use windows::Win32::Devices::Properties::{
     DEVPKEY_Device_Class, DEVPKEY_Device_ClassGuid, DEVPKEY_Device_DeviceDesc,
@@ -133,6 +136,44 @@ pub(crate) fn number(inst: u32, key: &DEVPROPKEY) -> Option<u32> {
         return None;
     }
     Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
+}
+
+/// The raw descriptors of one kind of resource (memory ranges,
+/// interrupts) a started device was given.
+pub(crate) fn resources(inst: u32, kind: CM_RESTYPE) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut conf = 0usize;
+    if unsafe { CM_Get_First_Log_Conf(Some(&mut conf), inst, ALLOC_LOG_CONF) } != CR_SUCCESS {
+        return out;
+    }
+    // The first call starts from the configuration itself; the handles
+    // after it are ours to free.
+    let mut at = conf;
+    let mut owned = false;
+    loop {
+        let mut next = 0usize;
+        if unsafe { CM_Get_Next_Res_Des(&mut next, at, kind, None, 0) } != CR_SUCCESS {
+            break;
+        }
+        if owned {
+            let _ = unsafe { CM_Free_Res_Des_Handle(at) };
+        }
+        at = next;
+        owned = true;
+        let mut size = 0u32;
+        if unsafe { CM_Get_Res_Des_Data_Size(&mut size, at, 0) } != CR_SUCCESS || size == 0 {
+            continue;
+        }
+        let mut buf = vec![0u8; size as usize];
+        if unsafe { CM_Get_Res_Des_Data(at, buf.as_mut_ptr().cast(), size, 0) } == CR_SUCCESS {
+            out.push(buf);
+        }
+    }
+    if owned {
+        let _ = unsafe { CM_Free_Res_Des_Handle(at) };
+    }
+    let _ = unsafe { CM_Free_Log_Conf_Handle(conf) };
+    out
 }
 
 /// A list of strings (hardware and compatible ids).

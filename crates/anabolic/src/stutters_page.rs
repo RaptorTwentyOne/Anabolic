@@ -18,6 +18,7 @@ use std::time::{Duration, SystemTime};
 
 use anabolic_core::frames::{FrameStats, ProcessFrames, Stutter};
 use anabolic_core::latency::{DriverLatency, Kind, LatencySpike, LatencyStats};
+use anabolic_core::timer::{TimerResolution, words as timer_words};
 use anabolic_core::{ProcState, Snapshot};
 use eframe::egui::{
     self, Align, Color32, Label, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, Ui,
@@ -88,9 +89,26 @@ pub struct StuttersPage {
     pub selected: Option<u32>,
     moments: VecDeque<Moment>,
     last_seq: u64,
+    /// The timer's resolution and who asked for it, read on request.
+    timer: Option<Result<TimerResolution, String>>,
+    timer_reading: Option<crossbeam_channel::Receiver<Result<TimerResolution, String>>>,
 }
 
 impl StuttersPage {
+    fn read_timer(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("timer-resolution".into())
+            .spawn(move || {
+                let _ = tx.send(anabolic_core::timer::read());
+                ctx.request_repaint();
+            });
+        if spawned.is_ok() {
+            self.timer_reading = Some(rx);
+        }
+    }
+
     /// Remembers what each refresh saw while frames are traced, so a
     /// stutter can be told what else ran then.
     pub fn observe(&mut self, snap: &Snapshot) {
@@ -565,6 +583,116 @@ fn histogram(ui: &mut Ui, width: f32, d: &DriverLatency) {
     ));
 }
 
+/// The system timer's resolution, and the programs that asked for a finer
+/// one (TimerResolution tools, `powercfg /energy`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn timer(ui: &mut Ui, page: &mut StuttersPage) {
+    if let Some(rx) = &page.timer_reading
+        && let Ok(read) = rx.try_recv()
+    {
+        page.timer = Some(read);
+        page.timer_reading = None;
+    }
+    if page.timer.is_none() && page.timer_reading.is_none() {
+        page.read_timer(ui.ctx());
+    }
+    ui.horizontal(|ui| {
+        widgets::section(ui, "Timer resolution");
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            let reading = page.timer_reading.is_some();
+            if ui
+                .add_enabled(!reading, egui::Button::new("Read again"))
+                .clicked()
+            {
+                page.read_timer(ui.ctx());
+            }
+            if reading {
+                ui.spinner();
+            }
+        });
+    });
+    caption(
+        ui,
+        "How often Windows' clock interrupt fires. Programs ask for a finer one to sleep and \
+         pace frames on time, and the finest request wins (on Windows 11, among programs in \
+         view). A finer timer also wakes the processor more often: more power and heat at idle.",
+    );
+    ui.add_space(4.0);
+    let t = match &page.timer {
+        None => return,
+        Some(Err(e)) => {
+            ui.label(RichText::new(e).color(theme::BAD));
+            return;
+        }
+        Some(Ok(t)) => t,
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            widgets::strong(timer_words(t.current_ms), theme::SUBTITLE).color(if t.raised() {
+                theme::ELEVATED_TEXT
+            } else {
+                theme::TEXT
+            }),
+        );
+        ui.label(
+            RichText::new(format!(
+                "now  ·  Windows' default {}, the finest {}",
+                timer_words(t.coarsest_ms),
+                timer_words(t.finest_ms)
+            ))
+            .color(theme::TEXT_WEAK),
+        );
+    });
+    if let Some(why) = &t.requests_unknown {
+        caption(ui, format!("Who asked for it: {why}."));
+        return;
+    }
+    if t.requests.is_empty() {
+        caption(ui, "No program asks for a finer timer.");
+        return;
+    }
+    // One line per program and request: Chrome asks once per process.
+    let mut lines: Vec<(f64, &str, usize)> = Vec::new();
+    for r in &t.requests {
+        match lines
+            .iter_mut()
+            .find(|(ms, n, _)| *ms == r.ms && *n == r.name)
+        {
+            Some(line) => line.2 += 1,
+            None => lines.push((r.ms, &r.name, 1)),
+        }
+    }
+    egui::Grid::new("timer-requests")
+        .num_columns(2)
+        .spacing([16.0, 3.0])
+        .show(ui, |ui| {
+            for (ms, name, n) in lines {
+                let finest = (ms - t.current_ms).abs() < 0.005 || ms < t.current_ms;
+                ui.label(RichText::new(timer_words(ms)).color(if finest {
+                    theme::ELEVATED_TEXT
+                } else {
+                    theme::TEXT_WEAK
+                }));
+                ui.label(if n > 1 {
+                    format!("{name}  ×{n}")
+                } else {
+                    name.to_string()
+                });
+                ui.end_row();
+            }
+        });
+    if t.requests.iter().any(|r| r.ms < t.finest_ms) {
+        caption(
+            ui,
+            format!(
+                "A request finer than {} gets {}, the finest the hardware does.",
+                timer_words(t.finest_ms),
+                timer_words(t.finest_ms)
+            ),
+        );
+    }
+}
+
 fn drivers(ui: &mut Ui, latency: &LatencyStats, out: &mut Vec<UiCmd>) {
     ui.horizontal(|ui| {
         widgets::section(ui, words::SECTION);
@@ -834,6 +962,9 @@ pub fn show(
                 Some(l) => drivers(ui, l, out),
                 None => caption(ui, "Driver timing is starting…"),
             }
+            ui.add_space(14.0);
+            #[cfg(windows)]
+            timer(ui, page);
             ui.add_space(10.0);
         });
 }

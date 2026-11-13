@@ -6,6 +6,23 @@ new since the one before.
 
 ## Unreleased
 
+- **For gamers**, what three small tools did:
+  - *Timer resolution* (Stutters page): how often Windows' clock
+    interrupt fires now, and every program that asked for a finer one
+    and what it asked for, as TimerResolution and `powercfg /energy`
+    show it. `anabolic-cli timer`, `get_timer_resolution`.
+  - *Interrupts* (Performance > Devices): how each device interrupts the
+    processor, by message (MSI, MSI-X) or the shared wire, what its
+    hardware can do and what it will do after a restart, in the manner
+    of the MSI utilities; a device can be switched to MSI or back, and
+    its interrupts held to one processor, after a question. Drive
+    controllers are only shown: if their driver could not start the new
+    way, Windows could not start. `anabolic-cli interrupts`,
+    `list_interrupts`.
+  - *Standby list cleaner* (Rules page), in the manner of ISLC: the
+    standby list cleared by itself when it holds at least a set amount
+    and free memory falls under another, only while a game is in front
+    if asked, at most once a minute.
 - **Checkup** (Performance page): what costs speed without saying so,
   the things otherwise looked up one by one in CPU-Z, GPU-Z, HWiNFO and
   Windows' settings. Memory below the speed its part number is sold at

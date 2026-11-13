@@ -160,6 +160,12 @@ pub enum Action {
     /// Give memory back: empty a memory list, the working sets or the file
     /// cache (see `memtools`).
     Purge(crate::memtools::Purge),
+    /// A device's interrupt mode or processors (see `interrupts`); it
+    /// takes effect at the next restart.
+    Interrupts {
+        id: String,
+        change: crate::interrupts::Change,
+    },
     /// Write a dump of the running kernel into the folder, on a thread of
     /// its own; with `user_pages`, the processes' memory too.
     KernelDump {
@@ -297,6 +303,17 @@ impl ActionRunner {
                                 let _ = out_tx.send(outcome);
                                 notify();
                             });
+                        continue;
+                    }
+                    if let Action::Interrupts { id, change } = &action {
+                        let outcome = match crate::interrupts::set(id, *change) {
+                            Ok(done) => Outcome::Info(done),
+                            Err(e) => Outcome::Error(e),
+                        };
+                        if out_tx.send(outcome).is_err() {
+                            return;
+                        }
+                        notify();
                         continue;
                     }
                     if let Action::Purge(what) = action {

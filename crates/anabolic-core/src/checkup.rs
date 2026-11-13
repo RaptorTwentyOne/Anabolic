@@ -375,11 +375,7 @@ slots for two modules (usually A2 and B2)."
                 Area::Memory,
                 "Memory channels",
                 Verdict::Good,
-                format!(
-                    "{} modules on {} channels",
-                    modules.len(),
-                    letters.len()
-                ),
+                format!("{} modules on {} channels", modules.len(), letters.len()),
                 "",
             ));
         }
@@ -498,7 +494,10 @@ lower resolution of its own.",
                 Area::Displays,
                 name,
                 Verdict::Good,
-                format!("{}×{} at {:.0} Hz, its best", d.width, d.height, d.refresh_hz),
+                format!(
+                    "{}×{} at {:.0} Hz, its best",
+                    d.width, d.height, d.refresh_hz
+                ),
                 "",
             ));
         }
@@ -719,7 +718,10 @@ mod tests {
             ..MemoryInfo::default()
         };
         let checks = memory(&m);
-        assert!(checks.iter().all(|c| c.verdict == Verdict::Good), "{checks:?}");
+        assert!(
+            checks.iter().all(|c| c.verdict == Verdict::Good),
+            "{checks:?}"
+        );
         assert!(checks[0].now.contains("profile is on"));
     }
 

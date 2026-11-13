@@ -320,6 +320,9 @@ impl App {
                             Pending::Purge(what) => self
                                 .actions
                                 .run(anabolic_core::actions::Action::Purge(what)),
+                            Pending::Interrupts { id, change } => self
+                                .actions
+                                .run(anabolic_core::actions::Action::Interrupts { id, change }),
                             Pending::KernelDump => {
                                 if let Some(dir) = crate::data_dir().map(|d| d.join("dumps")) {
                                     self.toasts.info(

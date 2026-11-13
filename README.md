@@ -103,6 +103,12 @@ And across the pages:
   by a job object: a cap Windows keeps whatever the priority, not a hint.
   They last while Anabolic runs. Windows' core processes and anti-cheat
   software are left alone.
+- **Timer, interrupts and the standby list**: the system timer's
+  resolution and every program that asked for a finer one (Stutters
+  page); how each device interrupts, MSI or line-based, switched after a
+  question (Performance > Devices > Interrupts); and the standby list
+  cleared by itself when free memory runs short, in the manner of ISLC
+  (Rules page).
 - **Game mode** (optional): while a game is in front, busy background
   programs run at below normal priority until it ends; asked to, without a
   game too, sparing the program in front. The game, Windows' core
@@ -295,6 +301,7 @@ anabolic-cli ps --json                  # the same as JSON, for scripts
 | `memmap PID` | A process' memory by kind, and its largest allocations (`--top`) |
 | `devices [FILTER]` | The devices and their drivers, the ones with a problem first (`--problems`, `--all`) |
 | `checkup` | What costs speed: memory below its rating, a card on fewer lanes, background recording, … (`--all`) |
+| `timer`, `interrupts` | The timer resolution and who asked for it; how each device interrupts (MSI or line-based) |
 | `profile PID` | Where a process spends its processor time, by function (`--seconds`) |
 | `space [PATH]` | What fills a drive or folder, as a tree (`--depth`, `--top`), or its largest files (`--files`) or file types (`--types`) |
 | `kill PID`, `suspend PID`, `resume PID`, `priority PID LEVEL` | Act on a process |

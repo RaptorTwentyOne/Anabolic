@@ -15,7 +15,7 @@ use std::time::Duration;
 mod imp;
 pub use imp::read;
 #[cfg(windows)]
-pub(crate) use imp::{instance_ids, list, node, number, text};
+pub(crate) use imp::{instance_ids, list, node, number, resources, text};
 
 #[derive(Clone, Debug, Default)]
 pub struct Device {

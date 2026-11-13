@@ -626,6 +626,46 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "timer",
+        usage: "",
+        about: "The system timer's resolution, and who asked for a finer one",
+        details: "",
+        group: Group::Look,
+        plan: |_| {
+            Ok(tool(
+                "get_timer_resolution",
+                Map::new(),
+                View::Table {
+                    list: "requests",
+                    columns: &["asks_for_ms=Asks for", "program", "pid"],
+                },
+            ))
+        },
+    },
+    Command {
+        name: "interrupts",
+        usage: "",
+        about: "How each device interrupts the processor: MSI or line-based",
+        details: "",
+        group: Group::Look,
+        plan: |_| {
+            Ok(tool(
+                "list_interrupts",
+                Map::new(),
+                View::Table {
+                    list: "devices",
+                    columns: &[
+                        "device",
+                        "kind",
+                        "now",
+                        "next_start=Next start",
+                        "processors",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
         name: "crashes",
         usage: "[--program NAME] [--limit N] [--serious]",
         about: "What crashed, hung or was reset, and why",

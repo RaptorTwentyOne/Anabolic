@@ -30,6 +30,8 @@ mod headless;
 mod help;
 mod history_page;
 mod icons;
+#[cfg(windows)]
+mod interrupts_view;
 mod limits;
 mod mcp;
 mod mcp_page;
@@ -54,6 +56,7 @@ mod settings;
 mod shot;
 mod space_page;
 mod stalls;
+mod standby;
 mod startup_page;
 mod stutters_page;
 mod table;

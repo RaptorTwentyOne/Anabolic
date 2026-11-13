@@ -43,6 +43,10 @@ pub struct DevicesView {
     pub filter: String,
     /// The device in the pane, by its id.
     selected: Option<String>,
+    /// How the devices interrupt, instead of the list (Windows).
+    pub interrupts: bool,
+    #[cfg(windows)]
+    irq: crate::interrupts_view::InterruptsView,
 }
 
 impl DevicesView {
@@ -171,7 +175,27 @@ pub fn show(ui: &mut Ui, view: &mut DevicesView, out: &mut Vec<UiCmd>) {
         }
         Some(Ok(d)) => d.clone(),
     };
-    ui.label(widgets::strong("Devices", theme::TITLE));
+    ui.horizontal(|ui| {
+        ui.label(widgets::strong("Devices", theme::TITLE));
+        #[cfg(windows)]
+        {
+            ui.add_space(16.0);
+            if ui
+                .selectable_label(!view.interrupts, "Every device")
+                .clicked()
+            {
+                view.interrupts = false;
+            }
+            if ui.selectable_label(view.interrupts, "Interrupts").clicked() {
+                view.interrupts = true;
+            }
+        }
+    });
+    #[cfg(windows)]
+    if view.interrupts {
+        crate::interrupts_view::show(ui, &mut view.irq, out);
+        return;
+    }
     let gone = devices
         .devices
         .iter()

@@ -349,9 +349,23 @@ fn device_row(d: &anabolic_core::devices::Device) -> Value {
 }
 
 const CHECKUP: &str = if cfg!(windows) {
-    "Checks what costs speed without saying so, the things otherwise looked up one by one in CPU-Z, GPU-Z, HWiNFO and Windows' settings: memory below the speed its part number is sold at (EXPO/XMP off), all modules on one channel or mixed kits, no page file; a graphics card or NVMe drive on fewer PCIe lanes or an older generation than it has; Resizable BAR; Xbox Game Bar's background recording, Windows Game Mode, hardware-accelerated GPU scheduling; a monitor below its refresh rate or resolution; the power plan and power mode, USB selective suspend, fast startup, a restart updates wait for; TRIM; a wired adapter held to 100 Mbps; memory integrity (VBS/HVCI); mouse acceleration. Each with a verdict (change, consider, info, good), what it is now, what it costs and where to change it. Use it when a PC or game feels slower than its hardware should be. It only reads; changing is left to the user."
+    "Checks what costs speed without saying so, the things otherwise looked up one by one in \
+CPU-Z, GPU-Z, HWiNFO and Windows' settings: memory below the speed its part number is sold at \
+(EXPO/XMP off), all modules on one channel or mixed kits, no page file; a graphics card or NVMe \
+drive on fewer PCIe lanes or an older generation than it has; Resizable BAR; Xbox Game Bar's \
+background recording, Windows Game Mode, hardware-accelerated GPU scheduling; a monitor below \
+its refresh rate or resolution; the power plan and power mode, USB selective suspend, fast \
+startup, a restart updates wait for; TRIM; a wired adapter held to 100 Mbps; memory integrity \
+(VBS/HVCI); mouse acceleration. Each with a verdict (change, consider, info, good), what it is \
+now, what it costs and where to change it. Use it when a PC or game feels slower than its \
+hardware should be. It only reads; changing is left to the user."
 } else {
-    "Checks what costs speed without saying so: memory below the speed its part number is sold at, all modules on one channel or mixed kits, no swap; a graphics card or NVMe drive on fewer PCIe lanes or an older generation than it has; a monitor below its refresh rate or resolution; the processor's frequency governor or energy preference and the platform profile; a restart the packages wait for; TRIM. Each with a verdict (change, consider, info, good), what it is now, what it costs and how to change it. It only reads."
+    "Checks what costs speed without saying so: memory below the speed its part number is sold \
+at, all modules on one channel or mixed kits, no swap; a graphics card or NVMe drive on fewer \
+PCIe lanes or an older generation than it has; a monitor below its refresh rate or resolution; \
+the processor's frequency governor or energy preference and the platform profile; a restart \
+the packages wait for; TRIM. Each with a verdict (change, consider, info, good), what it is now, \
+what it costs and how to change it. It only reads."
 };
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -378,8 +392,93 @@ fn time_of_day(text: &str) -> Option<u32> {
     (h < 24 && m < 60).then_some(h * 3600 + m * 60)
 }
 
+const TIMER: &str = "Gets the system timer's resolution (how often Windows' clock interrupt \
+fires: 15.6 ms apart by default, down to 0.5 ms) and every program that asked for a finer one, \
+with what it asked for, as TimerResolution tools and powercfg /energy show it. A finer timer \
+helps programs sleep and pace frames on time and costs power and heat at idle. Use it when a \
+PC idles hot or drains its battery, or to see whether a game got the timer it asked for. Who \
+asked needs Anabolic running as administrator. It only reads. Windows only.";
+
+const INTERRUPTS: &str = "Lists how each PCI device interrupts the processor, as the MSI \
+utilities show it: by message (MSI or MSI-X, with how many messages) or line-based (a shared \
+wire), what its hardware can do, what Windows' setting will give it at the next start, and the \
+processors its interrupts are held to. Use it with get_stutters when a driver's interrupts hold \
+the processors, or to check a device after its interrupt mode was changed in Anabolic (the \
+Devices view's Interrupts; this tool only reads). Windows only.";
+
 #[tool_router(router = system_tools, vis = "pub(super)")]
 impl AnabolicMcp {
+    #[tool(
+        description = TIMER,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_timer_resolution(&self) -> Result<CallToolResult, ErrorData> {
+        use anabolic_core::timer::words;
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let t = match blocking(anabolic_core::timer::read).await {
+            Ok(t) => t,
+            Err(e) => return fail(e),
+        };
+        let mut out = json!({
+            "now": words(t.current_ms),
+            "default_ms": t.coarsest_ms,
+            "finest_ms": t.finest_ms,
+            "raised": t.raised(),
+            "requests": t.requests.iter().map(|r| json!({
+                "program": r.name,
+                "pid": r.pid,
+                "asks_for_ms": r.ms,
+                "path": r.path,
+            })).collect::<Vec<_>>(),
+        });
+        if let Some(e) = &t.requests_unknown {
+            out["requests_unknown"] = json!(e);
+        }
+        ok(out)
+    }
+
+    #[tool(
+        description = INTERRUPTS,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_interrupts(&self) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let devices = match blocking(anabolic_core::interrupts::read).await {
+            Ok(d) => d,
+            Err(e) => return fail(e),
+        };
+        let rows: Vec<Value> = devices
+            .iter()
+            .map(|d| {
+                json!({
+                    "device": d.name,
+                    "kind": d.kind.label(),
+                    "now": d.now_words(),
+                    "next_start": if d.messages_next() { "MSI" } else { "line-based" },
+                    "waits_for_restart": d.pending(),
+                    "hardware_can": d.can_words(),
+                    "processors": d.cores.map_or("any".into(), anabolic_core::interrupts::cores_words),
+                    "id": d.id,
+                })
+            })
+            .collect();
+        ok(json!({ "devices": rows }))
+    }
+
     #[tool(
         description = CHECKUP,
         annotations(

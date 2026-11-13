@@ -148,6 +148,11 @@ impl GameMode {
 
     /// The game in front, if any: a window that fills its monitor, or a
     /// program a rule calls a game.
+    /// A game is in front now, by the same test game mode uses.
+    pub fn in_front(snap: &Snapshot, rules: &[Rule]) -> bool {
+        Self::detect(snap, anabolic_core::foreground::front(), rules).is_some()
+    }
+
     fn detect<'a>(
         snap: &'a Snapshot,
         front: Option<Front>,

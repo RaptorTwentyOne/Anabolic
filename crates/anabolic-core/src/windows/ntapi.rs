@@ -388,6 +388,12 @@ unsafe extern "system" {
 
     pub fn NtSetSystemInformation(class: u32, info: *const c_void, length: u32) -> NTSTATUS;
 
+    pub fn NtQueryTimerResolution(
+        coarsest: *mut u32,
+        finest: *mut u32,
+        current: *mut u32,
+    ) -> NTSTATUS;
+
     pub fn NtSystemDebugControl(
         command: u32,
         input: *mut c_void,

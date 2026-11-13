@@ -10,9 +10,7 @@
 //! pages keep them. Nothing is opened or changed.
 
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    ALLOC_LOG_CONF, CM_Free_Log_Conf_Handle, CM_Free_Res_Des_Handle, CM_Get_Child,
-    CM_Get_First_Log_Conf, CM_Get_Next_Res_Des, CM_Get_Res_Des_Data, CM_Get_Res_Des_Data_Size,
-    CM_RESTYPE, CR_SUCCESS, ResType_Mem, ResType_MemLarge,
+    CM_Get_Child, CR_SUCCESS, ResType_Mem, ResType_MemLarge,
 };
 use windows::Win32::Devices::Properties::{
     DEVPKEY_Device_CompatibleIds, DEVPKEY_Device_DeviceDesc, DEVPKEY_Device_FriendlyName,
@@ -25,16 +23,13 @@ use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use windows::core::GUID;
 
 use crate::checkup::{Area, Check, Fix, Link, Slot, Verdict, integrated, link};
-use crate::devices::{list, node, number, text};
+use crate::devices::{list, node, number, resources, text};
 use crate::reg;
 use crate::util::from_wide;
 
 // pciprop.h: the link's speed (1 = 2.5 GT/s … 5 = 32 GT/s) and lanes.
 const PCI: GUID = GUID::from_u128(0x3ab22e31_8264_4b4e_9af5_a8d2d8e33e62);
-const CURRENT_SPEED: DEVPROPKEY = DEVPROPKEY {
-    fmtid: PCI,
-    pid: 9,
-};
+const CURRENT_SPEED: DEVPROPKEY = DEVPROPKEY { fmtid: PCI, pid: 9 };
 const CURRENT_WIDTH: DEVPROPKEY = DEVPROPKEY {
     fmtid: PCI,
     pid: 10,
@@ -56,7 +51,45 @@ pub fn checks() -> Vec<Check> {
     out.extend(storage());
     out.extend(ethernet());
     out.extend(mouse());
+    out.extend(timer());
     out
+}
+
+/// The timer's resolution, and the program whose request set it.
+fn timer() -> Option<Check> {
+    use crate::timer::words;
+    let t = crate::timer::read().ok()?;
+    let mut now = words(t.current_ms);
+    if t.raised()
+        && let Some(first) = t.requests.first()
+    {
+        let others = t
+            .requests
+            .iter()
+            .filter(|r| r.name != first.name)
+            .map(|r| r.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        now.push_str(&format!("; {} asks for {}", first.name, words(first.ms)));
+        if others > 0 {
+            now.push_str(&format!(
+                ", {others} other program{} for less",
+                if others == 1 { "" } else { "s" }
+            ));
+        }
+    } else if !t.raised() {
+        now.push_str(", Windows' default");
+    }
+    Some(Check::new(
+        "timer-resolution",
+        Area::System,
+        "Timer resolution",
+        Verdict::Info,
+        now,
+        "How often Windows' clock interrupt fires. A finer timer lets programs sleep and pace \
+frames on time; it also wakes the processor more often, which costs power and heat at idle. \
+The Stutters page lists who asks for it.",
+    ))
 }
 
 fn name_of(inst: u32) -> String {
@@ -69,52 +102,16 @@ fn name_of(inst: u32) -> String {
 /// onto its own memory (its BAR), 256 MB without Resizable BAR and all of
 /// it with.
 fn largest_range(inst: u32) -> Option<u64> {
-    let mut conf = 0usize;
-    if unsafe { CM_Get_First_Log_Conf(Some(&mut conf), inst, ALLOC_LOG_CONF) } != CR_SUCCESS {
-        return None;
-    }
-    let mut largest = 0u64;
-    for kind in [ResType_Mem, ResType_MemLarge] {
-        largest = largest.max(ranges(conf, kind));
-    }
-    let _ = unsafe { CM_Free_Log_Conf_Handle(conf) };
-    (largest > 0).then_some(largest)
-}
-
-/// The largest range of one resource kind in a configuration.
-fn ranges(conf: usize, kind: CM_RESTYPE) -> u64 {
-    let mut largest = 0u64;
-    let mut at = conf;
-    let mut owned = false;
-    loop {
-        let mut next = 0usize;
-        if unsafe { CM_Get_Next_Res_Des(&mut next, at, kind, None, 0) } != CR_SUCCESS {
-            break;
-        }
-        if owned {
-            let _ = unsafe { CM_Free_Res_Des_Handle(at) };
-        }
-        at = next;
-        owned = true;
-        let mut size = 0u32;
-        if unsafe { CM_Get_Res_Des_Data_Size(&mut size, at, 0) } != CR_SUCCESS || size < 24 {
-            continue;
-        }
-        let mut buf = vec![0u8; size as usize];
-        if unsafe { CM_Get_Res_Des_Data(at, buf.as_mut_ptr().cast(), size, 0) } != CR_SUCCESS {
-            continue;
-        }
-        // MEM_DES and MEM_LARGE_DES alike: count, type, base, end.
-        let base = u64::from_le_bytes(buf[8..16].try_into().unwrap_or_default());
-        let end = u64::from_le_bytes(buf[16..24].try_into().unwrap_or_default());
-        if end > base {
-            largest = largest.max(end - base + 1);
-        }
-    }
-    if owned {
-        let _ = unsafe { CM_Free_Res_Des_Handle(at) };
-    }
-    largest
+    // MEM_DES and MEM_LARGE_DES alike: count, type, base, end.
+    [ResType_Mem, ResType_MemLarge]
+        .into_iter()
+        .flat_map(|kind| resources(inst, kind))
+        .filter_map(|d| {
+            let base = u64::from_le_bytes(d.get(8..16)?.try_into().ok()?);
+            let end = u64::from_le_bytes(d.get(16..24)?.try_into().ok()?);
+            (end > base).then(|| end - base + 1)
+        })
+        .max()
 }
 
 fn pcie_link(inst: u32) -> Link {
@@ -263,7 +260,10 @@ reach the kernel. Windows Security turns it on; an old driver can stop it.",
             now,
             why,
         )
-        .fix(Fix::open("Core isolation", "windowsdefender://coreisolation")),
+        .fix(Fix::open(
+            "Core isolation",
+            "windowsdefender://coreisolation",
+        )),
     )
 }
 
@@ -346,7 +346,8 @@ notices, and gives the game first claim on the processor.",
                 "Hardware-accelerated GPU scheduling",
                 Verdict::Consider,
                 "Off",
-                "Frame generation (DLSS 3 and later) needs it on; otherwise the difference is small either way. It takes a restart.",
+                "Frame generation (DLSS 3 and later) needs it on; otherwise the difference is \
+small either way. It takes a restart.",
             )
             .fix(graphics),
         ),

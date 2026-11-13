@@ -60,6 +60,10 @@ enum Pending {
     MemoryMap(ProcKey),
     Purge(anabolic_core::memtools::Purge),
     KernelDump,
+    Interrupts {
+        id: String,
+        change: anabolic_core::interrupts::Change,
+    },
     WaitChain(ProcKey),
     CloseHandle(FoundHandle),
     CloseHandles {
@@ -212,6 +216,7 @@ pub struct App {
     /// What draws the window: the GPU, or Windows' software renderer.
     renderer: Option<String>,
     game_mode: crate::gamemode::GameMode,
+    standby: crate::standby::Cleaner,
     /// Frame and DPC tracing are on.
     stutters_traced: bool,
     network: crate::network_page::NetworkPage,
@@ -438,6 +443,8 @@ impl App {
             settings.tab = Tab::Startup;
             startup.show_everything = true;
         }
+        let mut devices = crate::devices_view::DevicesView::default();
+        devices.interrupts = args.iter().any(|a| a == "--interrupts");
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
         }
@@ -725,7 +732,7 @@ impl App {
             space,
             disk_health: Default::default(),
             crashes: Default::default(),
-            devices: Default::default(),
+            devices,
             checkup: Default::default(),
             profile_view: Default::default(),
             memory_view: Default::default(),
@@ -750,6 +757,7 @@ impl App {
             displays_at: None,
             renderer: None,
             game_mode: Default::default(),
+            standby: Default::default(),
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
@@ -1669,6 +1677,16 @@ impl eframe::App for App {
                         .show(ui, |ui| {
                             crate::gamemode::card(ui, &mut self.settings.game, &self.game_mode);
                             ui.add_space(12.0);
+                            #[cfg(windows)]
+                            {
+                                crate::standby::card(
+                                    ui,
+                                    &mut self.settings.standby,
+                                    &self.standby,
+                                    &self.snapshot,
+                                );
+                                ui.add_space(12.0);
+                            }
                             crate::rules::show(
                                 ui,
                                 &mut self.rules_page,
@@ -2000,6 +2018,15 @@ impl App {
         ) {
             self.actions.run(action);
         }
+        let s = &self.settings.standby;
+        let playing = if self.settings.game.enabled {
+            self.game_mode.game.is_some()
+        } else {
+            s.enabled
+                && s.only_playing
+                && crate::gamemode::GameMode::in_front(&self.snapshot, &self.settings.rules)
+        };
+        self.standby.step(s, &self.snapshot, playing);
         // `--tray` on Wayland: a window cannot start hidden there, so the
         // first closes at once and Anabolic goes on without it.
         #[cfg(target_os = "linux")]

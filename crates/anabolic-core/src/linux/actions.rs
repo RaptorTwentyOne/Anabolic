@@ -112,7 +112,10 @@ pub fn perform(action: Action) -> Option<Outcome> {
         }
         Action::Lift(group) => return Some(Outcome::Limits(crate::limits::lift(&group))),
         // Run on their own thread by the runner.
-        Action::Dump { .. } | Action::KernelDump { .. } | Action::Purge(_) => return None,
+        Action::Dump { .. }
+        | Action::KernelDump { .. }
+        | Action::Purge(_)
+        | Action::Interrupts { .. } => return None,
         Action::Suspend(t) => signal(&t, libc::SIGSTOP).map(|_| format!("Suspended {}", t.label())),
         Action::Resume(t) => signal(&t, libc::SIGCONT).map(|_| format!("Resumed {}", t.label())),
         Action::SetPriority(t, priority) => set_priority(&t, priority)

@@ -120,6 +120,13 @@ pub enum UiCmd {
     /// Ask before writing a dump of the running kernel (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     ConfirmKernelDump,
+    /// Ask before changing how a device interrupts (Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    ConfirmInterrupts {
+        id: String,
+        name: String,
+        change: anabolic_core::interrupts::Change,
+    },
     /// Ask before writing a memory dump of the process.
     ConfirmDump(ProcKey, anabolic_core::dump::DumpKind),
     /// Ask before following what the process' threads wait for.

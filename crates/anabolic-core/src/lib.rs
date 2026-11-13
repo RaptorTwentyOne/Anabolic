@@ -46,6 +46,7 @@ pub mod history;
 pub mod hotkey;
 pub mod hwinfo;
 pub mod instance;
+pub mod interrupts;
 pub mod latency;
 pub mod limits;
 pub mod lineage;
@@ -70,6 +71,7 @@ pub mod space;
 pub mod startup;
 pub mod sysinfo;
 pub mod threads;
+pub mod timer;
 pub mod topology;
 pub mod update;
 pub mod waits;
@@ -89,11 +91,11 @@ pub mod firewall;
 #[path = "windows/ntapi.rs"]
 pub mod ntapi;
 #[cfg(windows)]
-#[path = "windows/winfile.rs"]
-pub mod winfile;
-#[cfg(windows)]
 #[path = "windows/reg.rs"]
 pub(crate) mod reg;
+#[cfg(windows)]
+#[path = "windows/winfile.rs"]
+pub mod winfile;
 
 // Linux only: reading /proc, the kernel's tracing (perf events, system calls)
 // and netlink interfaces, ELF files, other processes' threads and memory

@@ -4,14 +4,16 @@
 // and say it comes from Anabolic. That is all the license asks.
 
 //! The registry, as the readers here need it: a key opened in the 64-bit
-//! or the 32-bit view, its values decoded (text, lists, numbers), its
-//! subkeys.
+//! or the 32-bit view, its values decoded (text, lists, numbers, bytes),
+//! its subkeys; and the few writes Anabolic makes (a number, a text,
+//! bytes, a value or key removed), each in a key it names in full.
 
-use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
-    KEY_WOW64_64KEY, REG_SAM_FLAGS, RegCloseKey, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
-    RegQueryValueExW,
+    KEY_WOW64_64KEY, KEY_WRITE, REG_BINARY, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
+    RegQueryValueExW, RegSetValueExW,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -22,6 +24,7 @@ pub(crate) enum Value {
     Text(String),
     List(Vec<String>),
     Number(u64),
+    Bytes(Vec<u8>),
 }
 
 impl Value {
@@ -30,6 +33,7 @@ impl Value {
             Value::Text(t) => t.clone(),
             Value::List(l) => l.join(" "),
             Value::Number(n) => n.to_string(),
+            Value::Bytes(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
         }
     }
 }
@@ -103,6 +107,8 @@ fn decode(kind: u32, data: &[u8]) -> Option<Value> {
         11 => Some(Value::Number(u64::from_le_bytes(
             data.get(..8)?.try_into().ok()?,
         ))),
+        // REG_BINARY
+        3 => Some(Value::Bytes(data.to_vec())),
         _ => None,
     }
 }
@@ -168,7 +174,13 @@ pub(crate) fn number(key: &Key, name: &str) -> Option<u64> {
     match value(key, name)? {
         Value::Number(n) => Some(n),
         Value::Text(t) => t.trim().parse().ok(),
-        Value::List(_) => None,
+        // A little-endian number of up to eight bytes (a KAFFINITY).
+        Value::Bytes(b) if !b.is_empty() && b.len() <= 8 => {
+            let mut eight = [0u8; 8];
+            eight[..b.len()].copy_from_slice(&b);
+            Some(u64::from_le_bytes(eight))
+        }
+        Value::List(_) | Value::Bytes(_) => None,
     }
 }
 
@@ -207,18 +219,113 @@ pub(crate) fn subkeys(key: &Key) -> Vec<String> {
     out
 }
 
+fn written(err: WIN32_ERROR, what: &str) -> Result<(), String> {
+    if err == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: {}",
+            crate::util::error_text(&windows::core::Error::from(err.to_hresult()))
+        ))
+    }
+}
+
+/// Opens a key for writing, making it (and those above it) when missing.
+fn create(root: HKEY, path: &str) -> Result<Key, String> {
+    let mut key = HKEY::default();
+    let w = wide(path);
+    let err = unsafe {
+        RegCreateKeyExW(
+            root,
+            PCWSTR(w.as_ptr()),
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_WRITE | KEY_READ | view(false),
+            None,
+            &mut key,
+            None,
+        )
+    };
+    written(
+        err,
+        &format!("{}\\{path} could not be opened", root_name(root)),
+    )?;
+    Ok(Key(key))
+}
+
+pub(crate) fn set_number(root: HKEY, path: &str, name: &str, n: u32) -> Result<(), String> {
+    let key = create(root, path)?;
+    let w = wide(name);
+    let err = unsafe {
+        RegSetValueExW(
+            key.0,
+            PCWSTR(w.as_ptr()),
+            None,
+            REG_DWORD,
+            Some(&n.to_le_bytes()),
+        )
+    };
+    written(err, &format!("{name} could not be set"))
+}
+
+pub(crate) fn set_bytes(root: HKEY, path: &str, name: &str, data: &[u8]) -> Result<(), String> {
+    let key = create(root, path)?;
+    let w = wide(name);
+    let err = unsafe { RegSetValueExW(key.0, PCWSTR(w.as_ptr()), None, REG_BINARY, Some(data)) };
+    written(err, &format!("{name} could not be set"))
+}
+
+/// Removes a value; one that is not there is no error.
+pub(crate) fn delete_value(root: HKEY, path: &str, name: &str) -> Result<(), String> {
+    let mut key = HKEY::default();
+    let w = wide(path);
+    let err = unsafe {
+        RegOpenKeyExW(
+            root,
+            PCWSTR(w.as_ptr()),
+            None,
+            KEY_WRITE | view(false),
+            &mut key,
+        )
+    };
+    if err == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    written(
+        err,
+        &format!("{}\\{path} could not be opened", root_name(root)),
+    )?;
+    let key = Key(key);
+    let n = wide(name);
+    let err = unsafe { RegDeleteValueW(key.0, PCWSTR(n.as_ptr())) };
+    if err == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    written(err, &format!("{name} could not be removed"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn reads_a_known_value() {
-        let root = text_at(
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-            "SystemRoot",
-        );
-        assert!(root.is_some_and(|r| r.to_lowercase().ends_with("windows")));
-        assert!(number_at(HKEY_CURRENT_USER, r"Control Panel\Mouse", "NoSuchValue").is_none());
+    fn reads_and_writes_a_key_of_its_own() {
+        let path = format!("Software\\Anabolic-test-{}", crate::random_hex(4));
+        set_number(HKEY_CURRENT_USER, &path, "n", 7).unwrap();
+        assert_eq!(number_at(HKEY_CURRENT_USER, &path, "n"), Some(7));
+        set_bytes(HKEY_CURRENT_USER, &path, "b", &0x30u64.to_le_bytes()).unwrap();
+        assert_eq!(number_at(HKEY_CURRENT_USER, &path, "b"), Some(0x30));
+        delete_value(HKEY_CURRENT_USER, &path, "n").unwrap();
+        delete_value(HKEY_CURRENT_USER, &path, "n").unwrap();
+        assert_eq!(number_at(HKEY_CURRENT_USER, &path, "n"), None);
+        delete_value(HKEY_CURRENT_USER, &path, "b").unwrap();
+        let _ = unsafe {
+            windows::Win32::System::Registry::RegDeleteKeyW(
+                HKEY_CURRENT_USER,
+                windows::core::PCWSTR(wide(&path).as_ptr()),
+            )
+        };
+        assert!(open(HKEY_CURRENT_USER, &path, false).is_none());
     }
 }
