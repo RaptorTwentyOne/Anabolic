@@ -307,6 +307,7 @@ anabolic-cli ps --json                  # the same as JSON, for scripts
 | `program NAME` | One program over the last days: processor time, memory and bytes moved per day (`--days`) |
 | `memmap PID` | A process' memory by kind, and its largest allocations (`--top`) |
 | `devices [FILTER]` | The devices and their drivers, the ones with a problem first (`--problems`, `--all`), or every USB device ever plugged in (`--usb`) |
+| `report` | A report of this PC to paste into a forum post, without names or serials |
 | `checkup` | What costs speed: memory below its rating, a card on fewer lanes, background recording, … (`--all`) |
 | `dns`, `hosts` | Which DNS server answers fastest from here; the hosts file's lines |
 | `ping [ADDRESS]` | The connection's quality to the router, the internet and an address (`--seconds`, `--route`) |

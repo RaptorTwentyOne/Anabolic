@@ -6,6 +6,13 @@ new since the one before.
 
 ## Unreleased
 
+- **PC report** (Overview, This PC), in the manner of Speccy: the
+  system and firmware, processor, memory and its speed, graphics with
+  their drivers, monitors, drives with their health and free space,
+  network adapters, what the checkup found, devices with a problem and
+  the week's crashes, as Markdown on the clipboard for a forum post or
+  a support ticket. No names, serial numbers or addresses.
+  `anabolic-cli report`, and `get_pc_report` for MCP clients.
 - **Explorer's right-click menu** (Settings, off until turned on), in
   the manner of LockHunter: "Who is using this?" on files and folders
   opens Find handle on the path, and "What fills this folder?" on

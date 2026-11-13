@@ -520,6 +520,20 @@ impl App {
                 }
                 UiCmd::FlushDns => self.actions.run(anabolic_core::actions::Action::FlushDns),
                 UiCmd::VirusTotal(items) => crate::vt::ask(items),
+                UiCmd::CopyReport => {
+                    let text = anabolic_core::report::build(&anabolic_core::report::Parts {
+                        snap: &self.snapshot,
+                        hw: &self.hardware,
+                        displays: self.displays.as_deref().map(Vec::as_slice),
+                        health: self.disk_health.all(),
+                        devices: self.devices.devices().map(|d| d.as_ref()),
+                        crashes: self.crashes.crashes().map(|c| c.as_ref()),
+                        checkup: self.checkup.checkup().map(|c| c.as_ref()),
+                    });
+                    self.actions.run(Action::Copy(text));
+                    self.toasts
+                        .info("A report of this PC is on the clipboard, without names or serials.");
+                }
                 UiCmd::ConfirmHosts(text) => {
                     let entries = anabolic_core::dnstools::parse_hosts(&text)
                         .iter()

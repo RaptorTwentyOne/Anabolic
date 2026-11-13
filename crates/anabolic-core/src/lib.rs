@@ -64,6 +64,7 @@ pub mod placement;
 pub mod power;
 pub mod profile;
 pub mod recorder;
+pub mod report;
 pub mod resolver;
 pub mod scan;
 pub mod sensors;

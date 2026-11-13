@@ -1223,7 +1223,7 @@ fn side_column(ui: &mut Ui, input: &Inputs<'_>, out: &mut Vec<UiCmd>) {
     ui.add_space(GAP);
     drives(ui, input, out);
     ui.add_space(GAP);
-    this_pc(ui, input);
+    this_pc(ui, input, out);
 }
 
 /// How full each drive is; a click shows what fills it.
@@ -1583,13 +1583,25 @@ fn recent(ui: &mut Ui, input: &Inputs<'_>, out: &mut Vec<UiCmd>) {
     );
 }
 
-fn this_pc(ui: &mut Ui, input: &Inputs<'_>) {
+fn this_pc(ui: &mut Ui, input: &Inputs<'_>, out: &mut Vec<UiCmd>) {
     let s = &input.snap.system;
     let hw = input.hw;
     card(
         ui,
         "This PC",
-        |_| {},
+        |ui| {
+            if ui
+                .small_button("Copy a report")
+                .on_hover_text(
+                    "Everything below and more, for a forum post or a support ticket, in the \
+                     manner of Speccy: hardware, drivers, drive health, what the checkup found, \
+                     the week's crashes. No names, serial numbers or addresses.",
+                )
+                .clicked()
+            {
+                out.push(UiCmd::CopyReport);
+            }
+        },
         |ui| {
             let fact = |ui: &mut Ui, label: &str, value: String| {
                 ui.horizontal(|ui| {

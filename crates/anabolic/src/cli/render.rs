@@ -23,6 +23,8 @@ pub enum View {
         list: &'static str,
         columns: &'static [&'static str],
     },
+    /// The text under `key` as it is: a report.
+    Text { key: &'static str },
     /// The list under `list` as an indented tree, each item's `children`
     /// under it; `columns` as for a table.
     Tree {
@@ -39,6 +41,10 @@ const COLUMNS: usize = 9;
 pub fn render(value: &Value, view: &View) -> String {
     match view {
         View::Json => serde_json::to_string_pretty(value).unwrap_or_default() + "\n",
+        View::Text { key } => value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map_or_else(|| "Nothing.\n".to_string(), str::to_string),
         View::Table { list, columns } => {
             let mut out = String::new();
             match value.get(*list).and_then(Value::as_array) {

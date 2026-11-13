@@ -413,6 +413,46 @@ Devices view's Interrupts; this tool only reads). Windows only.";
 #[tool_router(router = system_tools, vis = "pub(super)")]
 impl AnabolicMcp {
     #[tool(
+        description = "A report of this PC in Markdown, to paste into a forum post or a \
+                       support ticket, in the manner of Speccy: the system and firmware, \
+                       processor, memory and its speed, graphics with their drivers, monitors, \
+                       drives with their health and free space, network adapters, what the \
+                       checkup found, devices with a problem and the last week's crashes. \
+                       Names, serial numbers and addresses are left out. Takes a few seconds.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_pc_report(&self) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let snap = self.snapshot().await;
+        let text = blocking(move || {
+            let hw = anabolic_core::hwinfo::hardware_info();
+            let displays = anabolic_core::displays::displays();
+            let health = anabolic_core::health::read();
+            let devices = anabolic_core::devices::read().ok();
+            let crashes = anabolic_core::crashes::read().ok();
+            let checkup = anabolic_core::checkup::read();
+            anabolic_core::report::build(&anabolic_core::report::Parts {
+                snap: &snap,
+                hw: &hw,
+                displays: Some(&displays),
+                health: &health,
+                devices: devices.as_ref(),
+                crashes: crashes.as_ref(),
+                checkup: Some(&checkup),
+            })
+        })
+        .await;
+        ok(json!({ "report": text }))
+    }
+
+    #[tool(
         description = TIMER,
         annotations(
             read_only_hint = true,

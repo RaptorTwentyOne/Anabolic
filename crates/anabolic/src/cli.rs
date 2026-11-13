@@ -712,6 +712,20 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "report",
+        usage: "",
+        about: "A report of this PC to paste into a forum post, without names or serials",
+        details: "",
+        group: Group::Look,
+        plan: |_| {
+            Ok(tool(
+                "get_pc_report",
+                Map::new(),
+                View::Text { key: "report" },
+            ))
+        },
+    },
+    Command {
         name: "timer",
         usage: "",
         about: "The system timer's resolution, and who asked for a finer one",

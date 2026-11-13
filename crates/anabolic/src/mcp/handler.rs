@@ -366,6 +366,7 @@ mod tests {
                 "get_memory",
                 "get_memory_map",
                 "get_network_usage",
+                "get_pc_report",
                 "get_process",
                 "get_process_tree",
                 "get_program_history",
