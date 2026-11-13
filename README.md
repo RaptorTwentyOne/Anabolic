@@ -96,6 +96,10 @@ And across the pages:
   same starter (a script or a build gone wrong), a bar names the starter and
   ends them all at a click. Browsers and Windows' service hosts, many
   processes by design, are left out; the number is in Settings.
+- **VirusTotal**: with your own API key, modules, files and startup
+  entries checked in place by their hash (how many engines flag them),
+  as Process Explorer does; only hashes are sent. Without a key, the
+  file's VirusTotal page opens in the browser.
 - **Memory dumps**, small or full, taken from a snapshot so the process
   pauses only for a moment.
 - **CPU and memory limits** (Windows): a process, or a rule's program, held

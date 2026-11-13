@@ -519,6 +519,7 @@ impl App {
                     self.confirm = Some((dialog, Pending::Purge(what)));
                 }
                 UiCmd::FlushDns => self.actions.run(anabolic_core::actions::Action::FlushDns),
+                UiCmd::VirusTotal(items) => crate::vt::ask(items),
                 UiCmd::ConfirmHosts(text) => {
                     let entries = anabolic_core::dnstools::parse_hosts(&text)
                         .iter()

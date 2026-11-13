@@ -66,6 +66,7 @@ mod theme;
 #[cfg_attr(target_os = "linux", path = "linux/tray.rs")]
 mod tray;
 mod tree;
+mod vt;
 mod whats_new;
 mod widgets;
 #[cfg(target_os = "linux")]

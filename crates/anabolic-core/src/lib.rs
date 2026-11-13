@@ -77,6 +77,7 @@ pub mod threads;
 pub mod timer;
 pub mod topology;
 pub mod update;
+pub mod virustotal;
 pub mod waits;
 
 // Windows only: Event Tracing for Windows, the event logs, the native API,

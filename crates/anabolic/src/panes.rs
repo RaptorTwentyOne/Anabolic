@@ -422,6 +422,13 @@ pub fn module_menu(ui: &mut Ui, m: &ModuleRow, facts: Option<&FileFacts>, out: &
         UiCmd::SearchOnline(m.info.name.to_string()),
     );
     match facts.and_then(|f| f.sha256.as_deref()) {
+        Some(hash) if crate::vt::has_key() => item(
+            ui,
+            out,
+            "Check on VirusTotal",
+            "How many of its engines flag this file, by its hash",
+            UiCmd::VirusTotal(vec![hash.to_string()]),
+        ),
         Some(hash) => item(
             ui,
             out,
@@ -611,6 +618,18 @@ pub fn module_pane(ui: &mut Ui, m: &ModuleRow, panes: &Panes, out: &mut Vec<UiCm
                 out,
                 UiCmd::OpenUrl(virustotal(hash)),
             );
+            if crate::vt::has_key() {
+                match crate::vt::report(hash) {
+                    Some(_) => crate::vt::label(ui, hash),
+                    None => button(
+                        ui,
+                        "Check",
+                        "How many of VirusTotal's engines flag this file: only its hash is sent",
+                        out,
+                        UiCmd::VirusTotal(vec![hash.to_string()]),
+                    ),
+                }
+            }
         }
     });
 }

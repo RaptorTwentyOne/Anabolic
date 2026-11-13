@@ -113,6 +113,7 @@ impl App {
                 self.history_section(ui);
                 self.stutter_section(ui);
                 self.dump_section(ui);
+                self.virustotal_section(ui);
                 self.assistant_section(ui);
                 self.updates_section(ui);
                 self.about_section(ui);
@@ -453,6 +454,46 @@ impl App {
                 caution(ui, now);
             }
         });
+    }
+
+    fn virustotal_section(&mut self, ui: &mut Ui) {
+        heading(ui, "VirusTotal");
+        let has = crate::vt::has_key();
+        row(
+            ui,
+            "API key",
+            "With your own key (free from virustotal.com, under your account's API key), \
+             files are checked in place: how many of VirusTotal's engines flag them, in \
+             module and file panes and on the Startup page's Everything. Only a file's hash \
+             is sent, never the file. The key is kept encrypted for your account (on Linux, \
+             in a file only you can read). Without one, the VirusTotal buttons open the file's page in your browser.",
+            |ui| {
+                if has {
+                    ui.label(RichText::new("Saved").color(theme::GOOD));
+                    if ui.button("Forget the key").clicked() {
+                        crate::vt::forget_key();
+                    }
+                } else {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.vt_key)
+                            .password(true)
+                            .hint_text("Paste your API key")
+                            .desired_width(CONTROL_WIDTH - 10.0),
+                    );
+                    if ui
+                        .add_enabled(!self.vt_key.trim().is_empty(), egui::Button::new("Save"))
+                        .clicked()
+                    {
+                        match crate::vt::set_key(&self.vt_key) {
+                            Ok(()) => self.vt_key.clear(),
+                            Err(e) => self
+                                .toasts
+                                .error(format!("The key could not be saved: {e}")),
+                        }
+                    }
+                }
+            },
+        );
     }
 
     fn assistant_section(&mut self, ui: &mut Ui) {

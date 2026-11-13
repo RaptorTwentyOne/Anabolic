@@ -218,6 +218,8 @@ pub struct App {
     renderer: Option<String>,
     game_mode: crate::gamemode::GameMode,
     standby: crate::standby::Cleaner,
+    /// A VirusTotal key being typed into Settings.
+    vt_key: String,
     /// Frame and DPC tracing are on.
     stutters_traced: bool,
     network: crate::network_page::NetworkPage,
@@ -761,6 +763,7 @@ impl App {
             renderer: None,
             game_mode: Default::default(),
             standby: Default::default(),
+            vt_key: String::new(),
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
@@ -1391,6 +1394,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
         self.disk_health.tick(ui.ctx());
+        crate::vt::init(ui.ctx());
         self.crashes.tick(ui.ctx());
         let devices_shown =
             self.settings.tab == Tab::Performance && self.perf_view == PerfView::Devices;

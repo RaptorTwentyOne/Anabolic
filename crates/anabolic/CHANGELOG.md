@@ -6,6 +6,13 @@ new since the one before.
 
 ## Unreleased
 
+- **VirusTotal**, in the manner of Process Explorer: with your own API
+  key (Settings, kept encrypted for your account), a module, a file or
+  a startup entry is checked in place by its hash: how many engines flag
+  it and what most call it; the Startup page's Everything checks every
+  entry that is not Windows' own, one every 15 seconds as a public key
+  allows. Only hashes are sent. Without a key, the VirusTotal buttons
+  open the file's page in the browser, now on startup entries too.
 - **Disk speed test** (Performance, each disk), in the manner of
   CrystalDiskMark: large files and small pieces, one request at a time
   and many at once, read and written past the system's cache on a test

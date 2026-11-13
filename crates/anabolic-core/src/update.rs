@@ -254,6 +254,13 @@ struct ApiAsset {
     digest: Option<String>,
 }
 
+/// GETs an https:// address for another part of Anabolic: the status and
+/// at most `limit` bytes of the body. `headers` are "Name: value" lines
+/// separated by CRLF.
+pub(crate) fn https_get(url: &str, headers: &str, limit: usize) -> Result<(u32, Vec<u8>), String> {
+    imp::get(url, headers, limit, |_| {})
+}
+
 /// The latest release, when it is newer than `current`.
 pub fn check(current: &str) -> Result<Option<Release>, String> {
     let url = format!(

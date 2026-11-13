@@ -93,16 +93,27 @@ pub(super) fn get(
         ])
         // The status after the body, on a line of its own.
         .args(["--write-out", "\n%{http_code}"]);
-    for header in headers.split("\r\n").filter(|h| !h.is_empty()) {
-        command.args(["--header", header]);
+    // From standard input, not the command line: a header can carry a
+    // key, and other users can read a process' command line.
+    let lines: Vec<&str> = headers.split("\r\n").filter(|h| !h.is_empty()).collect();
+    if !lines.is_empty() {
+        command.args(["--header", "@-"]);
     }
     let mut child = command
         .arg(url)
-        .stdin(Stdio::null())
+        .stdin(if lines.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not reach {host}: curl could not start ({e})"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(lines.join("\n").as_bytes());
+    }
     let mut body = Vec::new();
     let mut stdout = child.stdout.take().ok_or("curl gave no output")?;
     let mut buf = [0u8; 64 * 1024];

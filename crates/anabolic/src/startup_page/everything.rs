@@ -67,7 +67,14 @@ fn matches(a: &Autorun, filter: &str) -> bool {
 }
 
 fn color(a: &Autorun) -> egui::Color32 {
-    if a.missing || a.note.is_some() {
+    let flagged = a
+        .path
+        .as_deref()
+        .and_then(crate::vt::report)
+        .is_some_and(|r| r.flagged());
+    if flagged {
+        theme::BAD
+    } else if a.missing || a.note.is_some() {
         theme::ELEVATED_TEXT
     } else if a.suspicious() {
         theme::BAD
@@ -116,6 +123,31 @@ pub fn show(ui: &mut Ui, view: &mut EverythingView, out: &mut Vec<UiCmd>) {
             .color(theme::TEXT_WEAK),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if crate::vt::has_key() {
+                let files: Vec<String> = all
+                    .entries
+                    .iter()
+                    .filter(|a| !a.system && !a.missing)
+                    .filter_map(|a| a.path.clone())
+                    .collect();
+                let waiting = crate::vt::queued();
+                if waiting > 0 {
+                    ui.label(
+                        RichText::new(format!("VirusTotal: {waiting} to go"))
+                            .small()
+                            .color(theme::TEXT_WEAK),
+                    );
+                } else if ui
+                    .button("Check them on VirusTotal")
+                    .on_hover_text(
+                        "Every entry that is not Windows' own, by its file's hash: one every \
+                         15 seconds, as a public key allows",
+                    )
+                    .clicked()
+                {
+                    out.push(UiCmd::VirusTotal(files));
+                }
+            }
             let reading = view.reading.is_some();
             if ui
                 .add_enabled(!reading, egui::Button::new("Read again"))
@@ -296,6 +328,9 @@ fn pane(ui: &mut Ui, a: &Autorun, out: &mut Vec<UiCmd>) -> bool {
     if let Some(note) = &a.note {
         ui.label(RichText::new(note).color(theme::ELEVATED_TEXT));
     }
+    if let Some(p) = &a.path {
+        crate::vt::label(ui, p);
+    }
     ui.add_space(6.0);
     panes::facts(ui, ("autorun-facts", &a.location, &a.name), |ui| {
         panes::fact(ui, "Signed by", a.signer());
@@ -329,6 +364,25 @@ fn pane(ui: &mut Ui, a: &Autorun, out: &mut Vec<UiCmd>) -> bool {
                 a.signer(),
                 a.location
             )));
+        }
+        if let Some(p) = a.path.as_ref().filter(|_| !a.missing) {
+            if crate::vt::has_key() {
+                if crate::vt::report(p).is_none()
+                    && ui
+                        .button("Check on VirusTotal")
+                        .on_hover_text("Only the file's hash is sent")
+                        .clicked()
+                {
+                    out.push(UiCmd::VirusTotal(vec![p.clone()]));
+                }
+            } else if ui
+                .button("VirusTotal")
+                .on_hover_text("Opens VirusTotal's page for this file's hash in your browser")
+                .clicked()
+                && let Some(hash) = anabolic_core::filefacts::sha256(p)
+            {
+                out.push(UiCmd::OpenUrl(anabolic_core::virustotal::page(&hash)));
+            }
         }
         if ui.button("Search online").clicked() {
             let file = a

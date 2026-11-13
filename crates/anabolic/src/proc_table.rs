@@ -122,6 +122,8 @@ pub enum UiCmd {
     ConfirmKernelDump,
     /// Empty the system's DNS cache.
     FlushDns,
+    /// Ask VirusTotal about these files, by path or hash.
+    VirusTotal(Vec<String>),
     /// Ask before writing the hosts file.
     ConfirmHosts(String),
     /// Ask before changing how a device interrupts (Windows).
