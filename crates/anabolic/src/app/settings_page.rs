@@ -166,6 +166,31 @@ impl App {
                 ui.checkbox(&mut self.settings.tray_cpu, "");
             },
         );
+        #[cfg(windows)]
+        row(
+            ui,
+            "Explorer's right-click menu",
+            "\"Who is using this?\" on files and folders, in the manner of LockHunter, and \
+             \"What fills this folder?\" on folders and drives. Your account's menu only; on \
+             Windows 11 they are under Show more options. On an administrator's account Windows \
+             asks to elevate, as when Anabolic starts.",
+            |ui| {
+                if ui.checkbox(&mut self.settings.explorer_menu, "").changed() {
+                    let done = if self.settings.explorer_menu {
+                        crate::app::own_exe()
+                            .ok_or_else(|| "Anabolic cannot tell where it is".to_string())
+                            .and_then(|exe| anabolic_core::shellmenu::register(&exe))
+                    } else {
+                        anabolic_core::shellmenu::unregister()
+                    };
+                    if let Err(e) = done {
+                        self.toasts
+                            .error(format!("Explorer's menu could not be changed: {e}"));
+                        self.settings.explorer_menu = !self.settings.explorer_menu;
+                    }
+                }
+            },
+        );
         row(ui, "Start when I sign in", SIGN_IN_HINT, |ui| {
             use anabolic_core::signin::SignIn;
             match self.sign_in.clone() {

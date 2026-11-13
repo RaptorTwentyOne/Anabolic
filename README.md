@@ -120,6 +120,9 @@ And across the pages:
 - **Notification area** (optional): closing the window leaves Anabolic
   running, recording the history and applying rules; alerts become
   notifications, and the icon shows how busy the CPU is.
+- **Explorer's right-click menu** (optional): "Who is using this?" on
+  files and folders, as LockHunter does, and "What fills this folder?"
+  on folders and drives.
 - **Several monitors**: called up during a full-screen game, the window opens
   on another monitor (Windows: on Linux the compositor places windows).
 - **Columns where you want them**: in every table, dragging a title moves

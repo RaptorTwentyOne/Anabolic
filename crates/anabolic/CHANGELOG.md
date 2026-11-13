@@ -6,6 +6,12 @@ new since the one before.
 
 ## Unreleased
 
+- **Explorer's right-click menu** (Settings, off until turned on), in
+  the manner of LockHunter: "Who is using this?" on files and folders
+  opens Find handle on the path, and "What fills this folder?" on
+  folders and drives opens Disk space there. With Anabolic already
+  running, the request goes to it. `anabolic --locks PATH` and
+  `anabolic --space PATH` do the same from a shortcut or a script.
 - **VirusTotal**, in the manner of Process Explorer: with your own API
   key (Settings, kept encrypted for your account), a module, a file or
   a startup entry is checked in place by its hash: how many engines flag

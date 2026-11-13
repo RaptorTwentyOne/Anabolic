@@ -12,8 +12,8 @@ use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERRO
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
     KEY_WOW64_64KEY, KEY_WRITE, REG_BINARY, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS,
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW,
-    RegQueryValueExW, RegSetValueExW,
+    REG_SZ, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW,
+    RegEnumValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -276,6 +276,14 @@ pub(crate) fn set_bytes(root: HKEY, path: &str, name: &str, data: &[u8]) -> Resu
     written(err, &format!("{name} could not be set"))
 }
 
+pub(crate) fn set_text(root: HKEY, path: &str, name: &str, text: &str) -> Result<(), String> {
+    let key = create(root, path)?;
+    let w = wide(name);
+    let data: Vec<u8> = wide(text).iter().flat_map(|u| u.to_le_bytes()).collect();
+    let err = unsafe { RegSetValueExW(key.0, PCWSTR(w.as_ptr()), None, REG_SZ, Some(&data)) };
+    written(err, &format!("{name} could not be set"))
+}
+
 /// Removes a value; one that is not there is no error.
 pub(crate) fn delete_value(root: HKEY, path: &str, name: &str) -> Result<(), String> {
     let mut key = HKEY::default();
@@ -303,6 +311,20 @@ pub(crate) fn delete_value(root: HKEY, path: &str, name: &str) -> Result<(), Str
         return Ok(());
     }
     written(err, &format!("{name} could not be removed"))
+}
+
+/// Removes a key and everything under it; one that is not there is no
+/// error.
+pub(crate) fn delete_key(root: HKEY, path: &str) -> Result<(), String> {
+    let w = wide(path);
+    let err = unsafe { RegDeleteTreeW(root, PCWSTR(w.as_ptr())) };
+    if err == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    written(
+        err,
+        &format!("{}\\{path} could not be removed", root_name(root)),
+    )
 }
 
 #[cfg(test)]

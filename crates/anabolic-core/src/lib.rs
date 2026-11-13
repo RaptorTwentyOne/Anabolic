@@ -98,6 +98,9 @@ pub mod ntapi;
 #[path = "windows/reg.rs"]
 pub(crate) mod reg;
 #[cfg(windows)]
+#[path = "windows/shellmenu.rs"]
+pub mod shellmenu;
+#[cfg(windows)]
 #[path = "windows/winfile.rs"]
 pub mod winfile;
 

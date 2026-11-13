@@ -53,6 +53,14 @@ const INTERVALS: [(u64, &str); 6] = [
     (10000, "10 s"),
 ];
 
+/// This program's path, for what starts it again (Explorer's menu).
+#[cfg(windows)]
+pub(crate) fn own_exe() -> Option<String> {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.display().to_string())
+}
+
 /// What a confirmation dialog is guarding.
 enum Pending {
     ResolveNames(ProcKey),
@@ -445,6 +453,15 @@ impl App {
         if args.iter().any(|a| a == "--autoruns") {
             settings.tab = Tab::Startup;
             startup.show_everything = true;
+        }
+        // Explorer's menu follows Anabolic when it moved (an update, a new
+        // folder).
+        #[cfg(windows)]
+        if settings.explorer_menu
+            && let Some(exe) = own_exe()
+            && anabolic_core::shellmenu::registered().as_deref() != Some(exe.as_str())
+        {
+            let _ = anabolic_core::shellmenu::register(&exe);
         }
         let mut devices = crate::devices_view::DevicesView::default();
         devices.interrupts = args.iter().any(|a| a == "--interrupts");
@@ -1506,6 +1523,12 @@ impl eframe::App for App {
         }));
 
         let mut cmds = Vec::new();
+        for r in crate::explorer::drain() {
+            cmds.push(match r {
+                crate::explorer::Request::Locks(p) => UiCmd::FindText(p),
+                crate::explorer::Request::Space(p) => UiCmd::ShowSpace(p.into()),
+            });
+        }
         self.shortcuts(&ctx, &mut cmds);
 
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &mut cmds));

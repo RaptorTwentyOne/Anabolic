@@ -24,6 +24,7 @@ mod dialogs;
 mod disk_bench;
 mod disk_health;
 mod displays_view;
+mod explorer;
 mod fmt;
 mod gamemode;
 mod graph;
@@ -148,13 +149,24 @@ pub fn run() -> eframe::Result {
     }
     // One Anabolic per session: a second start brings the first to the front.
     // `--new` opts out (and leaves activation requests to someone else).
+    // Explorer's menu: the request goes to whichever Anabolic serves it.
+    if let Some(request) = explorer::from_args(&args) {
+        explorer::leave(&request);
+    }
     let activation = if std::env::args().any(|a| a == "--new") {
+        explorer::pick_up();
         None
     } else {
         match instance::claim() {
             Claim::Running => return Ok(()),
-            Claim::First(event) => Some(event),
-            Claim::Unavailable => None,
+            Claim::First(event) => {
+                explorer::pick_up();
+                Some(event)
+            }
+            Claim::Unavailable => {
+                explorer::pick_up();
+                None
+            }
         }
     };
     // A full-screen game in front now (Anabolic started mid-game): the
@@ -212,7 +224,10 @@ pub fn run() -> eframe::Result {
         Box::new(move |cc| {
             if let Some(event) = activation {
                 let ctx = cc.egui_ctx.clone();
-                instance::serve(event, move || come_forward(&ctx));
+                instance::serve(event, move || {
+                    explorer::pick_up();
+                    come_forward(&ctx);
+                });
             }
             Ok(Box::new(app::App::new(cc, hardening, elevated, avoid)))
         }),
@@ -237,7 +252,10 @@ pub fn run() -> eframe::Result {
         windowless::run(first, options, move |cc| {
             if let Some(event) = activation {
                 let ctx = cc.egui_ctx.clone();
-                instance::serve(event, move || come_forward(&ctx));
+                instance::serve(event, move || {
+                    explorer::pick_up();
+                    come_forward(&ctx);
+                });
             }
             app::App::new(cc, hardening, elevated, avoid)
         })

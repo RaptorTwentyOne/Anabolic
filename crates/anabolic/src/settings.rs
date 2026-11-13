@@ -549,6 +549,9 @@ pub struct Settings {
     /// Closing the window keeps Anabolic running in the notification area,
     /// recording the history and applying rules.
     pub close_to_tray: bool,
+    /// "Who is using this?" and "What fills this folder?" in Explorer's
+    /// right-click menu (Windows).
+    pub explorer_menu: bool,
     /// The keys that bring Anabolic to the front from any program.
     pub hotkey: Hotkey,
     pub mcp: McpSettings,
@@ -624,6 +627,7 @@ impl Default for Settings {
             history_days: 7,
             rules: Vec::new(),
             close_to_tray: false,
+            explorer_menu: false,
             hotkey: Hotkey::default(),
             mcp: McpSettings::default(),
             watch_stutters: false,
