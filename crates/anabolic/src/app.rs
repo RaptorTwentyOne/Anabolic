@@ -468,8 +468,13 @@ impl App {
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
         }
+        let mut crashes = crate::crashes_page::CrashesView::default();
         if args.iter().any(|a| a == "--crashes") {
             settings.tab = Tab::Crashes;
+        }
+        if args.iter().any(|a| a == "--changes") {
+            settings.tab = Tab::Crashes;
+            crashes.changes = true;
         }
         if args.iter().any(|a| a == "--activity") {
             settings.tab = Tab::Activity;
@@ -753,7 +758,7 @@ impl App {
             startup,
             space,
             disk_health: Default::default(),
-            crashes: Default::default(),
+            crashes,
             devices,
             checkup: Default::default(),
             profile_view: Default::default(),

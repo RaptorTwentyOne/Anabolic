@@ -6,6 +6,12 @@ new since the one before.
 
 ## Unreleased
 
+- **What changed** (Crashes page), in the manner of Reliability Monitor
+  and WinUpdatesView: updates installed and those that failed, drivers
+  installed or updated, programs installed and removed, services and
+  kernel drivers set up, day by day beside each day's crashes. On Linux,
+  the package manager's log. `anabolic-cli changes`, and `get_changes`
+  for MCP clients.
 - **PC report** (Overview, This PC), in the manner of Speccy: the
   system and firmware, processor, memory and its speed, graphics with
   their drivers, monitors, drives with their health and free space,

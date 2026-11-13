@@ -20,6 +20,7 @@ pub mod actions;
 pub mod activity;
 pub mod autoruns;
 pub mod boot;
+pub mod changes;
 pub mod checkup;
 pub mod collector;
 pub mod coretrace;

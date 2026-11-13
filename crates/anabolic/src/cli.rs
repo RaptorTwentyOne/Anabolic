@@ -766,6 +766,18 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "changes",
+        usage: "[--days N]",
+        about: "What changed: updates, drivers, programs, services, day by day",
+        details: "  --days N  how many days back (default 14)",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.number("--days", "days", &mut args)?;
+            Ok(tool("get_changes", args, View::Auto))
+        },
+    },
+    Command {
         name: "crashes",
         usage: "[--program NAME] [--limit N] [--serious]",
         about: "What crashed, hung or was reset, and why",

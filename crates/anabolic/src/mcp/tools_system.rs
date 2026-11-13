@@ -374,6 +374,16 @@ what it costs and how to change it. It only reads."
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
+pub struct ChangesArgs {
+    /// How many days back (1 to 365, default 14).
+    pub days: Option<u32>,
+    /// Only this kind: "Update", "Update failed", "Driver", "Installed",
+    /// "Removed" or "Service".
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub struct CheckupArgs {
     /// Also the checks that are as they should be (by default only
     /// those to change or consider, and the settings worth knowing).
@@ -450,6 +460,71 @@ impl AnabolicMcp {
         })
         .await;
         ok(json!({ "report": text }))
+    }
+
+    #[tool(
+        description = "What changed on this PC, newest first, in the manner of Reliability \
+                       Monitor and WinUpdatesView: updates installed and those that failed (with \
+                       the error), drivers installed or updated on a device, programs installed \
+                       and removed, services and kernel drivers set up; on Linux the package \
+                       manager's installs, upgrades and removals. Also each day's crash count. \
+                       Use it with get_crashes when something began to fail on a given day: \
+                       what came that day is the first suspect.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_changes(
+        &self,
+        Parameters(args): Parameters<ChangesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let days = args.days.unwrap_or(14).clamp(1, 365) as i64;
+        let kind = args.kind.as_deref().map(str::to_lowercase);
+        let (read, crashes) = blocking(|| {
+            (
+                anabolic_core::changes::read(),
+                anabolic_core::crashes::read().ok(),
+            )
+        })
+        .await;
+        let read = match read {
+            Ok(r) => r,
+            Err(e) => return fail(e),
+        };
+        let since = anabolic_core::sysinfo::now_filetime() - days * 86_400 * 10_000_000;
+        let kept: Vec<anabolic_core::changes::Change> = read
+            .changes
+            .iter()
+            .filter(|c| c.at >= since)
+            .filter(|c| {
+                kind.as_deref()
+                    .is_none_or(|k| c.kind.label().to_lowercase() == k)
+            })
+            .cloned()
+            .collect();
+        let by_day = anabolic_core::changes::days(&kept, crashes.as_ref());
+        ok(json!({
+            "days": by_day.iter().map(|d| json!({
+                "day": d.day,
+                "crashes": d.crashes,
+                "changes": d.changes.iter().map(|&i| {
+                    let c = &kept[i];
+                    json!({
+                        "time": (!c.day_only).then(|| anabolic_core::sysinfo::local_time(c.at)),
+                        "kind": c.kind.label(),
+                        "what": c.what,
+                        "detail": c.detail,
+                    })
+                }).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "notes": read.notes,
+        }))
     }
 
     #[tool(

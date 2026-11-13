@@ -351,6 +351,7 @@ mod tests {
                 "control_service",
                 "end_process",
                 "get_boot_history",
+                "get_changes",
                 "get_checkup",
                 "get_cpu",
                 "get_crashes",

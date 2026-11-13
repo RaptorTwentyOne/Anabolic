@@ -42,6 +42,9 @@ pub struct CrashesView {
     /// The crash in the pane: when it was and its program.
     selected: Option<(i64, String)>,
     groups: Option<(Arc<Crashes>, Vec<Group>)>,
+    /// What changed on the PC, day by day, instead of the crashes.
+    pub changes: bool,
+    changes_view: crate::changes_view::ChangesView,
 }
 
 impl CrashesView {
@@ -201,6 +204,10 @@ pub fn show(ui: &mut Ui, view: &mut CrashesView, out: &mut Vec<UiCmd>) {
 
     header(ui, view, &crashes);
     ui.add_space(4.0);
+    if view.changes {
+        crate::changes_view::show(ui, &mut view.changes_view, Some(&crashes));
+        return;
+    }
     if crashes.crashes.is_empty() {
         ui.add_space(12.0);
         panes::weak(
@@ -313,11 +320,31 @@ fn header(ui: &mut Ui, view: &mut CrashesView, crashes: &Crashes) {
     }
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        if ui.selectable_label(!view.each, "By program").clicked() {
+        if ui
+            .selectable_label(!view.each && !view.changes, "By program")
+            .clicked()
+        {
             view.each = false;
+            view.changes = false;
         }
-        if ui.selectable_label(view.each, "Each one").clicked() {
+        if ui
+            .selectable_label(view.each && !view.changes, "Each one")
+            .clicked()
+        {
             view.each = true;
+            view.changes = false;
+        }
+        if ui
+            .selectable_label(view.changes, "What changed")
+            .on_hover_text(
+                "Updates, drivers, programs and services day by day, beside each day's crashes",
+            )
+            .clicked()
+        {
+            view.changes = true;
+        }
+        if view.changes {
+            return;
         }
         ui.add_space(8.0);
         ui.checkbox(&mut view.serious, "Only what went away")
