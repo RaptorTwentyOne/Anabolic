@@ -101,6 +101,7 @@ impl Live {
     /// else holds it; true when the map and the lists should be redrawn.
     pub fn poll(&mut self, ctx: &egui::Context, data: &mut Data, snap: &Snapshot) -> bool {
         if let Some(w) = &self.watch {
+            w.want();
             while let Ok(batch) = w.rx.try_recv() {
                 match batch {
                     Batch::Changes(c) => self.pending.extend(c),

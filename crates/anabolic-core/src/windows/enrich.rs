@@ -62,6 +62,9 @@ struct Caches {
 
 static NEXT_ICON_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Program files whose facts and icon are kept: some KB each.
+const MOST_FILES: usize = 3_000;
+
 pub(super) fn worker(requests: Receiver<EnrichRequest>, results: Sender<Enriched>) {
     set_current_thread_priority(ThreadPriority::BelowNormal);
     // Shell icon extraction wants COM on this thread.
@@ -148,6 +151,12 @@ fn enrich(request: &EnrichRequest, caches: &mut Caches) -> ProcessDetails {
     }
 
     if let Some(path) = d.path.clone() {
+        // Builds and updaters run programs from ever new folders: past
+        // this many, start over rather than keep every one's icon.
+        if caches.files.len() > MOST_FILES {
+            caches.files.clear();
+            caches.icons.clear();
+        }
         let cache_key = path.to_lowercase();
         let info = caches
             .files

@@ -184,6 +184,8 @@ pub struct App {
     /// Command lines, kept after their processes exit: a parent that is
     /// gone is still described in "Started by".
     cmdlines: HashMap<ProcKey, Arc<str>>,
+    /// The collector's snapshot last pruned against.
+    pruned_seq: u64,
     /// The monitor a full-screen game filled at startup: the window moves
     /// off it once it exists.
     #[cfg(windows)]
@@ -711,6 +713,7 @@ impl App {
             activity,
             growth: Default::default(),
             cmdlines: HashMap::new(),
+            pruned_seq: 0,
             #[cfg(windows)]
             avoid_monitor,
             #[cfg(windows)]
@@ -814,8 +817,9 @@ impl App {
         let mut new_details = false;
         for e in self.collector.details().try_iter() {
             if let Some(cmd) = &e.details.command_line {
-                // A long session forgets the oldest at once, rarely.
-                if self.cmdlines.len() > 50_000 {
+                // prune() forgets those long gone; this only guards
+                // against a burst between two of its rounds.
+                if self.cmdlines.len() > 20_000 {
                     self.cmdlines.clear();
                 }
                 self.cmdlines.insert(e.key, cmd.as_str().into());
@@ -1135,37 +1139,38 @@ impl App {
             }
         }
 
-        if !self.paused {
-            let latest = self.collector.latest();
-            if latest.seq != self.snapshot.seq {
-                self.snapshot = latest;
-                self.table.dirty = true;
-                self.update_alert();
-                self.update_runaways();
-                if self.snapshot.seq.is_multiple_of(30) {
-                    self.prune();
+        let latest = self.collector.latest();
+        // Paused or not: what arrives for new processes meanwhile must not
+        // pile up.
+        if latest.seq != self.pruned_seq && latest.seq.is_multiple_of(30) {
+            self.pruned_seq = latest.seq;
+            self.prune(&latest);
+        }
+        if !self.paused && latest.seq != self.snapshot.seq {
+            self.snapshot = latest;
+            self.table.dirty = true;
+            self.update_alert();
+            self.update_runaways();
+            // Wait for the second sample, when CPU figures (and thus the sort) settle.
+            if let Some(pid) = self.pending_pid
+                && self.snapshot.seq >= 2
+                && let Some(p) = self
+                    .snapshot
+                    .processes
+                    .iter()
+                    .find(|p| p.pid == pid && p.state != ProcState::Exited)
+            {
+                let key = p.key;
+                self.pending_pid = None;
+                self.go_to(key);
+                if std::mem::take(&mut self.pending_waits) {
+                    self.analyze_waits(key);
                 }
-                // Wait for the second sample, when CPU figures (and thus the sort) settle.
-                if let Some(pid) = self.pending_pid
-                    && self.snapshot.seq >= 2
-                    && let Some(p) = self
-                        .snapshot
-                        .processes
-                        .iter()
-                        .find(|p| p.pid == pid && p.state != ProcState::Exited)
-                {
-                    let key = p.key;
-                    self.pending_pid = None;
-                    self.go_to(key);
-                    if std::mem::take(&mut self.pending_waits) {
-                        self.analyze_waits(key);
-                    }
-                    if std::mem::take(&mut self.pending_notify_exit) {
-                        self.notify_exit(key, true);
-                    }
-                    if std::mem::take(&mut self.pending_limit) {
-                        self.handle(vec![UiCmd::LimitDialog(key)]);
-                    }
+                if std::mem::take(&mut self.pending_notify_exit) {
+                    self.notify_exit(key, true);
+                }
+                if std::mem::take(&mut self.pending_limit) {
+                    self.handle(vec![UiCmd::LimitDialog(key)]);
                 }
             }
         }
@@ -1205,11 +1210,20 @@ impl App {
         }
     }
 
-    /// Forgets details, collapse state and icons of processes long gone.
-    fn prune(&mut self) {
-        let snap = &self.snapshot;
-        self.details.retain(|k, _| snap.find(*k).is_some());
-        self.table.collapsed.retain(|k| snap.find(*k).is_some());
+    /// Forgets details, collapse state and icons of processes long gone:
+    /// gone from both the view (`self.snapshot`, frozen while paused) and
+    /// the collector's latest.
+    fn prune(&mut self, latest: &anabolic_core::Snapshot) {
+        let (shown, latest) = (&self.snapshot, latest);
+        let alive = |k: ProcKey| shown.find(k).is_some() || latest.find(k).is_some();
+        self.details.retain(|k, _| alive(*k));
+        // A command line outlives its process for ten minutes, as long as
+        // the Overview lists the latest starts. A build starts hundreds a
+        // minute, each with kilobytes of options.
+        let lately = anabolic_core::sysinfo::now_filetime() - 600 * 10_000_000;
+        self.cmdlines
+            .retain(|k, _| k.create_time >= lately || alive(*k));
+        self.table.collapsed.retain(|k| alive(*k));
         let live: HashSet<u64> = self
             .details
             .values()
@@ -1218,7 +1232,7 @@ impl App {
         self.icons.retain(|id| live.contains(&id));
         // A process' own limit goes with it.
         anabolic_core::limits::forget_gone(|k| {
-            snap.find(k).is_some_and(|p| p.state != ProcState::Exited)
+            latest.find(k).is_some_and(|p| p.state != ProcState::Exited)
         });
     }
 
@@ -1847,6 +1861,10 @@ impl App {
     /// then): what must go on without a window lives here.
     fn tick(&mut self, ctx: &egui::Context) {
         self.pump(ctx);
+        // Here, not in `ui`: minimized or hidden, only this runs.
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        self.space
+            .tick(self.settings.tab == Tab::Space && !self.hidden && !minimized);
         crate::limits::publish(ctx, &mut self.limits_seen);
         // Rules: standing orders go to the action thread quietly; watches
         // that fire become toasts, or notifications while the window is

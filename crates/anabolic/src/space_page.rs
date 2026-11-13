@@ -226,9 +226,46 @@ pub struct SpacePage {
     export: Option<Receiver<Result<PathBuf, String>>>,
     /// The last CSV written, or why it was not.
     exported: Option<Result<PathBuf, String>>,
+    /// Since when the page has been out of sight with a scan on it.
+    unseen_since: Option<std::time::Instant>,
+    /// The scan was let go out of sight: the folder it was of.
+    let_go: Option<PathBuf>,
 }
 
+/// A scan out of sight this long is let go: a drive's tree holds hundreds
+/// of megabytes, and Anabolic runs all day.
+const KEEP_UNSEEN: Duration = Duration::from_secs(20 * 60);
+
 impl SpacePage {
+    /// Lets a scan go once the page has been out of sight for a while;
+    /// call every frame, with whether the page is on screen.
+    pub fn tick(&mut self, shown: bool) {
+        if shown || self.data.is_none() || self.scanning.is_some() || self.deleter.busy() {
+            self.unseen_since = None;
+            return;
+        }
+        let since = *self
+            .unseen_since
+            .get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() < KEEP_UNSEEN {
+            return;
+        }
+        if let Some(old) = self.data.take() {
+            self.let_go = Some(old.tree.path.clone());
+            // A tree of millions of nodes is let go of elsewhere.
+            let _ = std::thread::Builder::new()
+                .name("space-drop".into())
+                .spawn(move || drop(old));
+        }
+        self.lists.reset();
+        self.map.reset();
+        self.dupes.stop();
+        self.dupes = dupes::Dupes::default();
+        self.compare = compare::Compare::default();
+        self.live = live::Live::default();
+        self.unseen_since = None;
+    }
+
     /// The disk trace names who writes what on the Live tab.
     pub fn wants_disk_trace(&self) -> bool {
         self.data.is_some() && self.lists.tab == lists::Tab::Live && self.live.following()
@@ -319,6 +356,7 @@ impl SpacePage {
                     self.live.start(ctx, &data.tree);
                 }
                 self.scanning = None;
+                self.let_go = None;
             }
             Ok(Err(e)) => {
                 if e != space::CANCELLED {
@@ -379,6 +417,25 @@ pub fn show(
         ui.add_space(6.0);
     }
     if page.data.is_none() || page.choosing {
+        if let Some(path) = page.let_go.clone()
+            && page.scanning.is_none()
+        {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "The scan of {} was let go after 20 minutes out of sight, to give its \
+                         memory back.",
+                        path.display()
+                    ))
+                    .color(theme::TEXT_WEAK),
+                );
+                if widgets::link(ui, "Scan it again").clicked() {
+                    page.let_go = None;
+                    page.begin(path, &ctx);
+                }
+            });
+            ui.add_space(6.0);
+        }
         if page.scanning.is_none() || page.data.is_some() {
             chooser(ui, page, elevated, &ctx);
         }

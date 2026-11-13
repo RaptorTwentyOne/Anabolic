@@ -869,6 +869,9 @@ pub fn watch(
     let (tx, rx) = crossbeam_channel::unbounded();
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let stopped = stop.clone();
+    let base = std::time::Instant::now();
+    let wanted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let asked = wanted.clone();
     std::thread::Builder::new()
         .name("space-journal".into())
         .spawn(move || {
@@ -898,6 +901,14 @@ pub fn watch(
                         return;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                // No one takes the changes: the journal keeps them, and
+                // they are read from where this stopped once they are.
+                let idle = base.elapsed().as_millis() as u64;
+                if idle
+                    > asked.load(Ordering::Relaxed) + crate::space::WANTED_FOR.as_millis() as u64
+                {
+                    continue;
                 }
                 // What happened to each record this second, the latest
                 // name and folder.
@@ -1011,7 +1022,9 @@ pub fn watch(
                     }
                     new.extend(found);
                 }
-                let mut changes = Vec::with_capacity(seen.len());
+                // Most of the volume's changes are not under the scanned
+                // folder: room for those that are, not for all.
+                let mut changes = Vec::new();
                 for (record, (parent, name, reason, attrs, at)) in seen {
                     if !ours(record, &new) {
                         continue;
@@ -1060,7 +1073,7 @@ pub fn watch(
             }
         })
         .ok()?;
-    Some(Watch::new(rx, stop))
+    Some(Watch::new(rx, stop, wanted, base))
 }
 
 /// Joins the pieces into one tree under `root`.

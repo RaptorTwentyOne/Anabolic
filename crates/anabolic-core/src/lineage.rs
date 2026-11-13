@@ -37,8 +37,9 @@ struct Record {
     parent: Option<ProcKey>,
 }
 
-/// Records kept; past this, the longest-exited go first.
-const KEEP: usize = 100_000;
+/// Records kept; past this, the longest-exited go first. A record holds the
+/// name and path of its program: some hundred bytes.
+const KEEP: usize = 20_000;
 
 pub struct Lineage {
     records: HashMap<ProcKey, Record>,
@@ -154,6 +155,9 @@ impl Lineage {
                 self.records.remove(&key);
                 if let Some(keys) = self.by_pid.get_mut(&key.pid) {
                     keys.retain(|k| *k != key);
+                    if keys.is_empty() {
+                        self.by_pid.remove(&key.pid);
+                    }
                 }
             }
         }

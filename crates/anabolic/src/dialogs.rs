@@ -371,6 +371,9 @@ pub struct Toasts {
     items: Vec<Toast>,
 }
 
+/// More at once say nothing more.
+const MOST_TOASTS: usize = 20;
+
 impl Toasts {
     fn push(
         &mut self,
@@ -379,6 +382,13 @@ impl Toasts {
         error: bool,
         action: Option<(String, UiCmd)>,
     ) {
+        // While the window is hidden or minimized nothing draws them, and
+        // so nothing forgets them: done here too.
+        let now = Instant::now();
+        self.items.retain(|t| now - t.at < t.life());
+        if self.items.len() >= MOST_TOASTS {
+            self.items.remove(0);
+        }
         self.items.push(Toast {
             at: Instant::now(),
             text,

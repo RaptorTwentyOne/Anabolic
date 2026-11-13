@@ -121,15 +121,38 @@ pub enum Batch {
 pub struct Watch {
     pub rx: crossbeam_channel::Receiver<Batch>,
     stop: std::sync::Arc<AtomicBool>,
+    /// When the changes were last asked for, in ms since `base`. The
+    /// watcher reads the journal only while they are: with the page out of
+    /// sight nothing takes them, and they would pile up in the channel. It
+    /// picks up where it stopped when they are wanted again.
+    wanted: std::sync::Arc<AtomicU64>,
+    base: std::time::Instant,
 }
+
+/// How long the watcher reads on after the changes were last asked for.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const WANTED_FOR: Duration = Duration::from_secs(5);
 
 impl Watch {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn new(
         rx: crossbeam_channel::Receiver<Batch>,
         stop: std::sync::Arc<AtomicBool>,
+        wanted: std::sync::Arc<AtomicU64>,
+        base: std::time::Instant,
     ) -> Watch {
-        Watch { rx, stop }
+        Watch {
+            rx,
+            stop,
+            wanted,
+            base,
+        }
+    }
+
+    /// The changes are wanted: call whenever they are taken.
+    pub fn want(&self) {
+        self.wanted
+            .store(self.base.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 }
 

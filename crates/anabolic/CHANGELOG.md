@@ -6,6 +6,16 @@ new since the one before.
 
 ## Unreleased
 
+- **Anabolic's own memory stays put.** It kept a little of every process
+  it saw start (its command line, its family, its program's icon), and a
+  build starts thousands: some 10 KB each, over 100 MB an hour on a
+  developer's PC, gigabytes over days. Command lines now go ten minutes
+  after their process, family records past 20,000 and icons past 3,000
+  programs, paused view or not. A Disk space scan out of sight for 20
+  minutes is let go (a drive's tree holds hundreds of megabytes), and the
+  page offers to scan it again; the drive's changes are followed only
+  while the page is on screen, and picked up where they stopped. Notices
+  no longer pile up while the window is hidden.
 - **On crates.io.** `cargo install anabolic` builds and installs Anabolic
   and anabolic-cli; on Windows `cargo binstall anabolic` takes the release
   build instead. A copy installed with cargo says so under Settings →
