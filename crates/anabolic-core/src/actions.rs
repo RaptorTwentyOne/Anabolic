@@ -170,6 +170,9 @@ pub enum Action {
     FlushDns,
     /// Remove driver packages by their published names (oem12.inf).
     RemoveDriverPackages(Vec<String>),
+    /// Hold these programs' uploads to these rates, bits per second, and
+    /// lift the rest Anabolic set (see `qos`).
+    UploadLimits(Vec<(String, u64)>),
     /// Write the hosts file (the old one kept beside it).
     WriteHosts(String),
     /// Write a dump of the running kernel into the folder, on a thread of
@@ -309,6 +312,17 @@ impl ActionRunner {
                                 let _ = out_tx.send(outcome);
                                 notify();
                             });
+                        continue;
+                    }
+                    if let Action::UploadLimits(want) = &action {
+                        let outcome = match crate::qos::sync(want) {
+                            Ok(done) => Outcome::Info(done),
+                            Err(e) => Outcome::Error(format!("Upload limits: {e}")),
+                        };
+                        if out_tx.send(outcome).is_err() {
+                            return;
+                        }
+                        notify();
                         continue;
                     }
                     if let Action::RemoveDriverPackages(list) = &action {

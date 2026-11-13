@@ -208,6 +208,8 @@ pub struct Rule {
     pub cpu_limit_pct: Option<f32>,
     /// Hold all of them together to this much private memory, GiB.
     pub memory_limit_gb: Option<f32>,
+    /// Hold what it sends to this rate, MB/s (Windows' QoS policy).
+    pub upload_limit_mbps: Option<f32>,
     /// When its priority, efficiency mode and CPU limit apply.
     pub when: When,
 }
@@ -232,9 +234,26 @@ impl Default for Rule {
             game: false,
             cpu_limit_pct: None,
             memory_limit_gb: None,
+            upload_limit_mbps: None,
             when: When::Always,
         }
     }
+}
+
+/// The upload limits the rules ask for: program, bits per second.
+pub fn upload_limits(rules: &[Rule]) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = rules
+        .iter()
+        .filter(|r| r.enabled)
+        .filter_map(|r| {
+            let mbps = r.upload_limit_mbps?;
+            Some((r.image.to_lowercase(), (mbps as f64 * 8_000_000.0) as u64))
+        })
+        .filter(|(_, bits)| *bits > 0)
+        .collect();
+    out.sort();
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
 }
 
 impl Rule {
@@ -264,6 +283,9 @@ impl Rule {
         }
         if let Some(gb) = self.memory_limit_gb {
             always.push(format!("at most {gb} GB memory"));
+        }
+        if let Some(mbps) = self.upload_limit_mbps {
+            always.push(format!("uploads at most {mbps} MB/s"));
         }
         if self.game {
             always.push("a game".into());
@@ -1130,6 +1152,36 @@ fn editor(ui: &mut Ui, d: &mut Draft, snap: &Snapshot) -> Option<bool> {
                     });
                     ui.end_row();
 
+                    #[cfg(windows)]
+                    {
+                        ui.label("Upload limit");
+                        ui.horizontal(|ui| {
+                            let mut on = d.rule.upload_limit_mbps.is_some();
+                            ui.checkbox(&mut on, "At most");
+                            let mut mbps = d.rule.upload_limit_mbps.unwrap_or(1.0);
+                            ui.add_enabled(
+                                on,
+                                egui::DragValue::new(&mut mbps)
+                                    .range(0.01..=1000.0)
+                                    .speed(0.05)
+                                    .max_decimals(2)
+                                    .suffix(" MB/s"),
+                            );
+                            d.rule.upload_limit_mbps = on.then_some(mbps);
+                            ui.label(
+                                RichText::new(
+                                    "of what it sends, through Windows' QoS policy (what \
+                                     NetLimiter does for uploads). Downloads cannot be held \
+                                     without a network driver of its own. Until Anabolic quits \
+                                     or Windows restarts.",
+                                )
+                                .size(theme::META)
+                                .color(theme::TEXT_WEAK),
+                            );
+                        });
+                        ui.end_row();
+                    }
+
                     ui.label("Game");
                     ui.checkbox(&mut d.rule.game, "It is a game: game mode starts while it is in front")
                         .on_hover_text(
@@ -1547,6 +1599,32 @@ mod tests {
         let (_, fired) = e.step_at(&rules, &hanging(3, &eac, &[300]), None, t0 + secs(5));
         assert_eq!(fired[0].response, Response::Tell);
         assert!(fired[0].text.contains("left alone"));
+    }
+
+    #[test]
+    fn upload_limits_come_from_the_rules_in_use() {
+        let rules = vec![
+            Rule {
+                image: "Steam.exe".into(),
+                upload_limit_mbps: Some(1.0),
+                ..Rule::default()
+            },
+            Rule {
+                image: "off.exe".into(),
+                enabled: false,
+                upload_limit_mbps: Some(2.0),
+                ..Rule::default()
+            },
+            Rule {
+                image: "plain.exe".into(),
+                ..Rule::default()
+            },
+        ];
+        assert_eq!(
+            upload_limits(&rules),
+            [("steam.exe".to_string(), 8_000_000)]
+        );
+        assert!(rules[0].settings().contains("uploads at most 1 MB/s"));
     }
 
     #[test]

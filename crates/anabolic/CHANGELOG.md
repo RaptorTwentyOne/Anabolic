@@ -6,6 +6,10 @@ new since the one before.
 
 ## Unreleased
 
+- **Upload limits** (Rules page): a rule can hold what a program sends
+  to a rate, through Windows' QoS policy, the part of NetLimiter Windows
+  can do without a driver of its own; downloads cannot be held that way.
+  The limits last until Anabolic quits or Windows restarts.
 - **Wi-Fi** (Network page), in the manner of WifiInfoView and inSSIDer:
   the network this PC is on with its channel, signal and link speed,
   how crowded each channel is, the least crowded one to move the router

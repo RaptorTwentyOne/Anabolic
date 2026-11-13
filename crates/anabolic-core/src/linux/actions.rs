@@ -118,7 +118,8 @@ pub fn perform(action: Action) -> Option<Outcome> {
         | Action::Interrupts { .. }
         | Action::FlushDns
         | Action::WriteHosts(_)
-        | Action::RemoveDriverPackages(_) => return None,
+        | Action::RemoveDriverPackages(_)
+        | Action::UploadLimits(_) => return None,
         Action::Suspend(t) => signal(&t, libc::SIGSTOP).map(|_| format!("Suspended {}", t.label())),
         Action::Resume(t) => signal(&t, libc::SIGCONT).map(|_| format!("Resumed {}", t.label())),
         Action::SetPriority(t, priority) => set_priority(&t, priority)

@@ -65,6 +65,7 @@ pub mod nettrace;
 pub mod placement;
 pub mod power;
 pub mod profile;
+pub mod qos;
 pub mod recorder;
 pub mod report;
 pub mod resolver;

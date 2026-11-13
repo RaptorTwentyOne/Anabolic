@@ -229,6 +229,8 @@ pub struct App {
     standby: crate::standby::Cleaner,
     /// A VirusTotal key being typed into Settings.
     vt_key: String,
+    /// The upload limits last asked of Windows.
+    uploads: Vec<(String, u64)>,
     /// Frame and DPC tracing are on.
     stutters_traced: bool,
     network: crate::network_page::NetworkPage,
@@ -789,6 +791,7 @@ impl App {
             game_mode: Default::default(),
             standby: Default::default(),
             vt_key: String::new(),
+            uploads: Vec::new(),
             zombie_view,
             kill_dialog: None,
             affinity_dialog: None,
@@ -1953,6 +1956,9 @@ impl eframe::App for App {
         // Limits last while Anabolic runs, and so do what rules' conditions
         // and game mode changed: put back before it goes, here and now.
         anabolic_core::limits::lift_all();
+        if !self.uploads.is_empty() {
+            let _ = anabolic_core::qos::sync(&[]);
+        }
         let snap = &self.snapshot;
         let back: Vec<Action> = self
             .rule_engine
@@ -1989,6 +1995,11 @@ impl App {
         // Rules: standing orders go to the action thread quietly; watches
         // that fire become toasts, or notifications while the window is
         // closed, and may write a dump or end the process.
+        let uploads = crate::rules::upload_limits(&self.settings.rules);
+        if uploads != self.uploads {
+            self.uploads = uploads.clone();
+            self.actions.run(Action::UploadLimits(uploads));
+        }
         let (actions, fired) = self.rule_engine.step(&self.settings.rules, &self.snapshot);
         for action in actions {
             self.actions.run(Action::Quiet(Box::new(action)));
