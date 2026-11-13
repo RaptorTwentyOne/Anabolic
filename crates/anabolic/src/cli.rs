@@ -774,7 +774,14 @@ const COMMANDS: &[Command] = &[
         plan: |a| {
             let mut args = Map::new();
             a.number("--days", "days", &mut args)?;
-            Ok(tool("get_changes", args, View::Auto))
+            Ok(tool(
+                "get_changes",
+                args,
+                View::Table {
+                    list: "changes",
+                    columns: &["when", "kind", "what", "detail"],
+                },
+            ))
         },
     },
     Command {

@@ -86,7 +86,8 @@ pub fn day_filetime(year: i64, month: u32, day: u32) -> Option<i64> {
     Some((days * 86_400 + 11_644_473_600) * 10_000_000)
 }
 
-/// "20261113" as a FILETIME.
+/// "20261113" as a FILETIME: noon (UTC), the same date nearly
+/// everywhere.
 pub fn yyyymmdd(text: &str) -> Option<i64> {
     let t = text.trim();
     if t.len() != 8 || !t.chars().all(|c| c.is_ascii_digit()) {
@@ -97,6 +98,7 @@ pub fn yyyymmdd(text: &str) -> Option<i64> {
         t[4..6].parse().ok()?,
         t[6..].parse().ok()?,
     )
+    .map(|t| t + 12 * 3600 * 10_000_000)
 }
 
 /// One calendar day: its changes and how many crashes it saw.
@@ -133,7 +135,7 @@ pub fn days(changes: &[Change], crashes: Option<&crate::crashes::Crashes>) -> Ve
     }
     let mut out: Vec<Day> = Vec::new();
     for (i, c) in changes.iter().enumerate() {
-        // A day-only date is midnight UTC of the day it names.
+        // A day-only date is noon UTC of the day it names.
         let day = if c.day_only {
             civil((c.at / 10_000_000 - 11_644_473_600).div_euclid(86_400))
         } else {

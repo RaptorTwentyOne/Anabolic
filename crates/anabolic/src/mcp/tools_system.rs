@@ -523,6 +523,14 @@ impl AnabolicMcp {
                     })
                 }).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
+            "changes": kept.iter().map(|c| json!({
+                "when": anabolic_core::sysinfo::local_time(c.at).map(|t| {
+                    if c.day_only { t.chars().take(10).collect() } else { t.chars().take(16).collect::<String>() }
+                }),
+                "kind": c.kind.label(),
+                "what": c.what,
+                "detail": c.detail,
+            })).collect::<Vec<_>>(),
             "notes": read.notes,
         }))
     }
