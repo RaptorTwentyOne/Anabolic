@@ -157,6 +157,40 @@ fn crash_row(c: &anabolic_core::crashes::Crash) -> Value {
     row
 }
 
+const AUTORUNS: &str = if cfg!(windows) {
+    "Lists everything that starts by itself, in the manner of Autoruns: Run keys, Startup \
+folders and Active Setup, Explorer's shell extensions, overlays and browser helpers, Winlogon's \
+shell and Userinit, services and drivers set to start, every scheduled task, Image File \
+Execution Options debuggers and other hijacks (the .exe association, the command prompt's \
+AutoRun), AppInit and AppCert DLLs, Known DLLs, BootExecute, LSA packages, print monitors and \
+network providers. Each with the file it runs, who signed it (or that it is not signed or not \
+there) and a note when a setting is off Windows' default. Windows' own (Microsoft-signed) \
+entries are left out unless asked; what deserves a look comes first. Use it to find what \
+slows sign-in or what a program left behind, or when looking for persistence. It only reads; \
+list_startup_items lists the sign-in programs that can be turned off."
+} else {
+    "Lists everything that starts by itself: enabled systemd units (the system's and the \
+user's) and timers, cron's tables, the desktop's autostart entries, /etc/ld.so.preload, \
+rc.local and the shell's start files, and kernel modules loaded at boot, each with the file \
+it runs and whether the system's packages own it. Entries the packages put in place are left \
+out unless asked. It only reads."
+};
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct AutorunArgs {
+    /// Also Windows' own entries (Microsoft-signed), or on Linux the
+    /// packages' own.
+    pub include_system: Option<bool>,
+    /// Only those worth a look: not signed, file missing, or off the
+    /// default.
+    pub suspicious_only: Option<bool>,
+    /// Only this kind: "Services", "Drivers", "Scheduled tasks", ….
+    pub category: Option<String>,
+    /// How many (1 to 1000, default 200).
+    pub limit: Option<u32>,
+}
+
 /// The system's part of a boot, by its name on each system.
 const READY_KEY: &str = if cfg!(windows) {
     "to_sign_in_seconds"
@@ -484,6 +518,71 @@ impl AnabolicMcp {
             out["note"] = json!(note);
         }
         ok(out)
+    }
+
+    #[tool(
+        description = AUTORUNS,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_autoruns(
+        &self,
+        Parameters(args): Parameters<AutorunArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let read = blocking(anabolic_core::autoruns::read).await;
+        let system = args.include_system.unwrap_or(false);
+        let suspicious = args.suspicious_only.unwrap_or(false);
+        let category = args.category.as_deref().map(str::to_lowercase);
+        let limit = args.limit.unwrap_or(200).clamp(1, 1000) as usize;
+        let mut kept: Vec<&anabolic_core::autoruns::Autorun> = read
+            .entries
+            .iter()
+            .filter(|a| system || !a.system)
+            .filter(|a| !suspicious || a.suspicious())
+            .filter(|a| {
+                category
+                    .as_deref()
+                    .is_none_or(|c| a.category.label().to_lowercase() == c)
+            })
+            .collect();
+        kept.sort_by_key(|a| (!a.suspicious(), a.category));
+        let rows: Vec<Value> = kept
+            .iter()
+            .take(limit)
+            .map(|a| {
+                let mut row = json!({
+                    "name": a.name,
+                    "kind": a.category.label(),
+                    "signed_by": a.signer(),
+                    "file": a.path,
+                    "command": a.command,
+                    "where": a.location,
+                    "enabled": a.enabled,
+                    "worth_a_look": a.suspicious(),
+                });
+                if let Some(d) = &a.description {
+                    row["description"] = json!(d);
+                }
+                if let Some(n) = &a.note {
+                    row["note"] = json!(n);
+                }
+                row
+            })
+            .collect();
+        ok(json!({
+            "entries": rows,
+            "shown": rows.len(),
+            "matching": kept.len(),
+            "known": read.entries.len(),
+            "errors": read.errors,
+        }))
     }
 
     #[tool(

@@ -17,6 +17,17 @@ new since the one before.
   folders reach back past the event logs. The Overview names a program
   that went away three times in a day. From systemd-coredump on Linux.
   `anabolic-cli crashes`, and `get_crashes` for MCP clients.
+- **Everything that starts** (Startup page): every place things start
+  from by themselves, in the manner of Autoruns: Run keys, Startup
+  folders and Active Setup, Explorer's extensions, Winlogon, services
+  and drivers set to start, every scheduled task, debugger hijacks and
+  the command prompt's AutoRun, AppInit and Known DLLs, BootExecute, LSA
+  packages, print monitors and network providers, each with the file it
+  runs and who signed it. Windows' own are hidden unless asked; what
+  is not signed, not there or off Windows' default comes first. On Linux,
+  systemd units and timers, cron, autostart entries, the preload list,
+  shell start files and modules loaded at boot. `anabolic-cli autoruns`,
+  and `list_autoruns` for MCP clients.
 - **Devices** (Performance page): every device as Device Manager knows
   it, the ones with a problem first and the problem in words ("Windows
   stopped it: it reported a problem", Code 43) with what usually helps,

@@ -432,6 +432,10 @@ impl App {
             settings.tab = Tab::Startup;
             startup.show_boots = true;
         }
+        if args.iter().any(|a| a == "--autoruns") {
+            settings.tab = Tab::Startup;
+            startup.show_everything = true;
+        }
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
         }

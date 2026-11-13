@@ -19,6 +19,7 @@ use anabolic_core::{ProcState, ProcessDetails, ProcessInfo, Snapshot};
 use eframe::egui::{self, Align, Label, Layout, RichText, Sense, Ui};
 
 mod boots;
+mod everything;
 
 use crate::proc_table::{UiCmd, item};
 use crate::table::{Columns, Spec, TableView, text_cmp};
@@ -37,6 +38,9 @@ pub struct StartupPage {
     /// The boots are shown instead of the entries.
     pub show_boots: bool,
     boots: boots::BootsView,
+    /// Everything that starts by itself, from every place.
+    pub show_everything: bool,
+    everything: everything::EverythingView,
 }
 
 /// What a person calls the entry: the program's own description, unless
@@ -272,11 +276,23 @@ pub fn show(
     out: &mut Vec<UiCmd>,
 ) {
     ui.horizontal(|ui| {
+        let programs = !page.show_boots && !page.show_everything;
         if ui
-            .selectable_label(!page.show_boots, "Programs")
+            .selectable_label(programs, "Programs")
             .on_hover_text("What starts with the system and the sign-in")
             .clicked()
         {
+            page.show_boots = false;
+            page.show_everything = false;
+        }
+        if ui
+            .selectable_label(page.show_everything, "Everything")
+            .on_hover_text(
+                "Every place things start from, in the manner of Autoruns: services, drivers,                  tasks, shell extensions, hijacks…, with who signed each",
+            )
+            .clicked()
+        {
+            page.show_everything = true;
             page.show_boots = false;
         }
         if ui
@@ -285,11 +301,16 @@ pub fn show(
             .clicked()
         {
             page.show_boots = true;
+            page.show_everything = false;
         }
     });
     ui.add_space(4.0);
     if page.show_boots {
         boots::show(ui, &mut page.boots);
+        return;
+    }
+    if page.show_everything {
+        everything::show(ui, &mut page.everything, out);
         return;
     }
     let Some(list) = page.list.clone() else {

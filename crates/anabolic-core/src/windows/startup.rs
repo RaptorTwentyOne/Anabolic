@@ -25,8 +25,7 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows::Win32::System::TaskScheduler::{
-    IExecAction, ITaskFolder, ITaskService, TASK_ACTION_EXEC, TASK_ENUM_HIDDEN, TASK_TRIGGER_BOOT,
-    TASK_TRIGGER_LOGON, TaskScheduler,
+    IExecAction, ITaskFolder, ITaskService, TASK_ACTION_EXEC, TASK_ENUM_HIDDEN, TaskScheduler,
 };
 use windows::Win32::System::Variant::{VARIANT, VT_I4};
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
@@ -380,8 +379,38 @@ fn scheduler() -> windows::core::Result<ITaskService> {
     }
 }
 
-/// Every task under `folder` that runs a program at sign-in or boot.
-fn tasks(folder: &ITaskFolder, out: &mut Vec<StartupItem>) {
+/// A scheduled task that runs a program.
+pub(crate) struct TaskEntry {
+    pub name: String,
+    /// `\Folder\Name`.
+    pub path: String,
+    /// The first program it runs, with its arguments.
+    pub command: String,
+    pub enabled: bool,
+    /// One of Windows' own (under \Microsoft\).
+    pub system: bool,
+    /// When it runs: "at sign-in", "daily", …
+    pub when: Vec<&'static str>,
+}
+
+fn trigger_words(kind: i32) -> &'static str {
+    match kind {
+        0 => "on an event",
+        1 => "once",
+        2 => "daily",
+        3 => "weekly",
+        4 | 5 => "monthly",
+        6 => "when idle",
+        7 => "when registered",
+        8 => "at boot",
+        9 => "at sign-in",
+        11 => "on a session change",
+        _ => "on a custom trigger",
+    }
+}
+
+/// Every task under `folder` that runs a program, whatever starts it.
+pub(crate) fn walk_tasks(folder: &ITaskFolder, out: &mut Vec<TaskEntry>) {
     unsafe {
         let path = folder.Path().map(|p| p.to_string()).unwrap_or_default();
         let windows = path.to_lowercase().starts_with(r"\microsoft");
@@ -393,7 +422,7 @@ fn tasks(folder: &ITaskFolder, out: &mut Vec<StartupItem>) {
                 let Ok(def) = task.Definition() else {
                     continue;
                 };
-                let mut source = None;
+                let mut when = Vec::new();
                 if let Ok(triggers) = def.Triggers() {
                     let mut count = 0;
                     let _ = triggers.Count(&mut count);
@@ -403,16 +432,12 @@ fn tasks(folder: &ITaskFolder, out: &mut Vec<StartupItem>) {
                         };
                         let mut kind = Default::default();
                         let _ = trigger.Type(&mut kind);
-                        if kind == TASK_TRIGGER_LOGON {
-                            source = Some(Source::TaskLogon);
-                        } else if kind == TASK_TRIGGER_BOOT && source.is_none() {
-                            source = Some(Source::TaskBoot);
+                        let words = trigger_words(kind.0);
+                        if !when.contains(&words) {
+                            when.push(words);
                         }
                     }
                 }
-                let Some(source) = source else {
-                    continue;
-                };
                 // The first program it runs; COM handlers have no command.
                 let mut command = None;
                 if let Ok(actions) = def.Actions() {
@@ -446,22 +471,52 @@ fn tasks(folder: &ITaskFolder, out: &mut Vec<StartupItem>) {
                 let Some(command) = command else {
                     continue;
                 };
-                let name = task.Name().map(|n| n.to_string()).unwrap_or_default();
-                let location = task.Path().map(|p| p.to_string()).unwrap_or_default();
-                let enabled = task.Enabled().is_ok_and(|e| e.as_bool());
-                let mut entry = item(name, source, location, command);
-                entry.enabled = enabled;
-                entry.system = windows;
-                out.push(entry);
+                out.push(TaskEntry {
+                    name: task.Name().map(|n| n.to_string()).unwrap_or_default(),
+                    path: task.Path().map(|p| p.to_string()).unwrap_or_default(),
+                    command,
+                    enabled: task.Enabled().is_ok_and(|e| e.as_bool()),
+                    system: windows,
+                    when,
+                });
             }
         }
         if let Ok(folders) = folder.GetFolders(0) {
             for i in 1..=folders.Count().unwrap_or(0) {
                 if let Ok(sub) = folders.get_Item(&variant_i32(i)) {
-                    tasks(&sub, out);
+                    walk_tasks(&sub, out);
                 }
             }
         }
+    }
+}
+
+/// Every scheduled task that runs a program; needs COM on the thread.
+pub(crate) fn all_tasks() -> Result<Vec<TaskEntry>, String> {
+    let root = scheduler()
+        .and_then(|s| unsafe { s.GetFolder(&BSTR::from("\\")) })
+        .map_err(|e| error_text(&e))?;
+    let mut out = Vec::new();
+    walk_tasks(&root, &mut out);
+    Ok(out)
+}
+
+/// Every task under `folder` that runs a program at sign-in or boot.
+fn tasks(folder: &ITaskFolder, out: &mut Vec<StartupItem>) {
+    let mut all = Vec::new();
+    walk_tasks(folder, &mut all);
+    for t in all {
+        let source = if t.when.contains(&"at sign-in") {
+            Source::TaskLogon
+        } else if t.when.contains(&"at boot") {
+            Source::TaskBoot
+        } else {
+            continue;
+        };
+        let mut entry = item(t.name, source, t.path, t.command);
+        entry.enabled = t.enabled;
+        entry.system = t.system;
+        out.push(entry);
     }
 }
 

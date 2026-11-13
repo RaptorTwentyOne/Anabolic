@@ -495,6 +495,30 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "autoruns",
+        usage: "[--all] [--look]",
+        about: "Everything that starts by itself, with who signed it",
+        details: "  --all   Windows' own entries too\n  --look  only those worth a look: not signed, missing, off the default",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            if a.flag("--all") {
+                args.insert("include_system".into(), Value::Bool(true));
+            }
+            if a.flag("--look") {
+                args.insert("suspicious_only".into(), Value::Bool(true));
+            }
+            Ok(tool(
+                "list_autoruns",
+                args,
+                View::Table {
+                    list: "entries",
+                    columns: &["name", "kind", "signed_by=Signed by", "file", "note"],
+                },
+            ))
+        },
+    },
+    Command {
         name: "program",
         usage: "NAME [--days N]",
         about: "One program over the last days: its processor time, memory and bytes moved",
@@ -770,6 +794,7 @@ const FLAGS: &[&str] = &[
     "--rescan",
     "--serious",
     "--problems",
+    "--look",
     "--help",
 ];
 

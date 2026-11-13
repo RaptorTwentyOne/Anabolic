@@ -48,7 +48,7 @@ impl AnabolicMcp {
 }
 
 #[cfg(windows)]
-const INSTRUCTIONS: &str = "Anabolic is a performance monitoring and diagnostics tool running on this Windows PC. Its tools read what the machine is doing (processes, CPU per core, memory, disks with their partitions and the files being read and written, what fills each drive, network connections and DNS lookups, GPUs, temperatures, devices and their drivers, services, startup programs and how long boots take, what crashed and why, frame times and driver latency, a 7-day history), record what programs do step by step, sample where a process spends its processor time, and act on it (end, suspend or reprioritise processes, control services, block programs from the network, turn startup programs off, write memory dumps).
+const INSTRUCTIONS: &str = "Anabolic is a performance monitoring and diagnostics tool running on this Windows PC. Its tools read what the machine is doing (processes, CPU per core, memory, disks with their partitions and the files being read and written, what fills each drive, network connections and DNS lookups, GPUs, temperatures, devices and their drivers, services, startup programs and everything else that starts by itself, how long boots take, what crashed and why, frame times and driver latency, a 7-day history), record what programs do step by step, sample where a process spends its processor time, and act on it (end, suspend or reprioritise processes, control services, block programs from the network, turn startup programs off, write memory dumps).
 
 Start with get_system_overview, then list_processes or get_process. Times are local. Rates are per second (_bps = bytes per second).
 
@@ -373,6 +373,7 @@ mod tests {
                 "get_wait_chain",
                 "lift_limit",
                 "limit_process",
+                "list_autoruns",
                 "list_connections",
                 "list_dns_lookups",
                 "list_handles",
