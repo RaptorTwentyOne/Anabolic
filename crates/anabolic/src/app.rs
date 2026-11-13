@@ -179,6 +179,8 @@ pub struct App {
     crashes: crate::crashes_page::CrashesView,
     /// The Performance page's devices, read now and then for the Overview.
     devices: crate::devices_view::DevicesView,
+    /// What costs speed, read now and then for the Overview.
+    checkup: crate::checkup_view::CheckupView,
     /// The process details' profiler.
     profile_view: crate::details::ProfileView,
     memory_view: crate::details::MemoryView,
@@ -528,6 +530,7 @@ impl App {
                 Some("meminfo") => perf_view = PerfView::MemoryInfo,
                 Some("displays") => perf_view = PerfView::Displays,
                 Some("devices") => perf_view = PerfView::Devices,
+                Some("checkup") => perf_view = PerfView::Checkup,
                 Some("sensors") => perf_view = PerfView::Sensors,
                 Some(v) if v.starts_with("disk") => {
                     if let Ok(n) = v[4..].parse() {
@@ -723,6 +726,7 @@ impl App {
             disk_health: Default::default(),
             crashes: Default::default(),
             devices: Default::default(),
+            checkup: Default::default(),
             profile_view: Default::default(),
             memory_view: Default::default(),
             history_view: Default::default(),
@@ -1380,6 +1384,9 @@ impl eframe::App for App {
         let devices_shown =
             self.settings.tab == Tab::Performance && self.perf_view == PerfView::Devices;
         self.devices.tick(ui.ctx(), devices_shown);
+        let checkup_shown =
+            self.settings.tab == Tab::Performance && self.perf_view == PerfView::Checkup;
+        self.checkup.tick(ui.ctx(), checkup_shown);
         crate::bench::frame(ui.ctx(), frame.info().cpu_usage, self.ui_time);
         let page = match self.settings.tab {
             Tab::Overview => "Overview".to_string(),
@@ -1553,6 +1560,7 @@ impl eframe::App for App {
                         health: self.disk_health.all(),
                         crashes: self.crashes.crashes().map(|c| c.as_ref()),
                         devices: self.devices.devices().map(|d| d.as_ref()),
+                        checkup: self.checkup.checkup().map(|c| c.as_ref()),
                     };
                     crate::overview_page::show(
                         ui,
@@ -1649,6 +1657,7 @@ impl eframe::App for App {
                         self.displays.as_deref().map(Vec::as_slice),
                         &mut self.disk_health,
                         &mut self.devices,
+                        &mut self.checkup,
                         &mut cmds,
                     );
                 });

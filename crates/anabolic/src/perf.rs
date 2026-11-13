@@ -53,6 +53,8 @@ pub enum PerfView {
     Displays,
     /// Every device, as Device Manager knows them.
     Devices,
+    /// What costs speed without saying so.
+    Checkup,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67,9 +69,11 @@ pub fn show(
     displays: Option<&[anabolic_core::displays::Display]>,
     health: &mut crate::disk_health::DiskHealth,
     devices: &mut crate::devices_view::DevicesView,
+    checkup: &mut crate::checkup_view::CheckupView,
     out: &mut Vec<UiCmd>,
 ) {
     let summary = crate::devices_view::summary(devices.devices().map(|d| d.as_ref()));
+    let checked = crate::checkup_view::summary(checkup.checkup().map(|c| c.as_ref()));
     egui::Panel::left("perf-nav")
         .exact_size(240.0)
         .resizable(false)
@@ -78,7 +82,7 @@ pub fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(6.0);
-                    nav(ui, view, snap, hw, displays, summary);
+                    nav(ui, view, snap, hw, displays, summary, checked);
                 });
         });
     // A table of its own, which scrolls by itself.
@@ -107,6 +111,7 @@ pub fn show(
             PerfView::Sensors => sensors(ui, snap),
             PerfView::Displays => crate::displays_view::show(ui, displays),
             PerfView::Devices => {}
+            PerfView::Checkup => crate::checkup_view::show(ui, checkup, out),
         });
         crate::bench::scrolled_to(output.state.offset.y, output.content_size.y);
     });
@@ -145,6 +150,7 @@ fn nav(
     hw: &HardwareInfo,
     displays: Option<&[anabolic_core::displays::Display]>,
     devices: String,
+    checked: String,
 ) {
     let h = &snap.history;
     let s = &snap.system;
@@ -291,6 +297,13 @@ fn nav(
                 true,
             )
         }),
+        child: false,
+    });
+    cards.push(Card {
+        view: PerfView::Checkup,
+        title: "Checkup".into(),
+        value: checked,
+        graph: None,
         child: false,
     });
     cards.push(Card {

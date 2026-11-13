@@ -45,6 +45,7 @@ pub const SystemMemoryListInformation: u32 = 80;
 pub const SystemProcessIdInformation: u32 = 88;
 pub const SystemProcessorPerformanceDistribution: u32 = 100;
 pub const SystemFullProcessInformation: u32 = 148;
+pub const SystemIsolatedUserModeInformation: u32 = 165;
 
 // PROCESSINFOCLASS
 pub const ProcessBreakOnTermination: u32 = 29;

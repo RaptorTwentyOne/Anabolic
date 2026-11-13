@@ -22,10 +22,10 @@ use windows::Wdk::Graphics::Direct3D::{
     D3DKMT_NODEMETADATA, D3DKMT_QUERYADAPTERINFO, D3DKMT_QUERYSTATISTICS,
     D3DKMT_QUERYSTATISTICS_ADAPTER, D3DKMT_QUERYSTATISTICS_NODE,
     D3DKMT_QUERYSTATISTICS_PROCESS_NODE, D3DKMT_QUERYSTATISTICS_SEGMENT,
-    D3DKMT_QUERYSTATISTICS_TYPE, D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo,
+    D3DKMT_QUERYSTATISTICS_TYPE, D3DKMT_WDDM_2_7_CAPS, D3DKMTCloseAdapter, D3DKMTEnumAdapters2, D3DKMTQueryAdapterInfo,
     D3DKMTQueryStatistics, KMTQAITYPE_ADAPTERADDRESS, KMTQAITYPE_ADAPTERPERFDATA,
     KMTQAITYPE_ADAPTERPERFDATA_CAPS, KMTQAITYPE_ADAPTERTYPE, KMTQAITYPE_NODEMETADATA,
-    KMTQUERYADAPTERINFOTYPE,
+    KMTQAITYPE_WDDM_2_7_CAPS, KMTQUERYADAPTERINFOTYPE,
 };
 use windows::Win32::Foundation::{HANDLE, LUID};
 use windows::Win32::Graphics::Dxgi::{
@@ -382,6 +382,38 @@ impl Drop for GpuSampler {
             close_adapter(a.handle);
         }
     }
+}
+
+/// Hardware-accelerated GPU scheduling: whether a GPU here supports it,
+/// and whether it is on, as the drivers report it (the registry holds a
+/// value only once someone has set it).
+pub fn gpu_scheduling() -> Option<(bool, bool)> {
+    let mut list = D3DKMT_ENUMADAPTERS2 {
+        NumAdapters: 0,
+        pAdapters: std::ptr::null_mut(),
+    };
+    if unsafe { D3DKMTEnumAdapters2(&mut list) }.is_err() || list.NumAdapters == 0 {
+        return None;
+    }
+    let mut infos = vec![D3DKMT_ADAPTERINFO::default(); list.NumAdapters as usize];
+    list.pAdapters = infos.as_mut_ptr();
+    if unsafe { D3DKMTEnumAdapters2(&mut list) }.is_err() {
+        return None;
+    }
+    infos.truncate(list.NumAdapters as usize);
+    let (mut supported, mut enabled) = (false, false);
+    for info in &infos {
+        if let Some(caps) =
+            adapter_info::<D3DKMT_WDDM_2_7_CAPS>(info.hAdapter, KMTQAITYPE_WDDM_2_7_CAPS)
+        {
+            // HwSchSupported, HwSchEnabled: the first two bits.
+            let bits = unsafe { caps.Anonymous.Value };
+            supported |= bits & 1 != 0;
+            enabled |= bits & 2 != 0;
+        }
+        close_adapter(info.hAdapter);
+    }
+    supported.then_some((supported, enabled))
 }
 
 fn close_adapter(handle: u32) {

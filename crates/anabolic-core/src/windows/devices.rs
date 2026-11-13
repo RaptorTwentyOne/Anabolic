@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_CLASS_PROPERTY_INSTALLER, CM_DEVNODE_STATUS_FLAGS, CM_GETIDLIST_FILTER_NONE,
+    CM_CLASS_PROPERTY_INSTALLER, CM_DEVNODE_STATUS_FLAGS, CM_GETIDLIST_FILTER_ENUMERATOR, CM_GETIDLIST_FILTER_NONE, CM_GETIDLIST_FILTER_PRESENT,
     CM_Get_Class_PropertyW, CM_Get_DevNode_PropertyW, CM_Get_DevNode_Status,
     CM_Get_Device_ID_List_SizeW, CM_Get_Device_ID_ListW, CM_LOCATE_DEVNODE_PHANTOM,
     CM_Locate_DevNodeW, CM_PROB, CR_SUCCESS, DN_HAS_PROBLEM, DN_NO_SHOW_IN_DM,
@@ -27,7 +27,7 @@ use windows::Win32::Devices::Properties::{
     DEVPKEY_Device_Manufacturer, DEVPKEY_Device_Parent, DEVPKEY_Device_ProblemCode,
     DEVPKEY_Device_ProblemStatus, DEVPKEY_Device_Service, DEVPKEY_DeviceClass_Name,
     DEVPROP_TYPE_FILETIME, DEVPROP_TYPE_GUID, DEVPROP_TYPE_NTSTATUS, DEVPROP_TYPE_STRING,
-    DEVPROP_TYPE_UINT32, DEVPROPTYPE,
+    DEVPROP_TYPE_STRING_LIST, DEVPROP_TYPE_UINT32, DEVPROPTYPE,
 };
 use windows::Win32::Foundation::DEVPROPKEY;
 use windows::core::{GUID, PCWSTR};
@@ -41,7 +41,7 @@ const CM_PROB_FAILED_INSTALL: u32 = 28;
 
 pub fn read() -> Result<Devices, String> {
     let started = Instant::now();
-    let ids = instance_ids()?;
+    let ids = instance_ids(None)?;
     let mut classes = HashMap::new();
     let mut devices: Vec<Device> = ids
         .iter()
@@ -58,14 +58,21 @@ pub fn read() -> Result<Devices, String> {
     })
 }
 
-/// Every device instance Windows knows of, connected or not.
-fn instance_ids() -> Result<Vec<String>, String> {
+/// Every device instance Windows knows of, connected or not; or with an
+/// enumerator ("PCI", "USB"), those of that bus that are connected now.
+pub(crate) fn instance_ids(enumerator: Option<&str>) -> Result<Vec<String>, String> {
+    let name = enumerator.map(wide);
+    let (filter, flags) = match &name {
+        Some(n) => (
+            PCWSTR(n.as_ptr()),
+            CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT,
+        ),
+        None => (PCWSTR::null(), CM_GETIDLIST_FILTER_NONE),
+    };
     // The list can grow between the two calls: a few tries.
     for _ in 0..3 {
         let mut len = 0u32;
-        let cr = unsafe {
-            CM_Get_Device_ID_List_SizeW(&mut len, PCWSTR::null(), CM_GETIDLIST_FILTER_NONE)
-        };
+        let cr = unsafe { CM_Get_Device_ID_List_SizeW(&mut len, filter, flags) };
         if cr != CR_SUCCESS {
             return Err(format!(
                 "the device list could not be read (error {})",
@@ -73,8 +80,7 @@ fn instance_ids() -> Result<Vec<String>, String> {
             ));
         }
         let mut buf = vec![0u16; len as usize + 1];
-        let cr =
-            unsafe { CM_Get_Device_ID_ListW(PCWSTR::null(), &mut buf, CM_GETIDLIST_FILTER_NONE) };
+        let cr = unsafe { CM_Get_Device_ID_ListW(filter, &mut buf, flags) };
         if cr == CR_SUCCESS {
             return Ok(buf
                 .split(|&c| c == 0)
@@ -86,8 +92,16 @@ fn instance_ids() -> Result<Vec<String>, String> {
     Err("the device list kept changing while it was read".into())
 }
 
+/// A connected device's node, by its instance id.
+pub(crate) fn node(id: &str) -> Option<u32> {
+    let wid = wide(id);
+    let mut inst = 0u32;
+    let cr = unsafe { CM_Locate_DevNodeW(&mut inst, PCWSTR(wid.as_ptr()), Default::default()) };
+    (cr == CR_SUCCESS).then_some(inst)
+}
+
 /// A property's raw bytes and type.
-fn property(inst: u32, key: &DEVPROPKEY) -> Option<(DEVPROPTYPE, Vec<u8>)> {
+pub(crate) fn property(inst: u32, key: &DEVPROPKEY) -> Option<(DEVPROPTYPE, Vec<u8>)> {
     let mut kind = DEVPROPTYPE(0);
     let mut size = 0u32;
     // The first call says how much room it needs.
@@ -105,7 +119,7 @@ fn property(inst: u32, key: &DEVPROPKEY) -> Option<(DEVPROPTYPE, Vec<u8>)> {
     })
 }
 
-fn text(inst: u32, key: &DEVPROPKEY) -> Option<String> {
+pub(crate) fn text(inst: u32, key: &DEVPROPKEY) -> Option<String> {
     let (kind, bytes) = property(inst, key)?;
     if kind != DEVPROP_TYPE_STRING {
         return None;
@@ -113,12 +127,29 @@ fn text(inst: u32, key: &DEVPROPKEY) -> Option<String> {
     utf16(&bytes)
 }
 
-fn number(inst: u32, key: &DEVPROPKEY) -> Option<u32> {
+pub(crate) fn number(inst: u32, key: &DEVPROPKEY) -> Option<u32> {
     let (kind, bytes) = property(inst, key)?;
     if kind != DEVPROP_TYPE_UINT32 && kind != DEVPROP_TYPE_NTSTATUS {
         return None;
     }
     Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
+}
+
+/// A list of strings (hardware and compatible ids).
+pub(crate) fn list(inst: u32, key: &DEVPROPKEY) -> Vec<String> {
+    match property(inst, key) {
+        Some((kind, bytes)) if kind == DEVPROP_TYPE_STRING_LIST => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes(*b))
+            .collect::<Vec<u16>>()
+            .split(|&c| c == 0)
+            .filter(|s| !s.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn filetime(inst: u32, key: &DEVPROPKEY) -> Option<i64> {

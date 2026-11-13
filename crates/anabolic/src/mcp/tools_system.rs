@@ -348,6 +348,20 @@ fn device_row(d: &anabolic_core::devices::Device) -> Value {
     row
 }
 
+const CHECKUP: &str = if cfg!(windows) {
+    "Checks what costs speed without saying so, the things otherwise looked up one by one in CPU-Z, GPU-Z, HWiNFO and Windows' settings: memory below the speed its part number is sold at (EXPO/XMP off), all modules on one channel or mixed kits, no page file; a graphics card or NVMe drive on fewer PCIe lanes or an older generation than it has; Resizable BAR; Xbox Game Bar's background recording, Windows Game Mode, hardware-accelerated GPU scheduling; a monitor below its refresh rate or resolution; the power plan and power mode, USB selective suspend, fast startup, a restart updates wait for; TRIM; a wired adapter held to 100 Mbps; memory integrity (VBS/HVCI); mouse acceleration. Each with a verdict (change, consider, info, good), what it is now, what it costs and where to change it. Use it when a PC or game feels slower than its hardware should be. It only reads; changing is left to the user."
+} else {
+    "Checks what costs speed without saying so: memory below the speed its part number is sold at, all modules on one channel or mixed kits, no swap; a graphics card or NVMe drive on fewer PCIe lanes or an older generation than it has; a monitor below its refresh rate or resolution; the processor's frequency governor or energy preference and the platform profile; a restart the packages wait for; TRIM. Each with a verdict (change, consider, info, good), what it is now, what it costs and how to change it. It only reads."
+};
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct CheckupArgs {
+    /// Also the checks that are as they should be (by default only
+    /// those to change or consider, and the settings worth knowing).
+    pub include_good: Option<bool>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ProgramHistoryArgs {
     /// The program's file name, any case: "chrome.exe".
@@ -366,6 +380,54 @@ fn time_of_day(text: &str) -> Option<u32> {
 
 #[tool_router(router = system_tools, vis = "pub(super)")]
 impl AnabolicMcp {
+    #[tool(
+        description = CHECKUP,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_checkup(
+        &self,
+        Parameters(args): Parameters<CheckupArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use anabolic_core::checkup::Verdict;
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let read = blocking(anabolic_core::checkup::read).await;
+        let good = args.include_good.unwrap_or(false);
+        let rows: Vec<Value> = read
+            .checks
+            .iter()
+            .filter(|c| good || c.verdict != Verdict::Good)
+            .map(|c| {
+                let mut row = json!({
+                    "check": c.key,
+                    "area": c.area.label(),
+                    "title": c.title,
+                    "verdict": c.verdict.key(),
+                    "now": c.now,
+                });
+                if !c.why.is_empty() {
+                    row["why"] = json!(c.why);
+                }
+                if let Some(f) = &c.fix {
+                    row["how_to_change"] = json!(f.words());
+                }
+                row
+            })
+            .collect();
+        ok(json!({
+            "checks": rows,
+            "to_change": read.count(Verdict::Change),
+            "worth_a_look": read.count(Verdict::Consider),
+            "good": read.count(Verdict::Good),
+        }))
+    }
+
     #[tool(
         description = DEVICES,
         annotations(

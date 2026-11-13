@@ -11,6 +11,7 @@ mod access;
 mod activity_page;
 mod app;
 mod bench;
+mod checkup_view;
 mod cli;
 mod crashes_page;
 #[cfg(target_os = "linux")]

@@ -6,6 +6,21 @@ new since the one before.
 
 ## Unreleased
 
+- **Checkup** (Performance page): what costs speed without saying so,
+  the things otherwise looked up one by one in CPU-Z, GPU-Z, HWiNFO and
+  Windows' settings. Memory below the speed its part number is sold at
+  (EXPO or XMP off), every module on one channel, mixed kits, no page
+  file; a graphics card or NVMe drive on fewer PCIe lanes or an older
+  generation than it has; Resizable BAR; Xbox Game Bar's background
+  recording, Game Mode, hardware-accelerated GPU scheduling; a monitor
+  below its refresh rate or resolution; the power plan and power mode,
+  USB selective suspend, fast startup, a restart updates wait for; TRIM;
+  a gigabit port held to 100 Mbps by its cable; memory integrity; mouse
+  acceleration. Each says what it is now, what it costs and where to
+  change it; nothing is changed for you. The Overview names what to
+  change. On Linux, the PCIe links, swap, the processor's frequency
+  policy, a restart the packages wait for and TRIM. `anabolic-cli
+  checkup`, and `get_checkup` for MCP clients.
 - **Crashes** (Ctrl+E): what crashed, from Windows' own records. By
   program, with how many times and the module most of its crashes were in,
   or each one: the exception in words ("it used memory that was not its

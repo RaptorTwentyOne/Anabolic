@@ -84,6 +84,8 @@ pub struct Inputs<'a> {
     pub crashes: Option<&'a anabolic_core::crashes::Crashes>,
     /// The devices, as last read.
     pub devices: Option<&'a anabolic_core::devices::Devices>,
+    /// What costs speed, as last checked.
+    pub checkup: Option<&'a anabolic_core::checkup::Checkup>,
 }
 
 /// One executable's live processes, summed.
@@ -737,6 +739,34 @@ fn attention(input: &Inputs<'_>, apps: &[App]) -> Vec<Item> {
                     format!("{}: {words}", first.name)
                 }),
                 actions: vec![act("Show", UiCmd::ShowDevice(first.id.clone()))],
+            });
+        }
+    }
+    // A setting or state that costs speed now.
+    if let Some(c) = input.checkup {
+        let change: Vec<_> = c
+            .checks
+            .iter()
+            .filter(|x| x.verdict == anabolic_core::checkup::Verdict::Change)
+            .collect();
+        if let Some(first) = change.first() {
+            items.push(Item {
+                severe: false,
+                text: if change.len() == 1 {
+                    format!("{}: {}", first.title, first.now)
+                } else {
+                    format!("{} settings cost speed", change.len())
+                },
+                detail: Some(if change.len() == 1 {
+                    first.why.clone()
+                } else {
+                    change
+                        .iter()
+                        .map(|x| x.title.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }),
+                actions: vec![act("Show", UiCmd::ShowPerf(PerfView::Checkup))],
             });
         }
     }

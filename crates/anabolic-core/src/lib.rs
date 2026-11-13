@@ -20,6 +20,7 @@ pub mod actions;
 pub mod activity;
 pub mod autoruns;
 pub mod boot;
+pub mod checkup;
 pub mod collector;
 pub mod coretrace;
 pub mod cpu;
@@ -74,7 +75,7 @@ pub mod update;
 pub mod waits;
 
 // Windows only: Event Tracing for Windows, the event logs, the native API,
-// and NT paths, version resources and SIDs.
+// NT paths, version resources and SIDs, and the registry.
 #[cfg(windows)]
 #[path = "windows/etw.rs"]
 pub mod etw;
@@ -90,6 +91,9 @@ pub mod ntapi;
 #[cfg(windows)]
 #[path = "windows/winfile.rs"]
 pub mod winfile;
+#[cfg(windows)]
+#[path = "windows/reg.rs"]
+pub(crate) mod reg;
 
 // Linux only: reading /proc, the kernel's tracing (perf events, system calls)
 // and netlink interfaces, ELF files, other processes' threads and memory

@@ -605,6 +605,27 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "checkup",
+        usage: "[--all]",
+        about: "What costs speed: memory below its rating, a card on half its lanes, …",
+        details: "  --all  also what is as it should be",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            if a.flag("--all") {
+                args.insert("include_good".into(), Value::Bool(true));
+            }
+            Ok(tool(
+                "get_checkup",
+                args,
+                View::Table {
+                    list: "checks",
+                    columns: &["verdict", "title", "now", "how_to_change=How to change"],
+                },
+            ))
+        },
+    },
+    Command {
         name: "crashes",
         usage: "[--program NAME] [--limit N] [--serious]",
         about: "What crashed, hung or was reset, and why",

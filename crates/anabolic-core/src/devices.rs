@@ -14,6 +14,8 @@ use std::time::Duration;
 #[cfg_attr(target_os = "linux", path = "linux/devices.rs")]
 mod imp;
 pub use imp::read;
+#[cfg(windows)]
+pub(crate) use imp::{instance_ids, list, node, number, text};
 
 #[derive(Clone, Debug, Default)]
 pub struct Device {
