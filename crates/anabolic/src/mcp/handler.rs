@@ -355,6 +355,7 @@ mod tests {
                 "get_checkup",
                 "get_cpu",
                 "get_crashes",
+                "get_data_usage",
                 "get_devices",
                 "get_disk_usage",
                 "get_disks",

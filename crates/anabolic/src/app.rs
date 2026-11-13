@@ -547,6 +547,7 @@ impl App {
                 Some("quality") => NetTab::Quality,
                 Some("hosts") => NetTab::DnsTools,
                 Some("wifi") => NetTab::Wifi,
+                Some("usage") => NetTab::Usage,
                 _ => NetTab::Programs,
             };
         }

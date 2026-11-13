@@ -30,6 +30,8 @@ serde_json = "1"
 workspace = true
 features = [
     "Wdk_Graphics_Direct3D",
+    "Foundation",
+    "Networking_Connectivity",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Display",
     "Win32_Devices_Properties",

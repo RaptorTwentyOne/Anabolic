@@ -435,6 +435,31 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "usage",
+        usage: "[--days N] [--limit N]",
+        about: "What each program sent and received over the last weeks",
+        details: "  --days N   how many days back (1 to 60, default 30)\n  --limit N  how many programs (default 30)",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.number("--days", "days", &mut args)?;
+            a.number("--limit", "limit", &mut args)?;
+            Ok(tool(
+                "get_data_usage",
+                args,
+                View::Table {
+                    list: "programs",
+                    columns: &[
+                        "program",
+                        "received_bytes=Received",
+                        "sent_bytes=Sent",
+                        "path",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
         name: "wifi",
         usage: "",
         about: "The Wi-Fi networks around, their channels and signal",

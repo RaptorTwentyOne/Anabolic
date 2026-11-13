@@ -6,6 +6,11 @@ new since the one before.
 
 ## Unreleased
 
+- **Data usage** (Network page), in the manner of NetworkUsageView: what
+  each program received and sent over the last day, week, month or two,
+  from Windows' own record (the one Settings' Data usage page reads),
+  from before Anabolic was installed too. `anabolic-cli usage`, and
+  `get_data_usage` for MCP clients.
 - **Upload limits** (Rules page): a rule can hold what a program sends
   to a rate, through Windows' QoS policy, the part of NetLimiter Windows
   can do without a driver of its own; downloads cannot be held that way.

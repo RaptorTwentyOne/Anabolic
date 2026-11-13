@@ -144,6 +144,15 @@ use compares. Takes a few seconds and sends a few hundred small DNS queries.";
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
+pub struct DataUsageArgs {
+    /// How many days back (1 to 60, default 30).
+    pub days: Option<u32>,
+    /// How many programs, most first (1 to 300, default 30).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub struct QualityArgs {
     /// How long to ping, seconds (5 to 60, default 10).
     pub seconds: Option<u64>,
@@ -220,6 +229,49 @@ impl AnabolicMcp {
             out["note"] = json!(n);
         }
         ok(out)
+    }
+
+    #[tool(
+        description = "What each program received and sent over the last days, up to about 60, \
+                       from Windows' own record (the System Resource Usage Monitor that \
+                       Settings' Data usage page reads), from before Anabolic was installed too: \
+                       the programs that used the network most, with their path. Use it for \
+                       \"what ate my data this month\" or a program that uploads more than it \
+                       should; get_network_usage has the traffic now. Windows only; takes \
+                       several seconds.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_data_usage(
+        &self,
+        Parameters(args): Parameters<DataUsageArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let days = args.days.unwrap_or(30).clamp(1, 60);
+        let limit = args.limit.unwrap_or(30).clamp(1, 300) as usize;
+        let u = match blocking(move || anabolic_core::datausage::read(days)).await {
+            Ok(u) => u,
+            Err(e) => return fail(e),
+        };
+        let (sent, received) = u.total();
+        ok(json!({
+            "days": u.days,
+            "received_bytes": received,
+            "sent_bytes": sent,
+            "networks": u.networks,
+            "programs": u.apps.iter().take(limit).map(|a| json!({
+                "program": a.name,
+                "received_bytes": a.received,
+                "sent_bytes": a.sent,
+                "path": a.id,
+            })).collect::<Vec<_>>(),
+        }))
     }
 
     #[tool(

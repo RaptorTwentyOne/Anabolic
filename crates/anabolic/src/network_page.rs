@@ -31,6 +31,7 @@ mod dev;
 pub(crate) use dev::{DevPort, dev_ports};
 mod dnstools;
 mod quality;
+mod usage;
 mod wifi;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -50,6 +51,8 @@ pub enum NetTab {
     DnsTools,
     /// The Wi-Fi networks around and their channels.
     Wifi,
+    /// What each program sent and received over the last weeks.
+    Usage,
 }
 
 /// A connection, by everything that tells two apart.
@@ -81,6 +84,7 @@ pub struct NetworkPage {
     pub quality: quality::QualityView,
     dns_tools: dnstools::DnsToolsView,
     wifi: wifi::WifiView,
+    usage: usage::UsageView,
 }
 
 impl Default for NetworkPage {
@@ -104,6 +108,7 @@ impl Default for NetworkPage {
             quality: Default::default(),
             dns_tools: Default::default(),
             wifi: Default::default(),
+            usage: Default::default(),
         }
     }
 }
@@ -326,6 +331,7 @@ fn header(ui: &mut Ui, snap: &Snapshot, activity: &NetActivity, page: &mut Netwo
             (NetTab::Listening, "Listening"),
             (NetTab::Development, "Development ports"),
             (NetTab::Destinations, "Destinations"),
+            (NetTab::Usage, "Data usage"),
             (NetTab::Lookups, "DNS"),
             (NetTab::Quality, "Quality"),
             (NetTab::DnsTools, "Hosts and DNS"),
@@ -425,6 +431,7 @@ pub fn show(
         NetTab::Quality => quality::show(ui, &mut page.quality, snap, &activity, game, names),
         NetTab::DnsTools => dnstools::show(ui, &mut page.dns_tools, out),
         NetTab::Wifi => wifi::show(ui, &mut page.wifi, out),
+        NetTab::Usage => usage::show(ui, &mut page.usage),
     }
 }
 

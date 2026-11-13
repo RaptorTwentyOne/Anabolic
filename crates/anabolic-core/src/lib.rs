@@ -26,6 +26,7 @@ pub mod collector;
 pub mod coretrace;
 pub mod cpu;
 pub mod crashes;
+pub mod datausage;
 pub mod devices;
 pub mod disk;
 pub mod diskbench;
