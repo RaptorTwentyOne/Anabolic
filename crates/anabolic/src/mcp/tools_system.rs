@@ -291,12 +291,16 @@ pub struct DeviceArgs {
     pub include_hidden: Option<bool>,
     /// Only devices whose name, kind, maker or driver contains this text.
     pub filter: Option<String>,
+    /// Every USB device this PC has known, connected or not, the last
+    /// connected first (in the manner of USBDeview), with when each was
+    /// first and last connected and last removed.
+    pub usb_history: Option<bool>,
 }
 
 fn device_row(d: &anabolic_core::devices::Device) -> Value {
     use anabolic_core::devices::{DeviceState, problem_words};
     let mut row = json!({
-        "name": d.name,
+        "name": d.full_name(),
         "kind": d.class,
         "state": d.state.label(),
         "id": d.id,
@@ -557,12 +561,14 @@ impl AnabolicMcp {
         let problems = args.problems_only.unwrap_or(false);
         let gone = args.include_not_connected.unwrap_or(false);
         let hidden = args.include_hidden.unwrap_or(false);
+        let usb = args.usb_history.unwrap_or(false);
         let mut kept: Vec<&anabolic_core::devices::Device> = read
             .devices
             .iter()
-            .filter(|d| !problems || d.state.bad())
-            .filter(|d| gone || d.state != DeviceState::NotConnected || d.state.bad())
-            .filter(|d| hidden || !d.hidden || d.state.bad())
+            .filter(|d| !usb || anabolic_core::devices::plugged(d))
+            .filter(|d| usb || !problems || d.state.bad())
+            .filter(|d| usb || gone || d.state != DeviceState::NotConnected || d.state.bad())
+            .filter(|d| usb || hidden || !d.hidden || d.state.bad())
             .filter(|d| {
                 filter.as_deref().is_none_or(|f| {
                     [Some(&d.name), Some(&d.class), d.manufacturer.as_ref()]
@@ -574,8 +580,15 @@ impl AnabolicMcp {
                 })
             })
             .collect();
-        // The ones to look at first.
-        kept.sort_by_key(|d| !d.state.bad());
+        // The ones to look at first; USB by when last connected.
+        if usb {
+            kept = anabolic_core::devices::usb_history(&read.devices)
+                .into_iter()
+                .filter(|d| kept.iter().any(|k| std::ptr::eq(*k, *d)))
+                .collect();
+        } else {
+            kept.sort_by_key(|d| !d.state.bad());
+        }
         let bad = read.devices.iter().filter(|d| d.state.bad()).count();
         let mut out = json!({
             "devices": kept.iter().map(|d| device_row(d)).collect::<Vec<_>>(),

@@ -23,14 +23,14 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     DN_NO_SHOW_IN_DM,
 };
 use windows::Win32::Devices::Properties::{
-    DEVPKEY_Device_Class, DEVPKEY_Device_ClassGuid, DEVPKEY_Device_DeviceDesc,
-    DEVPKEY_Device_DriverDate, DEVPKEY_Device_DriverInfPath, DEVPKEY_Device_DriverProvider,
-    DEVPKEY_Device_DriverVersion, DEVPKEY_Device_FirstInstallDate, DEVPKEY_Device_FriendlyName,
-    DEVPKEY_Device_LastArrivalDate, DEVPKEY_Device_LastRemovalDate, DEVPKEY_Device_LocationInfo,
-    DEVPKEY_Device_Manufacturer, DEVPKEY_Device_Parent, DEVPKEY_Device_ProblemCode,
-    DEVPKEY_Device_ProblemStatus, DEVPKEY_Device_Service, DEVPKEY_DeviceClass_Name,
-    DEVPROP_TYPE_FILETIME, DEVPROP_TYPE_GUID, DEVPROP_TYPE_NTSTATUS, DEVPROP_TYPE_STRING,
-    DEVPROP_TYPE_STRING_LIST, DEVPROP_TYPE_UINT32, DEVPROPTYPE,
+    DEVPKEY_Device_BusReportedDeviceDesc, DEVPKEY_Device_Class, DEVPKEY_Device_ClassGuid,
+    DEVPKEY_Device_DeviceDesc, DEVPKEY_Device_DriverDate, DEVPKEY_Device_DriverInfPath,
+    DEVPKEY_Device_DriverProvider, DEVPKEY_Device_DriverVersion, DEVPKEY_Device_FirstInstallDate,
+    DEVPKEY_Device_FriendlyName, DEVPKEY_Device_LastArrivalDate, DEVPKEY_Device_LastRemovalDate,
+    DEVPKEY_Device_LocationInfo, DEVPKEY_Device_Manufacturer, DEVPKEY_Device_Parent,
+    DEVPKEY_Device_ProblemCode, DEVPKEY_Device_ProblemStatus, DEVPKEY_Device_Service,
+    DEVPKEY_DeviceClass_Name, DEVPROP_TYPE_FILETIME, DEVPROP_TYPE_GUID, DEVPROP_TYPE_NTSTATUS,
+    DEVPROP_TYPE_STRING, DEVPROP_TYPE_STRING_LIST, DEVPROP_TYPE_UINT32, DEVPROPTYPE,
 };
 use windows::Win32::Foundation::DEVPROPKEY;
 use windows::core::{GUID, PCWSTR};
@@ -310,6 +310,7 @@ fn device(id: &str, classes: &mut HashMap<GUID, Option<String>>) -> Option<Devic
         arrived: filetime(inst, &DEVPKEY_Device_LastArrivalDate),
         removed: filetime(inst, &DEVPKEY_Device_LastRemovalDate),
         parent: text(inst, &DEVPKEY_Device_Parent),
+        product: text(inst, &DEVPKEY_Device_BusReportedDeviceDesc),
     })
 }
 

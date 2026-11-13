@@ -30,6 +30,8 @@ pub enum Which {
     Connected,
     NotConnected,
     All,
+    /// Every USB device ever plugged in, as USBDeview shows them.
+    Usb,
 }
 
 #[derive(Default)]
@@ -273,6 +275,7 @@ pub fn show(ui: &mut Ui, view: &mut DevicesView, out: &mut Vec<UiCmd>) {
             (Which::Connected, "Connected"),
             (Which::NotConnected, "Not connected"),
             (Which::All, "All"),
+            (Which::Usb, "USB history"),
         ] {
             if ui.selectable_label(view.which == which, label).clicked() {
                 view.which = which;
@@ -290,17 +293,36 @@ pub fn show(ui: &mut Ui, view: &mut DevicesView, out: &mut Vec<UiCmd>) {
     });
     ui.add_space(4.0);
 
-    let shown: Vec<&Device> = devices
-        .devices
-        .iter()
-        .filter(|d| match view.which {
-            Which::Connected => d.state != DeviceState::NotConnected,
-            Which::NotConnected => d.state == DeviceState::NotConnected,
-            Which::All => true,
-        })
-        .filter(|d| view.hidden || !d.hidden || d.state.bad())
-        .filter(|d| matches(d, view.filter.trim()))
-        .collect();
+    let shown: Vec<&Device> = if view.which == Which::Usb {
+        anabolic_core::devices::usb_history(&devices.devices)
+            .into_iter()
+            .filter(|d| matches(d, view.filter.trim()))
+            .collect()
+    } else {
+        devices
+            .devices
+            .iter()
+            .filter(|d| match view.which {
+                Which::Connected => d.state != DeviceState::NotConnected,
+                Which::NotConnected => d.state == DeviceState::NotConnected,
+                _ => true,
+            })
+            .filter(|d| view.hidden || !d.hidden || d.state.bad())
+            .filter(|d| matches(d, view.filter.trim()))
+            .collect()
+    };
+    if view.which == Which::Usb {
+        ui.label(
+            RichText::new(if cfg!(windows) {
+                "Every USB device this PC has known, the last connected first, as USBDeview \
+                 shows them: Windows keeps a device's record after it is unplugged."
+            } else {
+                "The USB devices connected now: Linux keeps no record of the ones unplugged."
+            })
+            .small()
+            .color(theme::TEXT_WEAK),
+        );
+    }
 
     if let Some(d) = view
         .selected
@@ -313,7 +335,93 @@ pub fn show(ui: &mut Ui, view: &mut DevicesView, out: &mut Vec<UiCmd>) {
             view.selected = None;
         }
     }
-    egui::CentralPanel::no_frame().show(ui, |ui| table(ui, &shown, &mut view.selected));
+    let usb = view.which == Which::Usb;
+    egui::CentralPanel::no_frame().show(ui, |ui| {
+        if usb {
+            usb_table(ui, &shown, &mut view.selected)
+        } else {
+            table(ui, &shown, &mut view.selected)
+        }
+    });
+}
+
+const USB_TITLES: [&str; 6] = [
+    "Device",
+    "Kind",
+    "Now",
+    "First connected",
+    "Last connected",
+    "Last removed",
+];
+const USB_COLUMNS: [Spec; 6] = [
+    Spec::new(300.0).clip(),
+    Spec::new(130.0).clip(),
+    Spec::new(110.0).clip(),
+    Spec::new(130.0),
+    Spec::new(130.0),
+    Spec::new(130.0),
+];
+
+fn usb_table(ui: &mut Ui, shown: &[&Device], selected: &mut Option<String>) {
+    let mut pick = None;
+    Columns::load(ui.ctx(), "usb-history", &USB_COLUMNS).show(ui, |table, columns| {
+        table
+            .striped(true)
+            .resizable(true)
+            .auto_shrink([false, false])
+            .sense(Sense::click())
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .header(20.0, |mut h| {
+                columns.titles(&mut h, |ui, c| {
+                    widgets::column_header(ui, USB_TITLES[c], false)
+                });
+            })
+            .body(|body| {
+                columns.keep(body.widths());
+                body.rows(widgets::ROW, shown.len(), |mut row| {
+                    let d = shown[row.index()];
+                    row.set_selected(selected.as_deref() == Some(d.id.as_str()));
+                    let connected = d.state != DeviceState::NotConnected;
+                    for &c in columns.order() {
+                        row.col(|ui| {
+                            let at = |t: Option<i64>| t.map(when).unwrap_or_default();
+                            let text = match c {
+                                0 => RichText::new(d.full_name()).color(if connected {
+                                    theme::TEXT
+                                } else {
+                                    theme::TEXT_WEAK
+                                }),
+                                1 => RichText::new(&d.class).color(theme::TEXT_WEAK),
+                                2 => RichText::new(if connected {
+                                    "Connected"
+                                } else {
+                                    "Not connected"
+                                })
+                                .color(if connected {
+                                    theme::GOOD
+                                } else {
+                                    theme::TEXT_DIM
+                                }),
+                                3 => RichText::new(at(d.installed)).color(theme::TEXT_WEAK),
+                                4 => RichText::new(at(d.arrived)).color(theme::TEXT_WEAK),
+                                _ => RichText::new(at(d.removed)).color(theme::TEXT_WEAK),
+                            };
+                            ui.add(Label::new(text).truncate());
+                        });
+                    }
+                    if row.response().clicked() {
+                        pick = Some(d.id.clone());
+                    }
+                });
+            })
+    });
+    if let Some(id) = pick {
+        *selected = if selected.as_deref() == Some(id.as_str()) {
+            None
+        } else {
+            Some(id)
+        };
+    }
 }
 
 const TITLES: [(&str, bool); 6] = [

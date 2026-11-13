@@ -609,11 +609,12 @@ const COMMANDS: &[Command] = &[
     },
     Command {
         name: "devices",
-        usage: "[FILTER] [--problems] [--all]",
+        usage: "[FILTER] [--problems] [--all] [--usb]",
         about: "The devices and their drivers, the ones with a problem first",
         details: "  FILTER      only those whose name, kind, maker or driver contains it
   --problems  only the ones with a problem or no driver
-  --all       also hidden system devices and those not connected",
+  --all       also hidden system devices and those not connected
+  --usb       every USB device this PC has known, the last connected first",
         group: Group::Look,
         plan: |a| {
             let mut args = Map::new();
@@ -625,12 +626,25 @@ const COMMANDS: &[Command] = &[
                 args.insert("include_not_connected".into(), Value::Bool(true));
                 args.insert("include_hidden".into(), Value::Bool(true));
             }
+            let usb = a.flag("--usb");
+            if usb {
+                args.insert("usb_history".into(), Value::Bool(true));
+            }
             Ok(tool(
                 "get_devices",
                 args,
                 View::Table {
                     list: "devices",
-                    columns: &["name", "kind", "state", "driver.version=Driver", "maker"],
+                    columns: if usb {
+                        &[
+                            "name",
+                            "state",
+                            "last_connected=Last connected",
+                            "first_installed=First connected",
+                        ]
+                    } else {
+                        &["name", "kind", "state", "driver.version=Driver", "maker"]
+                    },
                 },
             ))
         },
@@ -888,6 +902,7 @@ const FLAGS: &[&str] = &[
     "--problems",
     "--look",
     "--route",
+    "--usb",
     "--help",
 ];
 

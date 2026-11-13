@@ -6,6 +6,10 @@ new since the one before.
 
 ## Unreleased
 
+- **USB history** (Performance > Devices), in the manner of USBDeview:
+  every USB device this PC has known, the last connected first, with
+  when each was first and last connected and last removed, connected
+  now or not. `anabolic-cli devices --usb`.
 - **Connection quality** (Network page, Quality), in the manner of
   PingPlotter and WinMTR: a ping a second to the router, the DNS server,
   the internet and the server a program talks to most (a game in front

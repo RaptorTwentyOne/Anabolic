@@ -42,6 +42,21 @@ pub struct Device {
     pub removed: Option<i64>,
     /// The device it hangs off.
     pub parent: Option<String>,
+    /// The name the device gives itself, where it differs from Windows'
+    /// own ("G502 HERO Gaming Mouse" for a "USB Input Device").
+    pub product: Option<String>,
+}
+
+impl Device {
+    /// Its own name and Windows' together, when they differ.
+    pub fn full_name(&self) -> String {
+        match &self.product {
+            Some(p) if !self.name.to_lowercase().contains(&p.to_lowercase()) => {
+                format!("{p} ({})", self.name)
+            }
+            _ => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -241,6 +256,38 @@ pub fn problem_words(code: u32) -> Option<(&'static str, &'static str)> {
     })
 }
 
+/// A USB device someone plugged in: not a hub, a controller or the
+/// composite parent of another.
+pub fn plugged(d: &Device) -> bool {
+    let id = d.id.to_uppercase();
+    let usb = id.starts_with(r"USB\")
+        || id.starts_with(r"USBSTOR\")
+        || (id.starts_with("/SYS/") && id.contains("/USB"));
+    let name = d.name.to_lowercase();
+    usb && !d.hidden
+        && ![
+            "hub",
+            "host controller",
+            "composite device",
+            "root hub",
+            "host router",
+        ]
+        .iter()
+        .any(|n| name.contains(n))
+}
+
+/// Every USB device this PC has known, in the manner of USBDeview: the
+/// last connected first, whether it is still there or not.
+pub fn usb_history(devices: &[Device]) -> Vec<&Device> {
+    // To the second: a device's interfaces arrive a moment apart.
+    let secs = |d: &Device| d.arrived.or(d.installed).unwrap_or(0) / 10_000_000;
+    let mut out: Vec<&Device> = devices.iter().filter(|d| plugged(d)).collect();
+    out.sort_by_cached_key(|d| (std::cmp::Reverse(secs(d)), d.full_name()));
+    // A device's interfaces (a mouse's buttons, its keys) under one name.
+    out.dedup_by(|a, b| a.full_name() == b.full_name() && secs(a) == secs(b));
+    out
+}
+
 /// The devices worth a look first: problems, then those with no driver.
 pub fn troubled(devices: &[Device]) -> Vec<&Device> {
     let mut out: Vec<&Device> = devices.iter().filter(|d| d.state.bad()).collect();
@@ -251,6 +298,24 @@ pub fn troubled(devices: &[Device]) -> Vec<&Device> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_what_was_plugged_in() {
+        let usb = |id: &str, name: &str, arrived: i64| Device {
+            id: id.into(),
+            name: name.into(),
+            arrived: Some(arrived),
+            ..Device::default()
+        };
+        let list = [
+            usb(r"USB\VID_046D&PID_C52B\5&1", "USB Receiver", 10),
+            usb(r"USB\ROOT_HUB30\4&1", "USB Root Hub (USB 3.0)", 30),
+            usb(r"USBSTOR\DISK&VEN_SANDISK\1", "SanDisk Cruzer", 20),
+            usb(r"PCI\VEN_10DE&DEV_2C02\4&1", "NVIDIA GeForce", 40),
+        ];
+        let names: Vec<&str> = usb_history(&list).iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["SanDisk Cruzer", "USB Receiver"]);
+    }
 
     #[test]
     fn puts_problems_first() {
