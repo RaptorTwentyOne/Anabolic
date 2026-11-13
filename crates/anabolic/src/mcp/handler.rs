@@ -378,6 +378,7 @@ mod tests {
                 "get_thread_stacks",
                 "get_timer_resolution",
                 "get_wait_chain",
+                "get_wifi",
                 "lift_limit",
                 "limit_process",
                 "list_autoruns",

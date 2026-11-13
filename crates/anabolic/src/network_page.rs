@@ -31,6 +31,7 @@ mod dev;
 pub(crate) use dev::{DevPort, dev_ports};
 mod dnstools;
 mod quality;
+mod wifi;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum NetTab {
@@ -47,6 +48,8 @@ pub enum NetTab {
     Quality,
     /// The DNS servers' speed, the DNS cache and the hosts file.
     DnsTools,
+    /// The Wi-Fi networks around and their channels.
+    Wifi,
 }
 
 /// A connection, by everything that tells two apart.
@@ -77,6 +80,7 @@ pub struct NetworkPage {
     add_name: String,
     pub quality: quality::QualityView,
     dns_tools: dnstools::DnsToolsView,
+    wifi: wifi::WifiView,
 }
 
 impl Default for NetworkPage {
@@ -99,6 +103,7 @@ impl Default for NetworkPage {
             add_name: String::new(),
             quality: Default::default(),
             dns_tools: Default::default(),
+            wifi: Default::default(),
         }
     }
 }
@@ -324,6 +329,7 @@ fn header(ui: &mut Ui, snap: &Snapshot, activity: &NetActivity, page: &mut Netwo
             (NetTab::Lookups, "DNS"),
             (NetTab::Quality, "Quality"),
             (NetTab::DnsTools, "Hosts and DNS"),
+            (NetTab::Wifi, "Wi-Fi"),
         ] {
             if ui
                 .add(egui::Button::selectable(page.tab == tab, label))
@@ -418,6 +424,7 @@ pub fn show(
         NetTab::Lookups => lookups_tab(ui, page, snap, out),
         NetTab::Quality => quality::show(ui, &mut page.quality, snap, &activity, game, names),
         NetTab::DnsTools => dnstools::show(ui, &mut page.dns_tools, out),
+        NetTab::Wifi => wifi::show(ui, &mut page.wifi, out),
     }
 }
 

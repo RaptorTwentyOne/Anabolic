@@ -82,6 +82,7 @@ pub mod topology;
 pub mod update;
 pub mod virustotal;
 pub mod waits;
+pub mod wifi;
 
 // Windows only: Event Tracing for Windows, the event logs, the native API,
 // NT paths, version resources and SIDs, and the registry.

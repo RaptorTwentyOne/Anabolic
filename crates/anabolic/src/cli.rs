@@ -435,6 +435,29 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "wifi",
+        usage: "",
+        about: "The Wi-Fi networks around, their channels and signal",
+        details: "",
+        group: Group::Look,
+        plan: |_| {
+            Ok(tool(
+                "get_wifi",
+                Map::new(),
+                View::Table {
+                    list: "access_points",
+                    columns: &[
+                        "network",
+                        "band",
+                        "channel",
+                        "signal_dbm=Signal (dBm)",
+                        "security",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
         name: "dns",
         usage: "",
         about: "Which DNS server answers fastest from here",

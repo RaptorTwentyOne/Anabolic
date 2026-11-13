@@ -40,6 +40,7 @@ features = [
     "Win32_NetworkManagement_Dns",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    "Win32_NetworkManagement_WiFi",
     "Win32_NetworkManagement_WindowsFirewall",
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",

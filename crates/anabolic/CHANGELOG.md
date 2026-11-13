@@ -6,6 +6,11 @@ new since the one before.
 
 ## Unreleased
 
+- **Wi-Fi** (Network page), in the manner of WifiInfoView and inSSIDer:
+  the network this PC is on with its channel, signal and link speed,
+  how crowded each channel is, the least crowded one to move the router
+  to, and every access point heard with its band, signal, security and
+  Wi-Fi generation. `anabolic-cli wifi`, and `get_wifi` for MCP clients.
 - **Driver packages** (Performance > Devices), in the manner of
   DriverStore Explorer: every third-party driver package Windows keeps,
   with its maker, kind, version, date, size and the devices that use

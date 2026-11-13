@@ -169,6 +169,60 @@ fn stats_json(s: &anabolic_core::netquality::Stats) -> Value {
 #[tool_router(router = network_tools, vis = "pub(super)")]
 impl AnabolicMcp {
     #[tool(
+        description = "The Wi-Fi networks around, in the manner of WifiInfoView and inSSIDer: \
+                       the one this PC is on (channel, band, signal, link speed, Wi-Fi \
+                       generation) and each access point heard (name, band, channel, signal in \
+                       dBm, security), with how crowded the channel in use is and the least \
+                       crowded one to move the router to. Use it when Wi-Fi is slow or drops. \
+                       It only listens. On Windows 11 the access points need the location \
+                       allowed for desktop apps.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_wifi(&self) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let w = match blocking(anabolic_core::wifi::read).await {
+            Ok(w) => w,
+            Err(e) => return fail(e),
+        };
+        let mut out = json!({
+            "adapter": w.adapter,
+            "advice": anabolic_core::wifi::advice(&w),
+            "access_points": w.points.iter().map(|p| json!({
+                "network": p.ssid,
+                "band": p.band.map(|b| b.label()),
+                "channel": p.channel,
+                "signal_dbm": p.dbm,
+                "quality_pct": p.quality,
+                "kind": p.generation,
+                "security": p.security,
+                "this_pc_is_on_it": p.connected,
+            })).collect::<Vec<_>>(),
+        });
+        if let Some(l) = &w.link {
+            out["connected"] = json!({
+                "network": l.ssid,
+                "band": l.band.map(|b| b.label()),
+                "channel": l.channel,
+                "quality_pct": l.quality,
+                "down_mbps": l.rx_mbps,
+                "up_mbps": l.tx_mbps,
+                "kind": l.generation,
+            });
+        }
+        if let Some(n) = &w.note {
+            out["note"] = json!(n);
+        }
+        ok(out)
+    }
+
+    #[tool(
         description = DNS_SPEED,
         annotations(
             read_only_hint = true,
