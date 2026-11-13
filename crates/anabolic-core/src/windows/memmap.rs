@@ -47,6 +47,10 @@ pub fn read(key: ProcKey) -> Result<MemoryMap, String> {
     let mut allocations: Vec<Allocation> = Vec::new();
     // The most committed bytes under one protection, per allocation.
     let mut protections: Vec<Vec<(u32, u64)>> = Vec::new();
+    // Whether an allocation's first page may be read: committed, readable,
+    // and no guard page (reading one would clear it, and a thread's stack
+    // grows through its guard page).
+    let mut readable: Vec<bool> = Vec::new();
     let mut addr: u64 = 0;
     loop {
         let mut mbi = MEMORY_BASIC_INFORMATION::default();
@@ -78,6 +82,7 @@ pub fn read(key: ProcKey) -> Result<MemoryMap, String> {
                     ..Allocation::default()
                 });
                 protections.push(Vec::new());
+                readable.push(false);
             }
         } else {
             let alloc_base = mbi.AllocationBase as u64;
@@ -98,6 +103,13 @@ pub fn read(key: ProcKey) -> Result<MemoryMap, String> {
                     ..Allocation::default()
                 });
                 protections.push(Vec::new());
+                let p = mbi.Protect.0;
+                readable.push(
+                    base == alloc_base
+                        && mbi.State == MEM_COMMIT
+                        && p & 0x101 == 0
+                        && p & 0xEE != 0,
+                );
             }
             let a = allocations.last_mut().unwrap();
             a.size += size;
@@ -118,7 +130,7 @@ pub fn read(key: ProcKey) -> Result<MemoryMap, String> {
         addr = next;
     }
 
-    for (a, prot) in allocations.iter_mut().zip(&protections) {
+    for ((a, prot), &readable) in allocations.iter_mut().zip(&protections).zip(&readable) {
         if a.kind == Kind::Unusable {
             continue;
         }
@@ -147,9 +159,7 @@ pub fn read(key: ProcKey) -> Result<MemoryMap, String> {
                     } else {
                         format!("Heap {}", i + 1)
                     };
-                } else if a.committed > 0
-                    && let Some(segment) = heap_segment(h, a.base)
-                {
+                } else if readable && let Some(segment) = heap_segment(h, a.base) {
                     // A heap's further segments: they carry its signature.
                     a.kind = Kind::Heap;
                     a.detail = segment.into();
@@ -372,32 +382,36 @@ mod tests {
         assert!(!executable(0x04));
     }
 
+    /// Another process, as in use: a child that waits a few seconds.
+    /// (Not the test process itself: the other tests run their threads in
+    /// it meanwhile.)
     #[test]
-    fn maps_this_process() {
-        let me = std::process::id();
+    fn maps_a_childs_memory() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 6 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
         let key = ProcKey {
-            pid: me,
+            pid: child.id(),
             create_time: 0,
         };
-        let map = read(key).unwrap();
+        let map = read(key);
+        let _ = child.kill();
+        let _ = child.wait();
+        let map = map.unwrap();
         let total = map.total();
         assert!(total.committed > 1 << 20, "{total:?}");
         assert!(total.working_set > 0);
-        let exe = std::env::current_exe().unwrap();
-        let exe_name = exe.file_name().unwrap().to_string_lossy().to_lowercase();
-        assert!(
+        let image = |name: &str| {
             map.allocations
                 .iter()
-                .any(|a| a.kind == Kind::Image && a.detail.to_lowercase().ends_with(&exe_name)),
-            "the test's own exe is mapped"
-        );
+                .any(|a| a.kind == Kind::Image && a.detail.to_lowercase().ends_with(name))
+        };
+        assert!(image("cmd.exe"), "its program is mapped");
+        assert!(image("ntdll.dll"));
         assert!(map.allocations.iter().any(|a| a.kind == Kind::Heap));
         assert!(map.allocations.iter().any(|a| a.kind == Kind::Stack));
-        assert!(
-            map.allocations
-                .iter()
-                .any(|a| a.kind == Kind::Image && a.detail.to_lowercase().ends_with("ntdll.dll"))
-        );
         println!(
             "{} allocations, {} committed, {} in RAM, in {:?}",
             map.allocations.len(),
