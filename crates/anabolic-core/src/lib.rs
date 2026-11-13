@@ -22,6 +22,8 @@ pub mod boot;
 pub mod collector;
 pub mod coretrace;
 pub mod cpu;
+pub mod crashes;
+pub mod devices;
 pub mod disk;
 pub mod disktrace;
 pub mod diskusage;
@@ -45,7 +47,9 @@ pub mod instance;
 pub mod latency;
 pub mod limits;
 pub mod lineage;
+pub mod memmap;
 pub mod memory;
+pub mod memtools;
 pub mod model;
 pub mod modules;
 pub mod net;
@@ -68,11 +72,14 @@ pub mod topology;
 pub mod update;
 pub mod waits;
 
-// Windows only: Event Tracing for Windows, the native API, and NT paths,
-// version resources and SIDs.
+// Windows only: Event Tracing for Windows, the event logs, the native API,
+// and NT paths, version resources and SIDs.
 #[cfg(windows)]
 #[path = "windows/etw.rs"]
 pub mod etw;
+#[cfg(windows)]
+#[path = "windows/evtlog.rs"]
+pub(crate) mod evtlog;
 #[cfg(windows)]
 #[path = "windows/firewall.rs"]
 pub mod firewall;

@@ -316,6 +316,22 @@ impl App {
                         match pending {
                             Pending::ResolveNames(key) => self.inspect_handles(key, true),
                             Pending::LoadModules(key) => self.load_modules(key),
+                            Pending::MemoryMap(key) => self.memory_view.start(key, ctx),
+                            Pending::Purge(what) => self
+                                .actions
+                                .run(anabolic_core::actions::Action::Purge(what)),
+                            Pending::KernelDump => {
+                                if let Some(dir) = crate::data_dir().map(|d| d.join("dumps")) {
+                                    self.toasts.info(
+                                        "Writing a live kernel dump: it takes a minute or two.",
+                                    );
+                                    self.actions
+                                        .run(anabolic_core::actions::Action::KernelDump {
+                                            dir,
+                                            user_pages: false,
+                                        });
+                                }
+                            }
                             Pending::WaitChain(key) => self.analyze_waits(key),
                             Pending::WaitChainFrom(key, tid) => {
                                 self.analyze_waits_from(key, Some(tid))

@@ -32,6 +32,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
                 "Run new task: a program, folder, document or web address",
             ),
             ("Ctrl+D", "Disk space: what fills a drive"),
+            ("Ctrl+E", "Crashes: what crashed, hung or was reset"),
             ("Ctrl+H", "Find which process holds a file or handle"),
             ("Space", "Pause or resume the view"),
             ("F5", "Refresh now"),

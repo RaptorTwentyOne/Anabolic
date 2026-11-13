@@ -48,6 +48,18 @@ pub struct InspectArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MemoryMapArgs {
+    /// The process ID.
+    pub pid: u32,
+    /// How many of its largest allocations (1 to 200, default 20).
+    #[serde(default)]
+    pub top: Option<u32>,
+    /// True only after the user agreed to the risk this tool described.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StackArgs {
     /// The process ID.
     pub pid: u32,
@@ -213,6 +225,82 @@ impl AnabolicMcp {
             "matching": matching,
             "shown": rows,
             "names_error": report.name_error,
+        }))
+    }
+
+    #[tool(
+        description = "A process' memory region by region, in the manner of VMMap: how much \
+                       of it is the program and its DLLs, mapped files, heaps, thread stacks and \
+                       private data, each with what is committed and what is in RAM now (and of \
+                       that what only this process uses), and its largest allocations with what \
+                       each is. Private memory that may be executed is marked (often a JIT, \
+                       sometimes injected code). OPENS THE PROCESS to read its address space: \
+                       the first call is refused with the risks; call again with force=true only \
+                       if the user agreed. Call it twice a while apart to see what grows: \
+                       get_leaks says which processes keep growing.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_memory_map(
+        &self,
+        Parameters(args): Parameters<MemoryMapArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (_, p) = match self
+            .opened(
+                McpKind::Inspect,
+                args.pid,
+                args.force,
+                "read its address space and working set",
+            )
+            .await
+        {
+            Ok(opened) => opened,
+            Err(refused) => return refused,
+        };
+        let key = p.key;
+        let map = match blocking(move || anabolic_core::memmap::read(key)).await {
+            Ok(m) => m,
+            Err(e) => return fail(format!("Could not read the memory of PID {}: {e}", p.pid)),
+        };
+        let top = args.top.unwrap_or(20).clamp(1, 200) as usize;
+        let total = map.total();
+        let kinds: Vec<Value> = anabolic_core::memmap::Kind::ALL
+            .iter()
+            .map(|&k| (k, map.totals(k)))
+            .filter(|(_, t)| t.count > 0)
+            .map(|(k, t)| {
+                json!({
+                    "kind": k.label(),
+                    "allocations": t.count,
+                    "reserved_bytes": t.size,
+                    "committed_bytes": t.committed,
+                    "in_ram_bytes": t.working_set,
+                    "in_ram_private_bytes": t.private_ws,
+                })
+            })
+            .collect();
+        let mut largest: Vec<&anabolic_core::memmap::Allocation> = map.allocations.iter().collect();
+        largest.sort_by_key(|a| std::cmp::Reverse(a.committed));
+        ok(json!({
+            "pid": p.pid,
+            "name": &*p.name,
+            "committed_bytes": total.committed,
+            "in_ram_bytes": total.working_set,
+            "in_ram_private_bytes": total.private_ws,
+            "by_kind": kinds,
+            "largest": largest.iter().take(top).map(|a| json!({
+                "address": format!("{:#x}", a.base),
+                "kind": a.kind.label(),
+                "what": a.detail,
+                "committed_bytes": a.committed,
+                "in_ram_bytes": a.working_set,
+                "protection": a.protection,
+            })).collect::<Vec<_>>(),
+            "read_in_ms": map.took.as_millis() as u64,
         }))
     }
 

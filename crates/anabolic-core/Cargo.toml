@@ -32,6 +32,7 @@ features = [
     "Wdk_Graphics_Direct3D",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Display",
+    "Win32_Devices_Properties",
     "Win32_Foundation",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dwm",

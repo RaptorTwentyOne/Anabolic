@@ -142,6 +142,8 @@ pub mod icon {
     pub const RUN: &str = "\u{E710}";
     /// A hard drive: the Disk space page.
     pub const SPACE: &str = "\u{EDA2}";
+    /// A bug: the Crashes page.
+    pub const CRASHES: &str = "\u{EBE8}";
 }
 
 /// The symbols in egui's own fonts (its emoji and icon fonts), which come
@@ -185,6 +187,7 @@ pub mod icon {
     pub const RUN: &str = "\u{2795}";
     /// A disk: the Disk space page.
     pub const SPACE: &str = "\u{1F4BE}";
+    pub const CRASHES: &str = "\u{1F41B}";
 }
 
 /// Heat behind busy cells: quiet below the top of the range, warm only for

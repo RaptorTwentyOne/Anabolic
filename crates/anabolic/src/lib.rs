@@ -12,10 +12,12 @@ mod activity_page;
 mod app;
 mod bench;
 mod cli;
+mod crashes_page;
 #[cfg(target_os = "linux")]
 #[path = "linux/desktop.rs"]
 mod desktop;
 mod details;
+mod devices_view;
 mod devports;
 mod dialogs;
 mod disk_health;

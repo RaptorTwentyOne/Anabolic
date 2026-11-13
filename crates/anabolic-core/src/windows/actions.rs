@@ -143,7 +143,7 @@ pub fn perform(action: Action) -> Option<Outcome> {
         }
         Action::Lift(group) => return Some(Outcome::Limits(crate::limits::lift(&group))),
         // Run on their own thread by the runner.
-        Action::Dump { .. } => return None,
+        Action::Dump { .. } | Action::KernelDump { .. } | Action::Purge(_) => return None,
         Action::Suspend(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtSuspendProcess)
             .map(|_| format!("Suspended {}", t.label())),
         Action::Resume(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtResumeProcess)

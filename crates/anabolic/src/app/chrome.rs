@@ -97,6 +97,9 @@ impl App {
             if i.consume_key(Modifiers::COMMAND, Key::D) {
                 self.settings.tab = Tab::Space;
             }
+            if i.consume_key(Modifiers::COMMAND, Key::E) {
+                self.settings.tab = Tab::Crashes;
+            }
             if i.consume_key(Modifiers::COMMAND, Key::Comma) {
                 self.settings.tab = Tab::Settings;
             }
@@ -235,6 +238,7 @@ impl App {
             (Tab::Services, theme::icon::SERVICES, "Services", "Ctrl+5"),
             (Tab::Startup, theme::icon::STARTUP, "Startup", "Ctrl+6"),
             (Tab::Stutters, theme::icon::STUTTERS, "Stutters", "Ctrl+7"),
+            (Tab::Crashes, theme::icon::CRASHES, "Crashes", "Ctrl+E"),
             (Tab::Network, theme::icon::NETWORK, "Network", "Ctrl+8"),
             (Tab::Activity, theme::icon::RECORD, "Activity", "Ctrl+9"),
             (Tab::Space, theme::icon::SPACE, "Disk space", "Ctrl+D"),

@@ -15,7 +15,7 @@ use crate::net::NetStats;
 use crate::nettrace::Proto;
 
 /// Identifies one process instance. PIDs get reused; (pid, create time) does not.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Default)]
 pub struct ProcKey {
     pub pid: u32,
     pub create_time: i64,

@@ -203,6 +203,11 @@ fn grid(out: &mut String, heads: &[String], cells: &[Vec<String>], numeric: &[bo
 
 /// A table of `columns` ("key" or "key=Heading") from `items`. Rates and
 /// shares that are nil are left blank, so what is busy stands out.
+/// A value in an item, by its key; `driver.version` reaches into an object.
+fn field<'a>(item: &'a Value, key: &str) -> Option<&'a Value> {
+    key.split('.').try_fold(item, |v, k| v.get(k))
+}
+
 fn table(out: &mut String, items: &[Value], columns: &[&str]) {
     let columns: Vec<(&str, String)> = columns
         .iter()
@@ -210,14 +215,14 @@ fn table(out: &mut String, items: &[Value], columns: &[&str]) {
             Some((key, head)) => (key, head.to_string()),
             None => (*c, title(c)),
         })
-        .filter(|(key, _)| items.iter().any(|i| i.get(*key).is_some()))
+        .filter(|(key, _)| items.iter().any(|i| field(i, key).is_some()))
         .collect();
     let cells: Vec<Vec<String>> = items
         .iter()
         .map(|item| {
             columns
                 .iter()
-                .map(|(key, _)| match item.get(*key) {
+                .map(|(key, _)| match field(item, key) {
                     Some(v) if is_nil_rate(key, v) => String::new(),
                     Some(v) => cut(&scalar(key, v)),
                     None => String::new(),
@@ -230,7 +235,7 @@ fn table(out: &mut String, items: &[Value], columns: &[&str]) {
         .map(|(key, _)| {
             items
                 .iter()
-                .filter_map(|i| i.get(*key))
+                .filter_map(|i| field(i, key))
                 .all(|v| v.is_number() || v.is_null())
         })
         .collect();

@@ -263,6 +263,91 @@ fn network_json(snap: &Snapshot) -> Value {
     })
 }
 
+const DEVICES: &str = if cfg!(windows) {
+    "Lists the machine's devices as Device Manager knows them, the ones with a problem first: \
+each device's name, its kind (Device Manager's class: Display adapters, Disk drives, …), its \
+maker, where it sits, its state (working, a problem with Device Manager's code and the problem \
+in words with what usually helps, turned off, no driver, or known but not connected) and the \
+driver it runs on (provider, version, date, INF file, service). By default the connected ones \
+Device Manager shows; ask for the hidden system devices or the ones no longer connected. Use it \
+when a device stopped working, a driver is suspect (get_crashes names the driver of a reset or a \
+stop error) or to see which driver version is installed. It only reads."
+} else {
+    "Lists the machine's PCI and USB devices from sysfs, the ones with a problem first: each \
+device's name (from pci.ids where the system has it), its kind, its maker, where it sits, and \
+the kernel driver bound to it with its module's version; a device of a kind that needs a \
+driver and has none is flagged. Use it when a device does not work or to see which driver runs \
+it. It only reads."
+};
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct DeviceArgs {
+    /// Only the devices with a problem or no driver.
+    pub problems_only: Option<bool>,
+    /// Also the devices known but not connected now.
+    pub include_not_connected: Option<bool>,
+    /// Also the system devices Device Manager hides.
+    pub include_hidden: Option<bool>,
+    /// Only devices whose name, kind, maker or driver contains this text.
+    pub filter: Option<String>,
+}
+
+fn device_row(d: &anabolic_core::devices::Device) -> Value {
+    use anabolic_core::devices::{DeviceState, problem_words};
+    let mut row = json!({
+        "name": d.name,
+        "kind": d.class,
+        "state": d.state.label(),
+        "id": d.id,
+    });
+    if let DeviceState::Problem(code) = d.state {
+        row["problem_code"] = json!(code);
+        if let Some((what, helps)) = problem_words(code) {
+            row["problem"] = json!(what);
+            row["what_usually_helps"] = json!(helps);
+        }
+    }
+    if let Some(code) = d.status_code {
+        row["driver_status"] = json!(format!("0x{code:08X}"));
+    }
+    for (key, value) in [("maker", &d.manufacturer), ("where", &d.location)] {
+        if let Some(v) = value {
+            row[key] = json!(v);
+        }
+    }
+    if let Some(dr) = &d.driver {
+        let mut driver = serde_json::Map::new();
+        for (key, value) in [
+            ("provider", &dr.provider),
+            ("version", &dr.version),
+            ("inf", &dr.inf),
+            ("service", &dr.service),
+        ] {
+            if let Some(v) = value {
+                driver.insert(key.into(), json!(v));
+            }
+        }
+        if let Some(t) = dr.date {
+            driver.insert(
+                "date".into(),
+                json!(anabolic_core::sysinfo::local_time(t).map(|t| t[..10].to_string())),
+            );
+        }
+        row["driver"] = Value::Object(driver);
+    }
+    for (key, value) in [
+        ("first_installed", d.installed),
+        ("last_connected", d.arrived),
+        ("last_removed", d.removed),
+    ] {
+        if let Some(t) = value {
+            row[key] = json!(anabolic_core::sysinfo::local_time(t));
+        }
+    }
+    row
+}
+
 /// Parses HH:MM into seconds since midnight.
 fn time_of_day(text: &str) -> Option<u32> {
     let (h, m) = text.trim().split_once(':')?;
@@ -272,6 +357,68 @@ fn time_of_day(text: &str) -> Option<u32> {
 
 #[tool_router(router = system_tools, vis = "pub(super)")]
 impl AnabolicMcp {
+    #[tool(
+        description = DEVICES,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_devices(
+        &self,
+        Parameters(args): Parameters<DeviceArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use anabolic_core::devices::DeviceState;
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let read = match blocking(anabolic_core::devices::read).await {
+            Ok(read) => read,
+            Err(e) => return fail(format!("The devices could not be read: {e}")),
+        };
+        let filter = args
+            .filter
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(str::to_lowercase);
+        let problems = args.problems_only.unwrap_or(false);
+        let gone = args.include_not_connected.unwrap_or(false);
+        let hidden = args.include_hidden.unwrap_or(false);
+        let mut kept: Vec<&anabolic_core::devices::Device> = read
+            .devices
+            .iter()
+            .filter(|d| !problems || d.state.bad())
+            .filter(|d| gone || d.state != DeviceState::NotConnected || d.state.bad())
+            .filter(|d| hidden || !d.hidden || d.state.bad())
+            .filter(|d| {
+                filter.as_deref().is_none_or(|f| {
+                    [Some(&d.name), Some(&d.class), d.manufacturer.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .chain(d.driver.as_ref().and_then(|x| x.provider.as_ref()))
+                        .chain(d.driver.as_ref().and_then(|x| x.service.as_ref()))
+                        .any(|s| s.to_lowercase().contains(f))
+                })
+            })
+            .collect();
+        // The ones to look at first.
+        kept.sort_by_key(|d| !d.state.bad());
+        let bad = read.devices.iter().filter(|d| d.state.bad()).count();
+        let mut out = json!({
+            "devices": kept.iter().map(|d| device_row(d)).collect::<Vec<_>>(),
+            "shown": kept.len(),
+            "known": read.devices.len(),
+            "with_a_problem": bad,
+        });
+        if !read.notes.is_empty() {
+            out["notes"] = json!(read.notes);
+        }
+        ok(out)
+    }
+
     /// Turns a trace on (through the UI, which owns them) and waits for its
     /// data; the latest snapshot after.
     pub(super) async fn traced(

@@ -495,6 +495,87 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "memmap",
+        usage: "PID [--top N] [--force]",
+        about: "A process' memory by kind, and its largest allocations",
+        details: "  --top N  how many of its largest allocations (default 20)\n  --force  go ahead after it said what opening the process means",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.pid_word(0, "pid", &mut args)?;
+            a.number("--top", "top", &mut args)?;
+            if a.flag("--force") {
+                args.insert("force".into(), Value::Bool(true));
+            }
+            Ok(tool(
+                "get_memory_map",
+                args,
+                View::Table {
+                    list: "largest",
+                    columns: &[
+                        "address",
+                        "kind",
+                        "committed_bytes=Committed",
+                        "in_ram_bytes=In RAM",
+                        "protection",
+                        "what",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
+        name: "devices",
+        usage: "[FILTER] [--problems] [--all]",
+        about: "The devices and their drivers, the ones with a problem first",
+        details: "  FILTER      only those whose name, kind, maker or driver contains it
+  --problems  only the ones with a problem or no driver
+  --all       also hidden system devices and those not connected",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.word(0, "filter", &mut args);
+            if a.flag("--problems") {
+                args.insert("problems_only".into(), Value::Bool(true));
+            }
+            if a.flag("--all") {
+                args.insert("include_not_connected".into(), Value::Bool(true));
+                args.insert("include_hidden".into(), Value::Bool(true));
+            }
+            Ok(tool(
+                "get_devices",
+                args,
+                View::Table {
+                    list: "devices",
+                    columns: &["name", "kind", "state", "driver.version=Driver", "maker"],
+                },
+            ))
+        },
+    },
+    Command {
+        name: "crashes",
+        usage: "[--program NAME] [--limit N] [--serious]",
+        about: "What crashed, hung or was reset, and why",
+        details: "  --program NAME  only this program's (part of its name)\n  --limit N       how many, newest first (default 30)\n  --serious       only what went away: no stalls or leak warnings",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.number("--limit", "limit", &mut args)?;
+            a.text("--program", "program", &mut args);
+            if a.flag("--serious") {
+                args.insert("serious_only".into(), Value::Bool(true));
+            }
+            Ok(tool(
+                "get_crashes",
+                args,
+                View::Table {
+                    list: "crashes",
+                    columns: &["when", "program", "what", "cause", "module"],
+                },
+            ))
+        },
+    },
+    Command {
         name: "profile",
         usage: "PID [--seconds N]",
         about: "Where a process spends its processor time",
@@ -645,6 +726,7 @@ const VALUED: &[&str] = &[
     "--allow",
     "--key",
     "--seconds",
+    "--program",
 ];
 /// The options that stand alone.
 const FLAGS: &[&str] = &[
@@ -657,6 +739,8 @@ const FLAGS: &[&str] = &[
     "--files",
     "--types",
     "--rescan",
+    "--serious",
+    "--problems",
     "--help",
 ];
 
@@ -865,6 +949,8 @@ fn refusal(text: &str, raw: bool) -> String {
             ("list_connections", "connections"),
             ("list_startup_items", "startup"),
             ("get_boot_history", "boots"),
+            ("get_crashes", "crashes"),
+            ("get_devices", "devices"),
             ("get_system_overview", "overview"),
         ] {
             text = text.replace(tool, &format!("`{PROGRAM} {command}`"));

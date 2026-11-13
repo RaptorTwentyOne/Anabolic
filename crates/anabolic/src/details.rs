@@ -31,11 +31,13 @@ use crate::widgets;
 
 mod end;
 pub(crate) mod handles;
+mod memory;
 mod network;
 mod profile;
 mod waits;
 use end::*;
 use handles::*;
+pub use memory::MemoryView;
 use network::*;
 pub use profile::ProfileView;
 use waits::*;
@@ -51,6 +53,8 @@ pub enum DetailTab {
     Handles,
     /// Where it spends its processor time (Windows).
     Profile,
+    /// What its memory is, region by region.
+    Memory,
 }
 
 /// Wait chains; reports arrive from the inspector.
@@ -267,6 +271,7 @@ pub fn show(
     waits: &WaitView,
     ends: &EndView,
     profiles: &mut ProfileView,
+    memory: &mut MemoryView,
     focus_thread: &mut Option<(u32, bool)>,
     services: &[(Arc<str>, Arc<str>)],
     growth: &anabolic_core::growth::Growth,
@@ -327,6 +332,10 @@ pub fn show(
             .map_or(0, |s| s.connections.len());
         ui.selectable_value(tab, DetailTab::Network, format!("Network ({net})"));
         ui.selectable_value(tab, DetailTab::Modules, "Modules");
+        if !p.is_pseudo() {
+            ui.selectable_value(tab, DetailTab::Memory, "Memory")
+                .on_hover_text("What its memory is, region by region, and what grows");
+        }
         let waits_label: egui::WidgetText = if p.not_responding {
             let mut job = widgets::icon_text(ui, theme::icon::WARNING, "Wait chain");
             if let Some(section) = job.sections.first_mut() {
@@ -422,6 +431,7 @@ pub fn show(
             p.state != ProcState::Exited && !p.is_pseudo(),
         ),
         DetailTab::Modules => modules_tab(ui, p, modules, panes, &mut tables.modules, out),
+        DetailTab::Memory => memory::tab(ui, memory, p, out),
         DetailTab::Handles => handles_tab(ui, p, snap, handles, panes, out),
         DetailTab::Network => {
             let path = details.get(&key).and_then(|d| d.path.as_deref());

@@ -80,6 +80,10 @@ pub struct Inputs<'a> {
     pub exit_watched: &'a [ProcKey],
     /// The drives' health, as last read.
     pub health: &'a [anabolic_core::health::Health],
+    /// The crashes, as last read.
+    pub crashes: Option<&'a anabolic_core::crashes::Crashes>,
+    /// The devices, as last read.
+    pub devices: Option<&'a anabolic_core::devices::Devices>,
 }
 
 /// One executable's live processes, summed.
@@ -704,6 +708,47 @@ fn attention(input: &Inputs<'_>, apps: &[App]) -> Vec<Item> {
                 "Show",
                 UiCmd::ShowPerf(PerfView::PhysicalDisk(h.number)),
             )],
+        });
+    }
+    // A device with a problem: Device Manager's yellow mark.
+    if let Some(devices) = input.devices {
+        let bad: Vec<_> = devices
+            .devices
+            .iter()
+            .filter(|d| matches!(d.state, anabolic_core::devices::DeviceState::Problem(_)))
+            .collect();
+        if let Some(first) = bad.first() {
+            let code = match first.state {
+                anabolic_core::devices::DeviceState::Problem(c) => c,
+                _ => 0,
+            };
+            let words = anabolic_core::devices::problem_words(code)
+                .map_or_else(|| format!("Code {code}."), |(w, _)| w.to_string());
+            items.push(Item {
+                severe: false,
+                text: if bad.len() == 1 {
+                    format!("{} has a problem", first.name)
+                } else {
+                    format!("{} devices have a problem", bad.len())
+                },
+                detail: Some(if bad.len() == 1 {
+                    words
+                } else {
+                    format!("{}: {words}", first.name)
+                }),
+                actions: vec![act("Show", UiCmd::ShowDevice(first.id.clone()))],
+            });
+        }
+    }
+    // A program that keeps crashing.
+    if let Some((program, n)) = input.crashes.and_then(crate::crashes_page::keeps_crashing) {
+        items.push(Item {
+            severe: false,
+            text: format!("{program} went away {n} times today"),
+            detail: Some(
+                "It crashed, hung or had to be closed again and again in the last day.".into(),
+            ),
+            actions: vec![act("Why?", UiCmd::ShowCrashes(program))],
         });
     }
     for (d, v) in s

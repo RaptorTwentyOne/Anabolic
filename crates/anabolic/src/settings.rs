@@ -262,6 +262,8 @@ pub enum Tab {
     Services,
     Startup,
     Stutters,
+    /// What crashed, hung or was reset.
+    Crashes,
     Network,
     Activity,
     /// What fills the drives.

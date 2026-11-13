@@ -57,6 +57,9 @@ const INTERVALS: [(u64, &str); 6] = [
 enum Pending {
     ResolveNames(ProcKey),
     LoadModules(ProcKey),
+    MemoryMap(ProcKey),
+    Purge(anabolic_core::memtools::Purge),
+    KernelDump,
     WaitChain(ProcKey),
     CloseHandle(FoundHandle),
     CloseHandles {
@@ -172,8 +175,13 @@ pub struct App {
     space: crate::space_page::SpacePage,
     /// The drives' health, read now and then in the background.
     disk_health: crate::disk_health::DiskHealth,
+    /// The Crashes page, read now and then for the Overview too.
+    crashes: crate::crashes_page::CrashesView,
+    /// The Performance page's devices, read now and then for the Overview.
+    devices: crate::devices_view::DevicesView,
     /// The process details' profiler.
     profile_view: crate::details::ProfileView,
+    memory_view: crate::details::MemoryView,
     startup_watch: anabolic_core::startup::StartupWatch,
     startup_events: Receiver<StartupEvent>,
     /// When the startup entries were last read.
@@ -426,6 +434,9 @@ impl App {
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
         }
+        if args.iter().any(|a| a == "--crashes") {
+            settings.tab = Tab::Crashes;
+        }
         if args.iter().any(|a| a == "--activity") {
             settings.tab = Tab::Activity;
         }
@@ -511,6 +522,7 @@ impl App {
                 Some("cpuinfo") => perf_view = PerfView::CpuInfo,
                 Some("meminfo") => perf_view = PerfView::MemoryInfo,
                 Some("displays") => perf_view = PerfView::Displays,
+                Some("devices") => perf_view = PerfView::Devices,
                 Some("sensors") => perf_view = PerfView::Sensors,
                 Some(v) if v.starts_with("disk") => {
                     if let Ok(n) = v[4..].parse() {
@@ -569,6 +581,7 @@ impl App {
             Some("modules") => DetailTab::Modules,
             Some("network") => DetailTab::Network,
             Some("profile") => DetailTab::Profile,
+            Some("memory") => DetailTab::Memory,
             _ if args.iter().any(|a| a == "--handles") => DetailTab::Handles,
             _ => DetailTab::default(),
         };
@@ -702,7 +715,10 @@ impl App {
             startup,
             space,
             disk_health: Default::default(),
+            crashes: Default::default(),
+            devices: Default::default(),
             profile_view: Default::default(),
+            memory_view: Default::default(),
             startup_watch,
             startup_events,
             startup_at: None,
@@ -949,6 +965,18 @@ impl App {
                         ),
                         "Show in folder",
                         UiCmd::OpenLocation(report.path.to_string_lossy().into_owned()),
+                    );
+                }
+                Outcome::KernelDumped(dump) => {
+                    self.toasts.info_with(
+                        format!(
+                            "Wrote a live kernel dump ({}) in {}: {}",
+                            fmt::bytes(dump.bytes),
+                            fmt::millis(dump.took),
+                            dump.path.display()
+                        ),
+                        "Show in folder",
+                        UiCmd::OpenLocation(dump.path.to_string_lossy().into_owned()),
                     );
                 }
                 Outcome::Affinity {
@@ -1341,6 +1369,10 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
         self.disk_health.tick(ui.ctx());
+        self.crashes.tick(ui.ctx());
+        let devices_shown =
+            self.settings.tab == Tab::Performance && self.perf_view == PerfView::Devices;
+        self.devices.tick(ui.ctx(), devices_shown);
         crate::bench::frame(ui.ctx(), frame.info().cpu_usage, self.ui_time);
         let page = match self.settings.tab {
             Tab::Overview => "Overview".to_string(),
@@ -1351,6 +1383,7 @@ impl eframe::App for App {
             Tab::Services => "Services".to_string(),
             Tab::Startup => "Startup".to_string(),
             Tab::Stutters => "Stutters".to_string(),
+            Tab::Crashes => "Crashes".to_string(),
             Tab::Network => "Network".to_string(),
             Tab::Activity => "Activity".to_string(),
             Tab::Space => "Disk space".to_string(),
@@ -1511,6 +1544,8 @@ impl eframe::App for App {
                         secrets: self.settings.dump_sign_in_secrets,
                         exit_watched: &self.exit_watch.keys(),
                         health: self.disk_health.all(),
+                        crashes: self.crashes.crashes().map(|c| c.as_ref()),
+                        devices: self.devices.devices().map(|d| d.as_ref()),
                     };
                     crate::overview_page::show(
                         ui,
@@ -1562,6 +1597,7 @@ impl eframe::App for App {
                                     &self.wait_view,
                                     &self.end_view,
                                     &mut self.profile_view,
+                                    &mut self.memory_view,
                                     &mut self.focus_thread,
                                     &self.services.hosted(key.pid),
                                     &self.growth,
@@ -1603,6 +1639,7 @@ impl eframe::App for App {
                         &self.zombie_view,
                         self.displays.as_deref().map(Vec::as_slice),
                         &mut self.disk_health,
+                        &mut self.devices,
                         &mut cmds,
                     );
                 });
@@ -1645,6 +1682,11 @@ impl eframe::App for App {
                         self.elevated,
                         &mut cmds,
                     );
+                });
+            }
+            Tab::Crashes => {
+                egui::CentralPanel::default_margins().show(ui, |ui| {
+                    crate::crashes_page::show(ui, &mut self.crashes, &mut cmds);
                 });
             }
             Tab::Stutters => {

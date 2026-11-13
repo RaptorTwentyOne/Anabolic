@@ -157,6 +157,15 @@ pub enum Action {
         /// order): only then, so the dump sees it as it was.
         then_end: bool,
     },
+    /// Give memory back: empty a memory list, the working sets or the file
+    /// cache (see `memtools`).
+    Purge(crate::memtools::Purge),
+    /// Write a dump of the running kernel into the folder, on a thread of
+    /// its own; with `user_pages`, the processes' memory too.
+    KernelDump {
+        dir: std::path::PathBuf,
+        user_pages: bool,
+    },
     /// Start something the way the Run box does: a program with its
     /// arguments, a document, a folder or a web address. `elevated` asks
     /// for administrator rights; without it the program runs without them,
@@ -200,6 +209,8 @@ pub enum Outcome {
         kind: crate::dump::DumpKind,
         report: crate::dump::DumpReport,
     },
+    /// A live kernel dump was written.
+    KernelDumped(crate::memtools::KernelDump),
     /// Game mode switched the power plan: the one it replaced (id, name),
     /// None when a fast plan was already on.
     PowerForGame(Option<(String, String)>),
@@ -272,6 +283,33 @@ impl ActionRunner {
                                     }
                                     notify();
                                 });
+                        continue;
+                    }
+                    if let Action::KernelDump { dir, user_pages } = action {
+                        let (out_tx, notify) = (out_tx.clone(), notify.clone());
+                        let _ = thread::Builder::new()
+                            .name("anabolic-kernel-dump".into())
+                            .spawn(move || {
+                                let outcome = match crate::memtools::kernel_dump(&dir, user_pages) {
+                                    Ok(dump) => Outcome::KernelDumped(dump),
+                                    Err(e) => Outcome::Error(e),
+                                };
+                                let _ = out_tx.send(outcome);
+                                notify();
+                            });
+                        continue;
+                    }
+                    if let Action::Purge(what) = action {
+                        let outcome = match crate::memtools::purge(what) {
+                            Ok(()) => {
+                                Outcome::Info(format!("Done: {}", what.label().to_lowercase()))
+                            }
+                            Err(e) => Outcome::Error(format!("{}: {e}", what.label())),
+                        };
+                        if out_tx.send(outcome).is_err() {
+                            return;
+                        }
+                        notify();
                         continue;
                     }
                     // The Open dialog waits on the user: off this thread,

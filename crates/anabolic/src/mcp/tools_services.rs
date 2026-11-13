@@ -84,6 +84,79 @@ and what it found slower than usual; on Linux, this boot's timings and slowest u
 systemd. Use it when a PC starts slowly, restarted by itself or keeps crashing; \
 list_startup_items lists what starts at sign-in. It only reads.";
 
+const CRASHES: &str = if cfg!(windows) {
+    "Lists what crashed, from Windows' own records (Windows Error Reporting, the Application \
+and System logs, its report folders): programs that crashed (the module the fault was in, the \
+exception in words, how long the process had run, its .NET exception and stack, the dump Windows \
+kept), programs that hung and were closed or stopped responding a while, programs Windows' \
+resource exhaustion detector thought were leaking memory, display drivers it reset, and stop \
+errors (blue screens). Newest first, with a summary by program: how many times, the latest and \
+the module most of its crashes were in. Filter by program. Use it when a program keeps closing, \
+a game crashes to the desktop, the screen goes black for a moment or the PC restarted with a \
+blue screen; get_boot_history says how each session ended. It only reads."
+} else {
+    "Lists what crashed, from systemd-coredump: every program that stopped on a signal that \
+leaves a core (a segmentation fault, an abort), newest first, with the signal in words and \
+whether its core is still kept, and a summary by program. Filter by program. Use it when a \
+program keeps closing; get_boot_history says how each session ended. It only reads."
+};
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct CrashArgs {
+    /// How many, newest first (1 to 200, default 30).
+    pub limit: Option<u32>,
+    /// Only this program's: part of its name, any case (say "chrome").
+    pub program: Option<String>,
+    /// Only what went away: crashes, hangs that ended a program, driver
+    /// resets and stop errors; not stalls or leak warnings.
+    pub serious_only: Option<bool>,
+}
+
+fn crash_row(c: &anabolic_core::crashes::Crash) -> Value {
+    let mut row = json!({
+        "when": anabolic_core::sysinfo::local_time(c.at),
+        "program": c.program,
+        "what": c.kind.label(),
+    });
+    let texts = [
+        ("path", &c.path),
+        ("version", &c.version),
+        ("package", &c.package),
+        ("module", &c.module),
+        ("module_path", &c.module_path),
+        ("module_version", &c.module_version),
+        ("detail", &c.detail),
+        ("dump", &c.dump),
+        ("report", &c.report),
+    ];
+    for (key, value) in texts {
+        if let Some(v) = value {
+            row[key] = json!(v);
+        }
+    }
+    if let Some(cause) = anabolic_core::crashes::cause(c) {
+        row["cause"] = json!(cause);
+    }
+    if let Some(code) = c.code {
+        row["code"] = json!(if cfg!(windows) {
+            format!("0x{code:08X}")
+        } else {
+            code.to_string()
+        });
+    }
+    if let Some(o) = c.offset {
+        row["offset"] = json!(format!("0x{o:X}"));
+    }
+    if let Some(pid) = c.pid {
+        row["pid"] = json!(pid);
+    }
+    if let Some(ms) = c.ran_ms {
+        row["ran_seconds"] = json!(seconds(ms));
+    }
+    row
+}
+
 /// The system's part of a boot, by its name on each system.
 const READY_KEY: &str = if cfg!(windows) {
     "to_sign_in_seconds"
@@ -409,6 +482,75 @@ impl AnabolicMcp {
         });
         if let Some(note) = &read.note {
             out["note"] = json!(note);
+        }
+        ok(out)
+    }
+
+    #[tool(
+        description = CRASHES,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_crashes(
+        &self,
+        Parameters(args): Parameters<CrashArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let limit = args.limit.unwrap_or(30).clamp(1, 200) as usize;
+        let read = match blocking(anabolic_core::crashes::read).await {
+            Ok(read) => read,
+            Err(e) => return fail(format!("The crashes could not be read: {e}")),
+        };
+        let wanted = args
+            .program
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_lowercase);
+        let serious = args.serious_only.unwrap_or(false);
+        let kept: Vec<&anabolic_core::crashes::Crash> = read
+            .crashes
+            .iter()
+            .filter(|c| !serious || c.kind.serious())
+            .filter(|c| {
+                wanted
+                    .as_deref()
+                    .is_none_or(|w| c.program.to_lowercase().contains(w))
+            })
+            .collect();
+        let owned: Vec<anabolic_core::crashes::Crash> = kept.iter().map(|c| (*c).clone()).collect();
+        let by_program: Vec<Value> = anabolic_core::crashes::groups(&owned)
+            .iter()
+            .take(20)
+            .map(|g| {
+                let mut row = json!({
+                    "program": g.program,
+                    "times": g.items.len(),
+                    "went_away": g.serious,
+                    "latest": anabolic_core::sysinfo::local_time(g.latest),
+                });
+                if let Some((module, n)) = &g.module {
+                    row["most_often_in"] = json!({ "module": module, "times": n });
+                }
+                row
+            })
+            .collect();
+        let mut out = json!({
+            "crashes": kept.iter().take(limit).map(|c| crash_row(c)).collect::<Vec<_>>(),
+            "total": kept.len(),
+            "by_program": by_program,
+        });
+        if let Some(since) = read.since {
+            out["records_reach_back_to"] = json!(anabolic_core::sysinfo::local_time(since));
+        }
+        if !read.notes.is_empty() {
+            out["notes"] = json!(read.notes);
         }
         ok(out)
     }

@@ -384,6 +384,17 @@ unsafe extern "system" {
     pub fn NtSuspendProcess(process: HANDLE) -> NTSTATUS;
     pub fn NtResumeProcess(process: HANDLE) -> NTSTATUS;
     pub fn RtlNtStatusToDosError(status: NTSTATUS) -> u32;
+
+    pub fn NtSetSystemInformation(class: u32, info: *const c_void, length: u32) -> NTSTATUS;
+
+    pub fn NtSystemDebugControl(
+        command: u32,
+        input: *mut c_void,
+        input_length: u32,
+        output: *mut c_void,
+        output_length: u32,
+        return_length: *mut u32,
+    ) -> NTSTATUS;
 }
 
 /// Human readable text for an NTSTATUS, via its Win32 equivalent.

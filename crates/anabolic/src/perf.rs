@@ -51,6 +51,8 @@ pub enum PerfView {
     Gpu(usize),
     Sensors,
     Displays,
+    /// Every device, as Device Manager knows them.
+    Devices,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -64,8 +66,10 @@ pub fn show(
     zombies: &ZombieView,
     displays: Option<&[anabolic_core::displays::Display]>,
     health: &mut crate::disk_health::DiskHealth,
+    devices: &mut crate::devices_view::DevicesView,
     out: &mut Vec<UiCmd>,
 ) {
+    let summary = crate::devices_view::summary(devices.devices().map(|d| d.as_ref()));
     egui::Panel::left("perf-nav")
         .exact_size(240.0)
         .resizable(false)
@@ -74,9 +78,16 @@ pub fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(6.0);
-                    nav(ui, view, snap, hw, displays);
+                    nav(ui, view, snap, hw, displays, summary);
                 });
         });
+    // A table of its own, which scrolls by itself.
+    if *view == PerfView::Devices {
+        egui::CentralPanel::default_margins().show(ui, |ui| {
+            crate::devices_view::show(ui, devices, out);
+        });
+        return;
+    }
     egui::CentralPanel::default_margins().show(ui, |ui| {
         let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
         if let Some(offset) = crate::bench::scroll_offset(ui.ctx()) {
@@ -95,6 +106,7 @@ pub fn show(
             PerfView::Gpu(i) => gpu(ui, snap, i, out),
             PerfView::Sensors => sensors(ui, snap),
             PerfView::Displays => crate::displays_view::show(ui, displays),
+            PerfView::Devices => {}
         });
         crate::bench::scrolled_to(output.state.offset.y, output.content_size.y);
     });
@@ -132,6 +144,7 @@ fn nav(
     snap: &Snapshot,
     hw: &HardwareInfo,
     displays: Option<&[anabolic_core::displays::Display]>,
+    devices: String,
 ) {
     let h = &snap.history;
     let s = &snap.system;
@@ -278,6 +291,13 @@ fn nav(
                 true,
             )
         }),
+        child: false,
+    });
+    cards.push(Card {
+        view: PerfView::Devices,
+        title: "Devices".into(),
+        value: devices,
+        graph: None,
         child: false,
     });
     cards.push(Card {
@@ -814,6 +834,25 @@ fn memory(ui: &mut Ui, snap: &Snapshot, zombies: &ZombieView, out: &mut Vec<UiCm
                 );
                 ui.add_space(8.0);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("Give memory back", |ui| {
+                    for what in anabolic_core::memtools::Purge::ALL {
+                        if cfg!(target_os = "linux")
+                            && what == anabolic_core::memtools::Purge::WorkingSets
+                        {
+                            continue;
+                        }
+                        if ui
+                            .button(format!("{}\u{2026}", what.label()))
+                            .on_hover_text(what.explain())
+                            .clicked()
+                        {
+                            out.push(UiCmd::ConfirmPurge(what));
+                            ui.close();
+                        }
+                    }
+                });
+            });
         });
         ui.add_space(8.0);
     }

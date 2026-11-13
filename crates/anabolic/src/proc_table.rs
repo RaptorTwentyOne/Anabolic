@@ -113,6 +113,13 @@ pub enum UiCmd {
     ConfirmResolveNames(ProcKey),
     /// Ask before reading the process' module list (opens it for reading).
     ConfirmLoadModules(ProcKey),
+    /// Ask before opening a process to read its memory map.
+    ConfirmMemoryMap(ProcKey),
+    /// Ask before giving memory back.
+    ConfirmPurge(anabolic_core::memtools::Purge),
+    /// Ask before writing a dump of the running kernel (Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    ConfirmKernelDump,
     /// Ask before writing a memory dump of the process.
     ConfirmDump(ProcKey, anabolic_core::dump::DumpKind),
     /// Ask before following what the process' threads wait for.
@@ -181,6 +188,10 @@ pub enum UiCmd {
     ShowTab(crate::settings::Tab),
     /// Disk space, with what fills this drive or folder.
     ShowSpace(std::path::PathBuf),
+    /// The Crashes page, with one program's crashes.
+    ShowCrashes(String),
+    /// The Performance page's devices, with this one in the pane.
+    ShowDevice(String),
     /// Open a view of the Performance page.
     ShowPerf(crate::perf::PerfView),
     /// Show every process of a program (by name) in the Apps view.
@@ -1219,6 +1230,17 @@ pub fn context_menu(
         "",
         UiCmd::NotifyExit(p.key, !menu.exit_watched),
     );
+    // As Task Manager: the kernel's dump from the System process' menu.
+    #[cfg(windows)]
+    if p.pid == 4 {
+        item(
+            ui,
+            out,
+            "Create a live kernel dump\u{2026}",
+            "The kernel's memory as it is, for a debugger; nothing stops",
+            UiCmd::ConfirmKernelDump,
+        );
+    }
     if !anabolic_core::dump::refused(&p.name, menu.secrets) {
         ui.menu_button("Create dump file", |ui| {
             item(

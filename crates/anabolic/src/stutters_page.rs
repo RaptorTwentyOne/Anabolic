@@ -565,8 +565,25 @@ fn histogram(ui: &mut Ui, width: f32, d: &DriverLatency) {
     ));
 }
 
-fn drivers(ui: &mut Ui, latency: &LatencyStats) {
-    widgets::section(ui, words::SECTION);
+fn drivers(ui: &mut Ui, latency: &LatencyStats, out: &mut Vec<UiCmd>) {
+    ui.horizontal(|ui| {
+        widgets::section(ui, words::SECTION);
+        #[cfg(windows)]
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("Live kernel dump")
+                .on_hover_text(
+                    "The kernel's memory as it is now, for WinDbg: what a driver is doing while \
+                     the PC stutters or hangs. Nothing stops.",
+                )
+                .clicked()
+            {
+                out.push(UiCmd::ConfirmKernelDump);
+            }
+        });
+    });
+    #[cfg(not(windows))]
+    let _ = &out;
     caption(
         ui,
         format!(
@@ -740,7 +757,7 @@ fn interrupts_only(ui: &mut Ui, snap: &Snapshot, relaunching: bool, out: &mut Ve
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            drivers(ui, &latency);
+            drivers(ui, &latency, out);
             ui.add_space(10.0);
         });
 }
@@ -814,7 +831,7 @@ pub fn show(
             stutters(ui, page, &frames, latency.as_deref());
             ui.add_space(14.0);
             match &latency {
-                Some(l) => drivers(ui, l),
+                Some(l) => drivers(ui, l, out),
                 None => caption(ui, "Driver timing is starting…"),
             }
             ui.add_space(10.0);

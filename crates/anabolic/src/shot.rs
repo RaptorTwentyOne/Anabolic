@@ -123,7 +123,8 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
     });
     let Ok(mut state) = steps.lock() else { return };
     let (started, steps, next) = &mut *state;
-    // Shift is held for the frame of its key and let go in the next.
+    // Shift and Ctrl are held for the frame of their key and let go in the
+    // next.
     static SHIFT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if SHIFT.swap(false, std::sync::atomic::Ordering::Relaxed) {
         raw.events
@@ -153,15 +154,21 @@ pub fn script(ctx: &egui::Context, raw: &mut egui::RawInput) {
             )),
             "text" => raw.events.push(egui::Event::Text(step.text.clone())),
             "key" => {
-                let (shift, name) = match step.text.strip_prefix("Shift+") {
+                let (ctrl, name) = match step.text.strip_prefix("Ctrl+") {
                     Some(name) => (true, name),
                     None => (false, step.text.as_str()),
                 };
+                let (shift, name) = match name.strip_prefix("Shift+") {
+                    Some(name) => (true, name),
+                    None => (false, name),
+                };
                 let modifiers = egui::Modifiers {
                     shift,
+                    ctrl,
+                    command: ctrl,
                     ..egui::Modifiers::NONE
                 };
-                if shift {
+                if shift || ctrl {
                     raw.events.push(egui::Event::ModifiersChanged(modifiers));
                     SHIFT.store(true, std::sync::atomic::Ordering::Relaxed);
                     ctx.request_repaint();

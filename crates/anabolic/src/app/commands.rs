@@ -507,6 +507,57 @@ impl App {
                     self.confirm = Some((dialog, Pending::LoadModules(key)));
                 }
                 UiCmd::LoadModules(key) => self.load_modules(key),
+                UiCmd::ConfirmPurge(what) => {
+                    let dialog = ConfirmDialog {
+                        title: format!("{}?", what.label()),
+                        lines: vec![
+                            what.explain().into(),
+                            "It needs administrator rights.".into(),
+                        ],
+                        confirm: what.label().into(),
+                    };
+                    self.confirm = Some((dialog, Pending::Purge(what)));
+                }
+                UiCmd::ConfirmKernelDump => {
+                    let dir = crate::data_dir()
+                        .map(|d| d.join("dumps").display().to_string())
+                        .unwrap_or_default();
+                    let dialog = ConfirmDialog {
+                        title: "Write a live kernel dump?".into(),
+                        lines: vec![
+                            "Windows writes the kernel's memory as it is now, without stopping, \
+                             for a debugger (WinDbg): what drivers are doing when the PC stutters \
+                             or hangs. It takes a minute or two and some GB; Windows stops it \
+                             if memory runs short."
+                                .into(),
+                            format!("It goes to {dir}. It needs administrator rights."),
+                        ],
+                        confirm: "Write the dump".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::KernelDump));
+                }
+                UiCmd::ConfirmMemoryMap(key) => {
+                    let Some(p) = self.snapshot.find(key) else {
+                        continue;
+                    };
+                    let dialog = ConfirmDialog {
+                        title: "Read its memory?".into(),
+                        lines: vec![
+                            format!(
+                                "Anabolic will open {} (PID {}) for reading to list what its memory \
+                                 holds: its program and DLLs, mapped files, heaps and stacks, and \
+                                 how much of each is in RAM. Nothing is written to it and nothing \
+                                 runs in it.",
+                                p.name, p.pid
+                            ),
+                            "Protected programs such as anti-cheat or security software may refuse \
+                             this access or treat it as suspicious."
+                                .into(),
+                        ],
+                        confirm: "Read its memory".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::MemoryMap(key)));
+                }
                 UiCmd::ConfirmDump(key, kind) => {
                     let Some(p) = self.snapshot.find(key) else {
                         continue;
@@ -684,6 +735,17 @@ impl App {
                     self.jumped();
                     self.settings.tab = Tab::Space;
                     self.space.show_path(path);
+                }
+                UiCmd::ShowDevice(id) => {
+                    self.jumped();
+                    self.settings.tab = Tab::Performance;
+                    self.perf_view = crate::perf::PerfView::Devices;
+                    self.devices.select(&id);
+                }
+                UiCmd::ShowCrashes(program) => {
+                    self.jumped();
+                    self.settings.tab = Tab::Crashes;
+                    self.crashes.show_program(&program);
                 }
                 UiCmd::ShowPerf(view) => {
                     self.jumped();

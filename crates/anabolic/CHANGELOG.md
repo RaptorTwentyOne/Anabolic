@@ -6,6 +6,40 @@ new since the one before.
 
 ## Unreleased
 
+- **Crashes** (Ctrl+E): what crashed, from Windows' own records. By
+  program, with how many times and the module most of its crashes were in,
+  or each one: the exception in words ("it used memory that was not its
+  own"), the module and where in it, how long the process had run, a .NET
+  program's exception with its stack, and the dump Windows kept. Also the
+  programs that hung and were closed or stopped responding a while, the
+  ones Windows' resource exhaustion detector thought were leaking, display
+  drivers it had to reset, and stop errors. Error Reporting's report
+  folders reach back past the event logs. The Overview names a program
+  that went away three times in a day. From systemd-coredump on Linux.
+  `anabolic-cli crashes`, and `get_crashes` for MCP clients.
+- **Devices** (Performance page): every device as Device Manager knows
+  it, the ones with a problem first and the problem in words ("Windows
+  stopped it: it reported a problem", Code 43) with what usually helps,
+  the driver each runs on (who made it, its version and date, the file it
+  was installed from), and the devices known but no longer connected,
+  with when each was last there. The Overview names a device with a
+  problem. On Linux, the PCI and USB devices and their kernel drivers.
+  `anabolic-cli devices`, and `get_devices` for MCP clients.
+- **Memory** (a process' details): its memory region by region, in the
+  manner of VMMap: its program and DLLs, mapped files, heaps, thread
+  stacks and private data, each with what is committed and what is in RAM
+  (and of that what only it uses), largest first, with what each region
+  is. Read it again later and it shows what grew. Private memory that may
+  be executed is marked. It opens the process, after asking.
+  `anabolic-cli memmap PID`, and `get_memory_map` for MCP clients.
+- **Give memory back** (Performance, Memory): empty the standby list, only
+  its low-priority part, the modified list, every working set or the file
+  cache, as RAMMap does, each with what it does and when it helps. On
+  Linux, the page cache.
+- **Live kernel dump** (Stutters page, and the System process' menu): the
+  running kernel's memory for WinDbg, written without stopping anything,
+  as Task Manager writes one: what a driver is doing while the PC stutters
+  or hangs.
 - **Anabolic's own memory stays put.** It kept a little of every process
   it saw start (its command line, its family, its program's icon), and a
   build starts thousands: some 10 KB each, over 100 MB an hour on a
