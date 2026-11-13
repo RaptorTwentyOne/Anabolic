@@ -237,10 +237,12 @@ fn measure(
     let blocks = size / test.block() as u64;
     let next = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicU64::new(0));
-    let until = Instant::now() + Duration::from_secs_f32(seconds);
+    let span = Duration::from_secs_f32(seconds);
     let error: Arc<Mutex<Option<String>>> = Arc::default();
-    let started = Instant::now();
-    let mut latencies = std::thread::scope(|scope| {
+    // Each worker keeps its own time from when it starts: on a busy
+    // machine a thread can start late, and a deadline shared from before
+    // they started would leave it no time at all.
+    let (mut latencies, active) = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..test.depth())
             .map(|k| {
                 let file = handles[k].clone();
@@ -249,7 +251,11 @@ fn measure(
                     let mut buf = Aligned::new(test.block(), k as u64 + 11);
                     let mut x = 0x9E37_79B9_7F4A_7C15u64 ^ k as u64;
                     let mut times = Vec::new();
-                    while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+                    let began = Instant::now();
+                    // At least one request, however short the span.
+                    while (times.is_empty() || began.elapsed() < span)
+                        && !stop.load(Ordering::Relaxed)
+                    {
                         let block = if test.random() {
                             x ^= x << 13;
                             x ^= x >> 7;
@@ -274,19 +280,24 @@ fn measure(
                         times.push(t.elapsed().as_micros() as u32);
                         done.fetch_add(1, Ordering::Relaxed);
                     }
-                    times
+                    (times, began.elapsed())
                 })
             })
             .collect();
-        workers
-            .into_iter()
-            .flat_map(|w| w.join().unwrap_or_default())
-            .collect::<Vec<u32>>()
+        let mut all = Vec::new();
+        let mut longest = Duration::ZERO;
+        for w in workers {
+            if let Ok((times, active)) = w.join() {
+                all.extend(times);
+                longest = longest.max(active);
+            }
+        }
+        (all, longest)
     });
     if let Some(e) = error.lock().ok().and_then(|e| e.clone()) {
         return Err(e);
     }
-    let secs = started.elapsed().as_secs_f64().max(0.001);
+    let secs = active.as_secs_f64().max(0.001);
     let n = done.load(Ordering::Relaxed) as f64;
     latencies.sort_unstable();
     Ok(Speed {
@@ -342,7 +353,12 @@ mod tests {
             );
         }
         drop(p);
-        // The file goes with its handles.
+        // The file goes with its handles; an antivirus that opened it to
+        // scan it may hold it a moment longer.
+        let until = Instant::now() + Duration::from_secs(3);
+        while path.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         assert!(!path.exists());
     }
 }
