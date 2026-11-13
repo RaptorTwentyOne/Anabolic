@@ -251,6 +251,7 @@ pub(super) fn physical_disk(
         ],
     );
     crate::disk_health::section(ui, health, number);
+    crate::disk_bench::section(ui, &mut health.bench, d);
     if d.partitions.is_empty() {
         volumes(ui, d);
     } else {

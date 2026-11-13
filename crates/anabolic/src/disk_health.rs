@@ -24,6 +24,8 @@ pub struct DiskHealth {
     read: Option<Arc<Vec<Health>>>,
     at: Option<Instant>,
     reading: Option<Receiver<Vec<Health>>>,
+    /// The disks' speed test.
+    pub bench: crate::disk_bench::BenchView,
 }
 
 impl DiskHealth {

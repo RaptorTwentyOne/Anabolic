@@ -27,6 +27,7 @@ pub mod cpu;
 pub mod crashes;
 pub mod devices;
 pub mod disk;
+pub mod diskbench;
 pub mod disktrace;
 pub mod diskusage;
 pub mod displays;

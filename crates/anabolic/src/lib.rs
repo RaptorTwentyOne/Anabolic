@@ -21,6 +21,7 @@ mod details;
 mod devices_view;
 mod devports;
 mod dialogs;
+mod disk_bench;
 mod disk_health;
 mod displays_view;
 mod fmt;

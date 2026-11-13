@@ -6,6 +6,11 @@ new since the one before.
 
 ## Unreleased
 
+- **Disk speed test** (Performance, each disk), in the manner of
+  CrystalDiskMark: large files and small pieces, one request at a time
+  and many at once, read and written past the system's cache on a test
+  file of 256 MB to 4 GB, which is deleted when the test ends (Windows
+  deletes it even if Anabolic does not get to).
 - **Hosts and DNS** (Network page): which DNS server answers fastest
   from here, the one in use against Cloudflare, Google, Quad9 and the
   rest, timed in the manner of GRC's DNS Benchmark (from its cache, and
