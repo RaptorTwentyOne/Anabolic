@@ -348,6 +348,15 @@ fn device_row(d: &anabolic_core::devices::Device) -> Value {
     row
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProgramHistoryArgs {
+    /// The program's file name, any case: "chrome.exe".
+    pub name: String,
+    /// How many recorded days, newest first (1 to 31, default 7).
+    #[serde(default)]
+    pub days: Option<u32>,
+}
+
 /// Parses HH:MM into seconds since midnight.
 fn time_of_day(text: &str) -> Option<u32> {
     let (h, m) = text.trim().split_once(':')?;
@@ -978,6 +987,96 @@ impl AnabolicMcp {
         ok(
             json!({ "days": days.iter().map(|d| json!({ "date": d.date, "bytes": d.bytes })).collect::<Vec<_>>() }),
         )
+    }
+
+    #[tool(
+        description = "One program over the last days, whatever its processes and PIDs were: \
+                       each day's processor time (in seconds of one core), most private memory, \
+                       disk and I/O and network bytes, and each hour's CPU share of the machine \
+                       (average and busiest ten seconds), memory and bytes moved. From the \
+                       history, which records every program's minutes while Anabolic runs. Use \
+                       it for \"is it always like this\" or \"when did it start using so \
+                       much\"; get_history says what the whole machine did at a time.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_program_history(
+        &self,
+        Parameters(args): Parameters<ProgramHistoryArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let Some(dir) = self.shared.data_dir.as_ref().map(|d| d.join("history")) else {
+            return fail("Anabolic has no data folder, so it keeps no history.");
+        };
+        let days = args.days.unwrap_or(7).clamp(1, 31) as usize;
+        let name = args.name.trim().to_string();
+        let wanted = name.clone();
+        let records =
+            blocking(move || anabolic_core::recorder::program_history(&dir, &wanted, days)).await;
+        if records.is_empty() {
+            return ok(json!({
+                "name": name,
+                "note": "Nothing recorded for this program: Anabolic records each program's \
+                         minutes while it runs (from 0.8 on), under its file name.",
+            }));
+        }
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+        // Each hour and each day added up: the minutes would be too many.
+        let mut hours: Vec<(u64, f64, f64, f32, u64, u64, u64)> = Vec::new();
+        for r in &records {
+            let hour = r.start - r.start % 3600;
+            if hours.last().is_none_or(|h| h.0 != hour) {
+                hours.push((hour, 0.0, 0.0, 0.0, 0, 0, 0));
+            }
+            let h = hours.last_mut().unwrap();
+            h.1 += r.cpu_avg as f64 * r.secs as f64;
+            h.2 += r.secs as f64;
+            h.3 = h.3.max(r.cpu_max);
+            h.4 = h.4.max(r.private);
+            h.5 += r.disk.max(r.io);
+            h.6 += r.net;
+        }
+        let at = |unix: u64| {
+            anabolic_core::sysinfo::local_time((unix as i64 + 11_644_473_600) * 10_000_000)
+        };
+        let mut by_day: Vec<(String, f64, u64, u64, u64, u32)> = Vec::new();
+        for r in &records {
+            let day = anabolic_core::recorder::local_day(r.start).0;
+            if by_day.last().is_none_or(|d| d.0 != day) {
+                by_day.push((day, 0.0, 0, 0, 0, 0));
+            }
+            let d = by_day.last_mut().unwrap();
+            d.1 += r.cpu_avg as f64 / 100.0 * r.secs as f64 * cores;
+            d.2 = d.2.max(r.private);
+            d.3 += r.disk.max(r.io);
+            d.4 += r.net;
+            d.5 += 1;
+        }
+        ok(json!({
+            "name": name,
+            "days": by_day.iter().rev().map(|d| json!({
+                "date": d.0,
+                "cpu_core_seconds": d.1.round(),
+                "private_max_bytes": d.2,
+                "disk_and_io_bytes": d.3,
+                "network_bytes": d.4,
+                "minutes_recorded": d.5,
+            })).collect::<Vec<_>>(),
+            "hours": hours.iter().map(|h| json!({
+                "hour": at(h.0),
+                "cpu_percent_of_machine": ((h.1 / h.2.max(1.0)) * 100.0).round() / 100.0,
+                "cpu_percent_busiest_10s": (h.3 as f64 * 100.0).round() / 100.0,
+                "private_max_bytes": h.4,
+                "disk_and_io_bytes": h.5,
+                "network_bytes": h.6,
+            })).collect::<Vec<_>>(),
+        }))
     }
 
     #[tool(

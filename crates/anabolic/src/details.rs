@@ -31,12 +31,14 @@ use crate::widgets;
 
 mod end;
 pub(crate) mod handles;
+mod history;
 mod memory;
 mod network;
 mod profile;
 mod waits;
 use end::*;
 use handles::*;
+pub use history::HistoryView;
 pub use memory::MemoryView;
 use network::*;
 pub use profile::ProfileView;
@@ -55,6 +57,8 @@ pub enum DetailTab {
     Profile,
     /// What its memory is, region by region.
     Memory,
+    /// Its program over the last day or week.
+    History,
 }
 
 /// Wait chains; reports arrive from the inspector.
@@ -272,6 +276,8 @@ pub fn show(
     ends: &EndView,
     profiles: &mut ProfileView,
     memory: &mut MemoryView,
+    history: &mut HistoryView,
+    recording: bool,
     focus_thread: &mut Option<(u32, bool)>,
     services: &[(Arc<str>, Arc<str>)],
     growth: &anabolic_core::growth::Growth,
@@ -335,6 +341,10 @@ pub fn show(
         if !p.is_pseudo() {
             ui.selectable_value(tab, DetailTab::Memory, "Memory")
                 .on_hover_text("What its memory is, region by region, and what grows");
+            ui.selectable_value(tab, DetailTab::History, "History")
+                .on_hover_text(
+                    "Its program over the last day or week, whatever its processes were",
+                );
         }
         let waits_label: egui::WidgetText = if p.not_responding {
             let mut job = widgets::icon_text(ui, theme::icon::WARNING, "Wait chain");
@@ -432,6 +442,7 @@ pub fn show(
         ),
         DetailTab::Modules => modules_tab(ui, p, modules, panes, &mut tables.modules, out),
         DetailTab::Memory => memory::tab(ui, memory, p, out),
+        DetailTab::History => history::tab(ui, history, &p.name, recording),
         DetailTab::Handles => handles_tab(ui, p, snap, handles, panes, out),
         DetailTab::Network => {
             let path = details.get(&key).and_then(|d| d.path.as_deref());

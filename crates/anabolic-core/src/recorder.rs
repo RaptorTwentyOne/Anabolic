@@ -23,7 +23,14 @@
 //! S count pid name    (started in the bucket; pid of the first)
 //! X count pid name    (exited in the bucket)
 //! N count pid name    (not responding in `count` samples of the bucket)
+//! M start secs cpu_avg cpu_max private_kb io_kb disk_kb net_kb gpu_avg count name
 //! ```
+//!
+//! An `M` line is one program's minute: all its processes together, by
+//! name, so a program can be followed over the days whatever its PIDs. It
+//! is written for the programs that did something that minute, and every
+//! ten minutes for every program holding some memory, so its memory can be
+//! drawn. Readers of the first format skip it.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -49,6 +56,178 @@ const MB: f64 = 1024.0 * 1024.0;
 const HEADER: &str = "# anabolic history 1";
 /// A gap longer than this between samples is a sleep, not a measurement.
 const MAX_GAP_SECS: f64 = 30.0;
+/// A program's minute is kept when it used this much: CPU (percent of the
+/// machine), bytes moved, GPU percent, or private memory.
+const KEEP_CPU: f32 = 0.05;
+const KEEP_IO: u64 = 256 << 10;
+const KEEP_NET: u64 = 64 << 10;
+const KEEP_GPU: f32 = 0.5;
+const KEEP_PRIVATE: u64 = 200 << 20;
+/// Every ten minutes, the programs holding this much are kept whatever
+/// they did.
+const CHECKPOINT_PRIVATE: u64 = 20 << 20;
+
+/// One program's minute: its processes together.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProgramRecord {
+    /// The minute's start, seconds since the Unix epoch.
+    pub start: u64,
+    pub secs: f32,
+    pub name: Arc<str>,
+    /// Its share of the whole machine, percent: the minute's average, and
+    /// its busiest ten seconds.
+    pub cpu_avg: f32,
+    pub cpu_max: f32,
+    /// The most private memory its processes held together.
+    pub private: u64,
+    /// Bytes moved.
+    pub io: u64,
+    pub disk: u64,
+    pub net: u64,
+    pub gpu_avg: f32,
+    /// The most processes it ran at once.
+    pub count: u32,
+}
+
+impl ProgramRecord {
+    fn write(&self, out: &mut String) {
+        let kb = |b: u64| b / 1024;
+        let _ = writeln!(
+            out,
+            "M {} {:.0} {:.2} {:.2} {} {} {} {} {:.1} {} {}",
+            self.start,
+            self.secs,
+            self.cpu_avg,
+            self.cpu_max,
+            kb(self.private),
+            kb(self.io),
+            kb(self.disk),
+            kb(self.net),
+            self.gpu_avg,
+            self.count,
+            self.name,
+        );
+    }
+
+    fn parse(rest: &str) -> Option<ProgramRecord> {
+        let f: Vec<&str> = rest.splitn(11, ' ').collect();
+        if f.len() < 11 {
+            return None;
+        }
+        let kb = |s: &str| s.parse::<u64>().ok().map(|v| v * 1024);
+        Some(ProgramRecord {
+            start: f[0].parse().ok()?,
+            secs: f[1].parse().ok()?,
+            cpu_avg: f[2].parse().ok()?,
+            cpu_max: f[3].parse().ok()?,
+            private: kb(f[4])?,
+            io: kb(f[5])?,
+            disk: kb(f[6])?,
+            net: kb(f[7])?,
+            gpu_avg: f[8].parse().ok()?,
+            count: f[9].parse().ok()?,
+            name: Arc::from(f[10]),
+        })
+    }
+
+    /// Worth a line on its own: it did something.
+    fn active(&self) -> bool {
+        self.cpu_avg >= KEEP_CPU
+            || self.io >= KEEP_IO
+            || self.disk >= KEEP_IO
+            || self.net >= KEEP_NET
+            || self.gpu_avg >= KEEP_GPU
+            || self.private >= KEEP_PRIVATE
+    }
+}
+
+/// One program's minute as it builds up from the buckets.
+#[derive(Default)]
+struct ProgramAcc {
+    secs: f64,
+    cpu_sum: f64,
+    cpu_max: f32,
+    private: u64,
+    io: u64,
+    disk: u64,
+    net: u64,
+    gpu_sum: f64,
+    count: u32,
+}
+
+/// The programs' minute, from the buckets that make it.
+struct Minute {
+    start: u64,
+    programs: HashMap<Arc<str>, ProgramAcc>,
+}
+
+impl Minute {
+    /// Adds a finished bucket's processes, joined by name.
+    fn add(&mut self, secs: f32, processes: &[ProcRecord]) {
+        /// A program's processes in one bucket, added up.
+        #[derive(Default)]
+        struct Together {
+            cpu: f32,
+            private: u64,
+            io: u64,
+            disk: u64,
+            net: u64,
+            gpu: f32,
+            count: u32,
+        }
+        let mut bucket: HashMap<&Arc<str>, Together> = HashMap::new();
+        for p in processes {
+            let e = bucket.entry(&p.name).or_default();
+            e.cpu += p.cpu_avg;
+            e.private += p.private;
+            e.io += p.io;
+            e.disk += p.disk;
+            e.net += p.net;
+            e.gpu += p.gpu_avg;
+            e.count += 1;
+        }
+        let secs = secs as f64;
+        for (name, t) in bucket {
+            let a = self.programs.entry(name.clone()).or_default();
+            a.secs += secs;
+            a.cpu_sum += t.cpu as f64 * secs;
+            a.cpu_max = a.cpu_max.max(t.cpu);
+            a.private = a.private.max(t.private);
+            a.io += t.io;
+            a.disk += t.disk;
+            a.net += t.net;
+            a.gpu_sum += t.gpu as f64 * secs;
+            a.count = a.count.max(t.count);
+        }
+    }
+
+    /// The minute's lines: the programs that did something, and on a
+    /// checkpoint minute every one holding some memory.
+    fn finish(self) -> Vec<ProgramRecord> {
+        let checkpoint = self.start.is_multiple_of(600);
+        let mut out: Vec<ProgramRecord> = self
+            .programs
+            .into_iter()
+            .filter(|(_, a)| a.secs > 0.0)
+            .map(|(name, a)| ProgramRecord {
+                start: self.start,
+                secs: a.secs as f32,
+                name,
+                cpu_avg: (a.cpu_sum / a.secs) as f32,
+                cpu_max: a.cpu_max,
+                private: a.private,
+                io: a.io,
+                disk: a.disk,
+                net: a.net,
+                gpu_avg: (a.gpu_sum / a.secs) as f32,
+                count: a.count,
+            })
+            .filter(|r| r.active() || (checkpoint && r.private >= CHECKPOINT_PRIVATE))
+            .collect();
+        out.sort_by(|a, b| b.cpu_avg.total_cmp(&a.cpu_avg));
+        out
+    }
+}
 
 /// One process' share of a bucket.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -245,6 +424,7 @@ pub struct RecorderConfig {
 /// Lives on the collector thread.
 pub struct Recorder {
     open: Option<Accumulator>,
+    minute: Option<Minute>,
     out: Option<Sender<(String, String)>>,
     writer: Option<JoinHandle<()>>,
 }
@@ -258,6 +438,7 @@ impl Recorder {
             .ok();
         Self {
             open: None,
+            minute: None,
             out: writer.is_some().then_some(tx),
             writer,
         }
@@ -289,11 +470,40 @@ impl Recorder {
         if acc.secs <= 0.0 {
             return;
         }
-        let bucket = acc.finish();
+        let (bucket, all) = acc.finish();
         let mut text = String::new();
         bucket.write(&mut text);
         if let Some(out) = &self.out {
             let _ = out.send((local_day(bucket.start).0, text));
+        }
+        let minute = bucket.start - bucket.start % 60;
+        if self.minute.as_ref().is_some_and(|m| m.start != minute) {
+            self.flush_minute();
+        }
+        self.minute
+            .get_or_insert_with(|| Minute {
+                start: minute,
+                programs: HashMap::new(),
+            })
+            .add(bucket.secs, &all);
+    }
+
+    /// Writes the programs' minute, finished or not.
+    fn flush_minute(&mut self) {
+        let Some(minute) = self.minute.take() else {
+            return;
+        };
+        let day = local_day(minute.start).0;
+        let records = minute.finish();
+        if records.is_empty() {
+            return;
+        }
+        let mut text = String::new();
+        for r in &records {
+            r.write(&mut text);
+        }
+        if let Some(out) = &self.out {
+            let _ = out.send((day, text));
         }
     }
 }
@@ -302,6 +512,7 @@ impl Drop for Recorder {
     /// Writes what is left before the process goes away.
     fn drop(&mut self) {
         self.flush();
+        self.flush_minute();
         self.out = None;
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
@@ -422,7 +633,9 @@ impl Accumulator {
         }
     }
 
-    fn finish(self) -> Bucket {
+    /// The bucket with its leaders, and every process' record (for the
+    /// programs' minute).
+    fn finish(self) -> (Bucket, Vec<ProcRecord>) {
         let secs = self.secs;
         let mut procs: Vec<ProcRecord> = self
             .procs
@@ -458,13 +671,14 @@ impl Accumulator {
         lead(&|p| p.disk as f64, TOP, MB);
         lead(&|p| p.net as f64, TOP, MB / 4.0);
         lead(&|p| p.gpu_avg as f64, TOP, 1.0);
+        let all = procs.clone();
         let mut i = 0;
         procs.retain(|_| {
             i += 1;
             keep[i - 1]
         });
         procs.sort_by(|a, b| b.cpu_avg.total_cmp(&a.cpu_avg));
-        Bucket {
+        let bucket = Bucket {
             start: self.start,
             secs: secs as f32,
             cpu_avg: (self.cpu_sum / secs) as f32,
@@ -482,7 +696,8 @@ impl Accumulator {
             started: group(self.started),
             exited: group(self.exited),
             hung: group(self.hung),
-        }
+        };
+        (bucket, all)
     }
 }
 
@@ -564,6 +779,76 @@ pub fn load(dir: &Path, date: &str) -> Result<Vec<Bucket>, String> {
     let mut buckets = parse(&text);
     buckets.sort_by_key(|b| b.start);
     Ok(buckets)
+}
+
+/// The minutes of one program (by name, any case) on one day, oldest
+/// first.
+pub fn program_minutes(text: &str, name: &str) -> Vec<ProgramRecord> {
+    let mut out: Vec<ProgramRecord> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("M "))
+        .filter_map(ProgramRecord::parse)
+        .filter(|r| r.name.eq_ignore_ascii_case(name))
+        .collect();
+    out.sort_by_key(|r| r.start);
+    out
+}
+
+/// One program's minutes over the last `days` recorded days, oldest first.
+pub fn program_history(dir: &Path, name: &str, days: usize) -> Vec<ProgramRecord> {
+    let mut out = Vec::new();
+    for day in self::days(dir).into_iter().take(days) {
+        if let Ok(text) = fs::read_to_string(dir.join(format!("{}.txt", day.date))) {
+            out.extend(program_minutes(&text, name));
+        }
+    }
+    out.sort_by_key(|r| r.start);
+    out
+}
+
+/// A program's day, added up.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProgramDay {
+    pub name: Arc<str>,
+    /// Processor time, in seconds of the whole machine at 100 %: what it
+    /// used, in the machine's terms.
+    pub cpu_secs: f64,
+    pub cpu_max: f32,
+    pub private_max: u64,
+    pub io: u64,
+    pub disk: u64,
+    pub net: u64,
+    /// Minutes in which it did something.
+    pub minutes: u32,
+}
+
+/// Every program's day from one day's file, the busiest first.
+pub fn day_programs(text: &str) -> Vec<ProgramDay> {
+    let mut by: HashMap<String, ProgramDay> = HashMap::new();
+    for r in text
+        .lines()
+        .filter_map(|l| l.strip_prefix("M "))
+        .filter_map(ProgramRecord::parse)
+    {
+        let d = by
+            .entry(r.name.to_lowercase())
+            .or_insert_with(|| ProgramDay {
+                name: r.name.clone(),
+                ..Default::default()
+            });
+        d.cpu_secs += r.cpu_avg as f64 / 100.0 * r.secs as f64;
+        d.cpu_max = d.cpu_max.max(r.cpu_max);
+        d.private_max = d.private_max.max(r.private);
+        d.io += r.io;
+        d.disk += r.disk;
+        d.net += r.net;
+        if r.active() {
+            d.minutes += 1;
+        }
+    }
+    let mut out: Vec<ProgramDay> = by.into_values().collect();
+    out.sort_by(|a, b| b.cpu_secs.total_cmp(&a.cpu_secs));
+    out
 }
 
 pub fn unix_now() -> u64 {
@@ -682,6 +967,78 @@ mod tests {
     }
 
     #[test]
+    fn a_programs_minute_joins_its_processes_and_reads_back() {
+        let proc = |pid, name: &str, cpu, private| ProcRecord {
+            pid,
+            name: Arc::from(name),
+            cpu_avg: cpu,
+            cpu_max: cpu,
+            private,
+            io: 1 << 20,
+            ..Default::default()
+        };
+        let mut m = Minute {
+            start: 1_760_530_200,
+            programs: HashMap::new(),
+        };
+        // Six buckets: chrome in two processes, an idle helper, a small one.
+        for _ in 0..6 {
+            m.add(
+                10.0,
+                &[
+                    proc(1, "chrome.exe", 2.0, 300 << 20),
+                    proc(2, "chrome.exe", 1.0, 100 << 20),
+                    proc(3, "idle.exe", 0.0, 1 << 20),
+                ],
+            );
+        }
+        let records = m.finish();
+        // idle.exe moved 6 MB of I/O: it did something too.
+        assert_eq!(records.len(), 2);
+        let chrome = &records[0];
+        assert_eq!(&*chrome.name, "chrome.exe");
+        assert!((chrome.cpu_avg - 3.0).abs() < 1e-4);
+        assert_eq!(chrome.private, 400 << 20);
+        assert_eq!(chrome.io, 12 << 20);
+        assert_eq!(chrome.count, 2);
+        assert_eq!(chrome.secs, 60.0);
+
+        let mut text = String::from(HEADER);
+        text.push('\n');
+        sample().write(&mut text);
+        for r in &records {
+            r.write(&mut text);
+        }
+        // The first format's reader skips the new lines.
+        assert_eq!(parse(&text), vec![sample()]);
+        let back = program_minutes(&text, "CHROME.EXE");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].private, chrome.private);
+        assert!((back[0].cpu_avg - 3.0).abs() < 0.01);
+        let day = day_programs(&text);
+        assert_eq!(&*day[0].name, "chrome.exe");
+        assert!((day[0].cpu_secs - 1.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_checkpoint_minute_keeps_memory_holders() {
+        let quiet = ProcRecord {
+            pid: 9,
+            name: Arc::from("tray.exe"),
+            private: 50 << 20,
+            ..Default::default()
+        };
+        for (start, kept) in [(1_760_530_200u64, 1usize), (1_760_530_260, 0)] {
+            let mut m = Minute {
+                start,
+                programs: HashMap::new(),
+            };
+            m.add(10.0, std::slice::from_ref(&quiet));
+            assert_eq!(m.finish().len(), kept, "minute {start}");
+        }
+    }
+
+    #[test]
     fn events_group_by_name() {
         let names = ["bash.exe", "git.exe", "bash.exe", "bash.exe"];
         let events = group(
@@ -718,7 +1075,8 @@ mod tests {
                 },
             );
         }
-        let b = acc.finish();
+        let (b, all) = acc.finish();
+        assert_eq!(all.len(), 3);
         // All three lead in memory (top 5); only p0 in CPU, sorted first.
         assert_eq!(b.processes.len(), 3);
         assert_eq!(b.processes[0].pid, 0);

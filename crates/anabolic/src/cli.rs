@@ -495,6 +495,34 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "program",
+        usage: "NAME [--days N]",
+        about: "One program over the last days: its processor time, memory and bytes moved",
+        details: "  NAME      its file name: chrome.exe
+  --days N  how many recorded days (default 7)",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.word(0, "name", &mut args);
+            a.number("--days", "days", &mut args)?;
+            Ok(tool(
+                "get_program_history",
+                args,
+                View::Table {
+                    list: "days",
+                    columns: &[
+                        "date",
+                        "cpu_core_seconds=CPU s",
+                        "private_max_bytes=Memory at most",
+                        "disk_and_io_bytes=Disk and I/O",
+                        "network_bytes=Network",
+                        "minutes_recorded=Minutes",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
         name: "memmap",
         usage: "PID [--top N] [--force]",
         about: "A process' memory by kind, and its largest allocations",
@@ -727,6 +755,7 @@ const VALUED: &[&str] = &[
     "--key",
     "--seconds",
     "--program",
+    "--days",
 ];
 /// The options that stand alone.
 const FLAGS: &[&str] = &[

@@ -182,6 +182,7 @@ pub struct App {
     /// The process details' profiler.
     profile_view: crate::details::ProfileView,
     memory_view: crate::details::MemoryView,
+    history_view: crate::details::HistoryView,
     startup_watch: anabolic_core::startup::StartupWatch,
     startup_events: Receiver<StartupEvent>,
     /// When the startup entries were last read.
@@ -582,6 +583,7 @@ impl App {
             Some("network") => DetailTab::Network,
             Some("profile") => DetailTab::Profile,
             Some("memory") => DetailTab::Memory,
+            Some("history") => DetailTab::History,
             _ if args.iter().any(|a| a == "--handles") => DetailTab::Handles,
             _ => DetailTab::default(),
         };
@@ -719,6 +721,7 @@ impl App {
             devices: Default::default(),
             profile_view: Default::default(),
             memory_view: Default::default(),
+            history_view: Default::default(),
             startup_watch,
             startup_events,
             startup_at: None,
@@ -1598,6 +1601,8 @@ impl eframe::App for App {
                                     &self.end_view,
                                     &mut self.profile_view,
                                     &mut self.memory_view,
+                                    &mut self.history_view,
+                                    self.settings.record_history,
                                     &mut self.focus_thread,
                                     &self.services.hosted(key.pid),
                                     &self.growth,

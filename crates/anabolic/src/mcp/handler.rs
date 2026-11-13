@@ -364,6 +364,7 @@ mod tests {
                 "get_network_usage",
                 "get_process",
                 "get_process_tree",
+                "get_program_history",
                 "get_sensors",
                 "get_service",
                 "get_stutters",

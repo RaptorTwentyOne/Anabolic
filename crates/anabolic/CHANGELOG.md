@@ -32,6 +32,13 @@ new since the one before.
   is. Read it again later and it shows what grew. Private memory that may
   be executed is marked. It opens the process, after asking.
   `anabolic-cli memmap PID`, and `get_memory_map` for MCP clients.
+- **History** (a process' details): its program over the last 24 hours
+  or 7 days, whatever its processes and PIDs were: CPU, memory, disk and
+  network minute by minute, and each day's processor time, most memory
+  and bytes moved. The history now records every program's minutes (the
+  ones that did something, and every ten minutes the ones holding memory),
+  a few MB a day more. `anabolic-cli program NAME`, and
+  `get_program_history` for MCP clients.
 - **Give memory back** (Performance, Memory): empty the standby list, only
   its low-priority part, the modified list, every working set or the file
   cache, as RAMMap does, each with what it does and when it helps. On
