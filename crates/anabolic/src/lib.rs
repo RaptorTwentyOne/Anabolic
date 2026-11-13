@@ -25,6 +25,8 @@ mod dialogs;
 mod disk_bench;
 mod disk_health;
 mod displays_view;
+#[cfg(windows)]
+mod driverstore_view;
 mod explorer;
 mod fmt;
 mod gamemode;

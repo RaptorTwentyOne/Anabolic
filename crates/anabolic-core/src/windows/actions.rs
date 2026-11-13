@@ -148,7 +148,8 @@ pub fn perform(action: Action) -> Option<Outcome> {
         | Action::Purge(_)
         | Action::Interrupts { .. }
         | Action::FlushDns
-        | Action::WriteHosts(_) => return None,
+        | Action::WriteHosts(_)
+        | Action::RemoveDriverPackages(_) => return None,
         Action::Suspend(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtSuspendProcess)
             .map(|_| format!("Suspended {}", t.label())),
         Action::Resume(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtResumeProcess)

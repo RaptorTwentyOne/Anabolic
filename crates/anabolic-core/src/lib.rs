@@ -34,6 +34,7 @@ pub mod diskusage;
 pub mod displays;
 pub mod dnscache;
 pub mod dnstools;
+pub mod driverstore;
 pub mod dump;
 pub mod ending;
 pub mod enrich;

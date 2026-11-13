@@ -49,6 +49,10 @@ pub struct DevicesView {
     pub interrupts: bool,
     #[cfg(windows)]
     irq: crate::interrupts_view::InterruptsView,
+    /// The driver store's packages, instead of the list (Windows).
+    pub packages: bool,
+    #[cfg(windows)]
+    store: crate::driverstore_view::DriverStoreView,
 }
 
 impl DevicesView {
@@ -88,6 +92,12 @@ impl DevicesView {
 
     pub fn devices(&self) -> Option<&Arc<Devices>> {
         self.read.as_ref()?.as_ref().ok()
+    }
+
+    /// Packages are being removed: read the store again.
+    #[cfg(windows)]
+    pub fn packages_changed(&mut self) {
+        self.store.changed();
     }
 
     /// Shows one device in the pane.
@@ -183,19 +193,33 @@ pub fn show(ui: &mut Ui, view: &mut DevicesView, out: &mut Vec<UiCmd>) {
         {
             ui.add_space(16.0);
             if ui
-                .selectable_label(!view.interrupts, "Every device")
+                .selectable_label(!view.interrupts && !view.packages, "Every device")
                 .clicked()
             {
                 view.interrupts = false;
+                view.packages = false;
             }
             if ui.selectable_label(view.interrupts, "Interrupts").clicked() {
                 view.interrupts = true;
+                view.packages = false;
+            }
+            if ui
+                .selectable_label(view.packages, "Driver packages")
+                .clicked()
+            {
+                view.packages = true;
+                view.interrupts = false;
             }
         }
     });
     #[cfg(windows)]
     if view.interrupts {
         crate::interrupts_view::show(ui, &mut view.irq, out);
+        return;
+    }
+    #[cfg(windows)]
+    if view.packages {
+        crate::driverstore_view::show(ui, &mut view.store, out);
         return;
     }
     let gone = devices

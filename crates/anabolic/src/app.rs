@@ -73,6 +73,7 @@ enum Pending {
         change: anabolic_core::interrupts::Change,
     },
     Hosts(String),
+    DriverPackages(Vec<String>),
     WaitChain(ProcKey),
     CloseHandle(FoundHandle),
     CloseHandles {
@@ -465,6 +466,7 @@ impl App {
         }
         let mut devices = crate::devices_view::DevicesView::default();
         devices.interrupts = args.iter().any(|a| a == "--interrupts");
+        devices.packages = args.iter().any(|a| a == "--packages");
         if args.iter().any(|a| a == "--stutters") {
             settings.tab = Tab::Stutters;
         }

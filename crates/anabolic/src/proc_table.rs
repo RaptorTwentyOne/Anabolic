@@ -124,6 +124,9 @@ pub enum UiCmd {
     FlushDns,
     /// Copy a report of this PC to the clipboard.
     CopyReport,
+    /// Ask before removing driver packages: (published, original) names.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    ConfirmDriverPackages(Vec<(String, String)>),
     /// Ask VirusTotal about these files, by path or hash.
     VirusTotal(Vec<String>),
     /// Ask before writing the hosts file.

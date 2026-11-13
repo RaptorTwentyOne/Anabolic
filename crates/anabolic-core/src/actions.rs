@@ -168,6 +168,8 @@ pub enum Action {
     },
     /// Empty the system's DNS cache.
     FlushDns,
+    /// Remove driver packages by their published names (oem12.inf).
+    RemoveDriverPackages(Vec<String>),
     /// Write the hosts file (the old one kept beside it).
     WriteHosts(String),
     /// Write a dump of the running kernel into the folder, on a thread of
@@ -307,6 +309,28 @@ impl ActionRunner {
                                 let _ = out_tx.send(outcome);
                                 notify();
                             });
+                        continue;
+                    }
+                    if let Action::RemoveDriverPackages(list) = &action {
+                        let (mut done, mut failed) = (0, Vec::new());
+                        for p in list {
+                            match crate::driverstore::remove(p) {
+                                Ok(_) => done += 1,
+                                Err(e) => failed.push(e),
+                            }
+                        }
+                        let outcome = if failed.is_empty() {
+                            Outcome::Info(format!(
+                                "{done} driver package{} removed.",
+                                if done == 1 { "" } else { "s" }
+                            ))
+                        } else {
+                            Outcome::Error(format!("{done} removed; {}", failed.join("; ")))
+                        };
+                        if out_tx.send(outcome).is_err() {
+                            return;
+                        }
+                        notify();
                         continue;
                     }
                     if matches!(action, Action::FlushDns | Action::WriteHosts(_)) {

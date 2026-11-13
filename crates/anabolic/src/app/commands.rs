@@ -520,6 +520,41 @@ impl App {
                 }
                 UiCmd::FlushDns => self.actions.run(anabolic_core::actions::Action::FlushDns),
                 UiCmd::VirusTotal(items) => crate::vt::ask(items),
+                UiCmd::ConfirmDriverPackages(list) => {
+                    let names: Vec<String> = list
+                        .iter()
+                        .take(6)
+                        .map(|(p, o)| format!("{o} ({p})"))
+                        .collect();
+                    let dialog = ConfirmDialog {
+                        title: if list.len() == 1 {
+                            "Remove this driver package?".into()
+                        } else {
+                            format!("Remove {} driver packages?", list.len())
+                        },
+                        lines: vec![
+                            format!(
+                                "{}{}",
+                                names.join(", "),
+                                if list.len() > names.len() {
+                                    format!(" and {} more", list.len() - names.len())
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            "Old versions no device uses: a newer one of each is kept. Windows \
+                             refuses to remove a package a device uses. It cannot be undone, \
+                             short of installing that version again, and needs administrator \
+                             rights."
+                                .into(),
+                        ],
+                        confirm: "Remove".into(),
+                    };
+                    self.confirm = Some((
+                        dialog,
+                        Pending::DriverPackages(list.into_iter().map(|(p, _)| p).collect()),
+                    ));
+                }
                 UiCmd::CopyReport => {
                     let text = anabolic_core::report::build(&anabolic_core::report::Parts {
                         snap: &self.snapshot,

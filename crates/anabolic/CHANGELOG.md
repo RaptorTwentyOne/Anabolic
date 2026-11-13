@@ -6,6 +6,12 @@ new since the one before.
 
 ## Unreleased
 
+- **Driver packages** (Performance > Devices), in the manner of
+  DriverStore Explorer: every third-party driver package Windows keeps,
+  with its maker, kind, version, date, size and the devices that use
+  it; the old versions no device uses (graphics drivers leave one per
+  install) are removed after a question, and Windows refuses to remove
+  one a device uses.
 - **What changed** (Crashes page), in the manner of Reliability Monitor
   and WinUpdatesView: updates installed and those that failed, drivers
   installed or updated, programs installed and removed, services and

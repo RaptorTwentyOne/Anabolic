@@ -320,6 +320,13 @@ impl App {
                             Pending::Purge(what) => self
                                 .actions
                                 .run(anabolic_core::actions::Action::Purge(what)),
+                            Pending::DriverPackages(list) => {
+                                #[cfg(windows)]
+                                self.devices.packages_changed();
+                                self.actions.run(
+                                    anabolic_core::actions::Action::RemoveDriverPackages(list),
+                                );
+                            }
                             Pending::Hosts(text) => self
                                 .actions
                                 .run(anabolic_core::actions::Action::WriteHosts(text)),
