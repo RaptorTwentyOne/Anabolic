@@ -64,6 +64,7 @@ enum Pending {
         id: String,
         change: anabolic_core::interrupts::Change,
     },
+    Hosts(String),
     WaitChain(ProcKey),
     CloseHandle(FoundHandle),
     CloseHandles {
@@ -516,6 +517,7 @@ impl App {
                 Some("destinations") => NetTab::Destinations,
                 Some("dns") => NetTab::Lookups,
                 Some("quality") => NetTab::Quality,
+                Some("hosts") => NetTab::DnsTools,
                 _ => NetTab::Programs,
             };
         }

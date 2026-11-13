@@ -435,6 +435,47 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "dns",
+        usage: "",
+        about: "Which DNS server answers fastest from here",
+        details: "",
+        group: Group::Look,
+        plan: |_| {
+            Ok(tool(
+                "benchmark_dns",
+                Map::new(),
+                View::Table {
+                    list: "servers",
+                    columns: &[
+                        "server",
+                        "address",
+                        "cached_ms=From its cache",
+                        "looked_up_ms=Looked up",
+                        "lost",
+                        "in_use=In use",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
+        name: "hosts",
+        usage: "",
+        about: "The hosts file's lines",
+        details: "",
+        group: Group::Look,
+        plan: |_| {
+            Ok(tool(
+                "get_hosts_file",
+                Map::new(),
+                View::Table {
+                    list: "entries",
+                    columns: &["address", "names", "in_use=In use"],
+                },
+            ))
+        },
+    },
+    Command {
         name: "ports",
         usage: "",
         about: "Ports open to others, and who listens",

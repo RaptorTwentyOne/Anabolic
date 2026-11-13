@@ -29,6 +29,34 @@ struct CacheEntry {
 }
 
 windows::core::link!("dnsapi.dll" "system" fn DnsGetCacheDataTable(entries: *mut *mut CacheEntry) -> BOOL);
+windows::core::link!("dnsapi.dll" "system" fn DnsFlushResolverCache() -> BOOL);
+
+/// Empties the cache, as `ipconfig /flushdns` does.
+pub fn flush() -> Result<(), String> {
+    if unsafe { DnsFlushResolverCache() }.as_bool() {
+        Ok(())
+    } else {
+        Err(windows::core::Error::from_thread().message())
+    }
+}
+
+/// Every name in the cache with its addresses, as `ipconfig /displaydns`
+/// lists them; read from the cache only.
+pub fn entries() -> Vec<crate::dnscache::Cached> {
+    cached_names()
+        .into_iter()
+        .map(|name| {
+            let (mut addresses, alias4) = cached(&name, DNS_TYPE_A);
+            let (six, alias6) = cached(&name, DNS_TYPE_AAAA);
+            addresses.extend(six);
+            crate::dnscache::Cached {
+                name,
+                addresses,
+                alias: alias4 || alias6,
+            }
+        })
+        .collect()
+}
 
 /// The names in the cache.
 fn cached_names() -> Vec<String> {

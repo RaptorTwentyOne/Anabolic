@@ -518,6 +518,29 @@ impl App {
                     };
                     self.confirm = Some((dialog, Pending::Purge(what)));
                 }
+                UiCmd::FlushDns => self.actions.run(anabolic_core::actions::Action::FlushDns),
+                UiCmd::ConfirmHosts(text) => {
+                    let entries = anabolic_core::dnstools::parse_hosts(&text)
+                        .iter()
+                        .filter(|e| e.enabled)
+                        .count();
+                    let dialog = ConfirmDialog {
+                        title: "Save the hosts file?".into(),
+                        lines: vec![
+                            format!(
+                                "Names in it go to the addresses it gives, before any DNS \
+                                 server is asked: {entries} line{} in use.",
+                                if entries == 1 { "" } else { "s" }
+                            ),
+                            "The old file is kept beside it as hosts.anabolic-backup. It needs \
+                             administrator rights; Microsoft Defender may object to lines that \
+                             block Windows' own servers."
+                                .into(),
+                        ],
+                        confirm: "Save".into(),
+                    };
+                    self.confirm = Some((dialog, Pending::Hosts(text)));
+                }
                 UiCmd::ConfirmInterrupts { id, name, change } => {
                     use anabolic_core::interrupts::Change;
                     let (title, what) = match change {

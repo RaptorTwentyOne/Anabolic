@@ -344,6 +344,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "benchmark_dns",
                 "block_program",
                 "check_connection",
                 "close_connection",
@@ -360,6 +361,7 @@ mod tests {
                 "get_gpus",
                 "get_hardware",
                 "get_history",
+                "get_hosts_file",
                 "get_leaks",
                 "get_memory",
                 "get_memory_map",

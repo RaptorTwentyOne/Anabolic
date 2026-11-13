@@ -13,3 +13,21 @@ use std::sync::Arc;
 pub fn names() -> HashMap<IpAddr, Arc<str>> {
     HashMap::new()
 }
+
+/// systemd-resolved shows its cache to root only.
+pub fn entries() -> Vec<crate::dnscache::Cached> {
+    Vec::new()
+}
+
+/// Empties systemd-resolved's cache.
+pub fn flush() -> Result<(), String> {
+    let out = std::process::Command::new("resolvectl")
+        .arg("flush-caches")
+        .output()
+        .map_err(|e| format!("resolvectl could not be run: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}

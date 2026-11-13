@@ -10,3 +10,12 @@
 #[cfg_attr(target_os = "linux", path = "linux/dnscache.rs")]
 mod imp;
 pub use imp::*;
+
+/// One name in the cache, with the addresses cached for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cached {
+    pub name: String,
+    pub addresses: Vec<std::net::IpAddr>,
+    /// An alias (a CNAME) of another name.
+    pub alias: bool,
+}

@@ -166,6 +166,10 @@ pub enum Action {
         id: String,
         change: crate::interrupts::Change,
     },
+    /// Empty the system's DNS cache.
+    FlushDns,
+    /// Write the hosts file (the old one kept beside it).
+    WriteHosts(String),
     /// Write a dump of the running kernel into the folder, on a thread of
     /// its own; with `user_pages`, the processes' memory too.
     KernelDump {
@@ -303,6 +307,22 @@ impl ActionRunner {
                                 let _ = out_tx.send(outcome);
                                 notify();
                             });
+                        continue;
+                    }
+                    if matches!(action, Action::FlushDns | Action::WriteHosts(_)) {
+                        let outcome = match &action {
+                            Action::WriteHosts(text) => crate::dnstools::write_hosts(text),
+                            _ => crate::dnscache::flush()
+                                .map(|()| "The DNS cache is empty.".to_string()),
+                        };
+                        let outcome = match outcome {
+                            Ok(done) => Outcome::Info(done),
+                            Err(e) => Outcome::Error(e),
+                        };
+                        if out_tx.send(outcome).is_err() {
+                            return;
+                        }
+                        notify();
                         continue;
                     }
                     if let Action::Interrupts { id, change } = &action {

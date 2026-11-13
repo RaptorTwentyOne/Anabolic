@@ -135,6 +135,13 @@ impl AnabolicMcp {
     }
 }
 
+const DNS_SPEED: &str = "Times the DNS servers in use and the well-known public ones \
+(Cloudflare, Google, Quad9, OpenDNS, AdGuard, Control D, CleanBrowsing) from this PC, in the \
+manner of GRC's DNS Benchmark: each is asked for a dozen popular names twice (the second answer \
+from its cache) and for names it cannot have cached, one query at a time. Gives each server's \
+middle answer time both ways and its lost queries, fastest first, and in words how the one in \
+use compares. Takes a few seconds and sends a few hundred small DNS queries.";
+
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct QualityArgs {
@@ -161,6 +168,68 @@ fn stats_json(s: &anabolic_core::netquality::Stats) -> Value {
 
 #[tool_router(router = network_tools, vis = "pub(super)")]
 impl AnabolicMcp {
+    #[tool(
+        description = DNS_SPEED,
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn benchmark_dns(&self) -> Result<CallToolResult, ErrorData> {
+        use anabolic_core::dnstools;
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let timings = blocking(|| dnstools::benchmark(dnstools::resolvers())).await;
+        let round = |v: Option<f32>| v.map(|v| (v * 10.0).round() / 10.0);
+        ok(json!({
+            "verdict": dnstools::verdict(&timings),
+            "servers": timings.iter().map(|t| json!({
+                "server": t.resolver.name,
+                "address": t.resolver.addr.to_string(),
+                "in_use": t.resolver.yours,
+                "cached_ms": round(t.cached_ms),
+                "looked_up_ms": round(t.uncached_ms),
+                "lost": t.lost,
+                "sent": t.sent,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    #[tool(
+        description = "The hosts file: where it is, its lines that map names to addresses \
+                       (in use or turned off with #) and its whole text. It only reads; the \
+                       Network page's Hosts and DNS tab edits it.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_hosts_file(&self) -> Result<CallToolResult, ErrorData> {
+        use anabolic_core::dnstools;
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let text = match dnstools::read_hosts() {
+            Ok(t) => t,
+            Err(e) => return fail(format!("The hosts file could not be read: {e}")),
+        };
+        let entries = dnstools::parse_hosts(&text);
+        ok(json!({
+            "path": dnstools::hosts_path().display().to_string(),
+            "entries": entries.iter().map(|e| json!({
+                "address": e.ip,
+                "names": e.names.join(" "),
+                "in_use": e.enabled,
+            })).collect::<Vec<_>>(),
+            "text": text,
+        }))
+    }
+
     #[tool(
         description = "Measures the connection's quality, in the manner of PingPlotter: a ping \
                        a second for a few seconds to the router, the DNS server, the internet \

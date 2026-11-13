@@ -120,6 +120,10 @@ pub enum UiCmd {
     /// Ask before writing a dump of the running kernel (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     ConfirmKernelDump,
+    /// Empty the system's DNS cache.
+    FlushDns,
+    /// Ask before writing the hosts file.
+    ConfirmHosts(String),
     /// Ask before changing how a device interrupts (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     ConfirmInterrupts {

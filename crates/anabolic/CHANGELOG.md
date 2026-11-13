@@ -6,6 +6,13 @@ new since the one before.
 
 ## Unreleased
 
+- **Hosts and DNS** (Network page): which DNS server answers fastest
+  from here, the one in use against Cloudflare, Google, Quad9 and the
+  rest, timed in the manner of GRC's DNS Benchmark (from its cache, and
+  looked up); what the DNS cache holds, emptied at a click; and the hosts
+  file, edited in place and saved after a question, the old one kept
+  beside it. `anabolic-cli dns`, `anabolic-cli hosts`, and
+  `benchmark_dns`, `get_hosts_file` for MCP clients.
 - **USB history** (Performance > Devices), in the manner of USBDeview:
   every USB device this PC has known, the last connected first, with
   when each was first and last connected and last removed, connected

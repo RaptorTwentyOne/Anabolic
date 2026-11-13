@@ -146,7 +146,9 @@ pub fn perform(action: Action) -> Option<Outcome> {
         Action::Dump { .. }
         | Action::KernelDump { .. }
         | Action::Purge(_)
-        | Action::Interrupts { .. } => return None,
+        | Action::Interrupts { .. }
+        | Action::FlushDns
+        | Action::WriteHosts(_) => return None,
         Action::Suspend(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtSuspendProcess)
             .map(|_| format!("Suspended {}", t.label())),
         Action::Resume(t) => nt_call(&t, PROCESS_SUSPEND_RESUME, ntapi::NtResumeProcess)

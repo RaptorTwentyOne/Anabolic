@@ -320,6 +320,9 @@ impl App {
                             Pending::Purge(what) => self
                                 .actions
                                 .run(anabolic_core::actions::Action::Purge(what)),
+                            Pending::Hosts(text) => self
+                                .actions
+                                .run(anabolic_core::actions::Action::WriteHosts(text)),
                             Pending::Interrupts { id, change } => self
                                 .actions
                                 .run(anabolic_core::actions::Action::Interrupts { id, change }),

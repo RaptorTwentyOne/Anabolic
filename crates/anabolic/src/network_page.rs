@@ -29,6 +29,7 @@ use crate::{fmt, theme, widgets};
 
 mod dev;
 pub(crate) use dev::{DevPort, dev_ports};
+mod dnstools;
 mod quality;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -44,6 +45,8 @@ pub enum NetTab {
     Lookups,
     /// Pings to the router, the internet and a game's server.
     Quality,
+    /// The DNS servers' speed, the DNS cache and the hosts file.
+    DnsTools,
 }
 
 /// A connection, by everything that tells two apart.
@@ -73,6 +76,7 @@ pub struct NetworkPage {
     add_port: String,
     add_name: String,
     pub quality: quality::QualityView,
+    dns_tools: dnstools::DnsToolsView,
 }
 
 impl Default for NetworkPage {
@@ -94,6 +98,7 @@ impl Default for NetworkPage {
             add_port: String::new(),
             add_name: String::new(),
             quality: Default::default(),
+            dns_tools: Default::default(),
         }
     }
 }
@@ -318,6 +323,7 @@ fn header(ui: &mut Ui, snap: &Snapshot, activity: &NetActivity, page: &mut Netwo
             (NetTab::Destinations, "Destinations"),
             (NetTab::Lookups, "DNS"),
             (NetTab::Quality, "Quality"),
+            (NetTab::DnsTools, "Hosts and DNS"),
         ] {
             if ui
                 .add(egui::Button::selectable(page.tab == tab, label))
@@ -411,6 +417,7 @@ pub fn show(
         NetTab::Destinations => destinations_tab(ui, page, snap, &activity, names),
         NetTab::Lookups => lookups_tab(ui, page, snap, out),
         NetTab::Quality => quality::show(ui, &mut page.quality, snap, &activity, game, names),
+        NetTab::DnsTools => dnstools::show(ui, &mut page.dns_tools, out),
     }
 }
 
