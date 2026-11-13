@@ -135,8 +135,132 @@ impl AnabolicMcp {
     }
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct QualityArgs {
+    /// How long to ping, seconds (5 to 60, default 10).
+    pub seconds: Option<u64>,
+    /// Also ping this IPv4 address (a game's server, a host).
+    pub address: Option<String>,
+    /// Also trace the route to the address (or to the internet when none
+    /// is given), hop by hop.
+    pub route: Option<bool>,
+}
+
+fn stats_json(s: &anabolic_core::netquality::Stats) -> Value {
+    json!({
+        "sent": s.sent,
+        "lost_pct": (s.loss_pct() * 10.0).round() / 10.0,
+        "avg_ms": (s.avg * 10.0).round() / 10.0,
+        "min_ms": (s.min * 10.0).round() / 10.0,
+        "max_ms": (s.max * 10.0).round() / 10.0,
+        "jitter_ms": (s.jitter * 10.0).round() / 10.0,
+        "answers_pings": !s.silent(),
+    })
+}
+
 #[tool_router(router = network_tools, vis = "pub(super)")]
 impl AnabolicMcp {
+    #[tool(
+        description = "Measures the connection's quality, in the manner of PingPlotter: a ping \
+                       a second for a few seconds to the router, the DNS server, the internet \
+                       and optionally an address (a game's server: list_connections shows the \
+                       program's busiest endpoint), with delay, jitter and lost replies, and in \
+                       words where any trouble lies (between the PC and the router, past the \
+                       router, or only on the way to the server). With route, the route traced \
+                       hop by hop. Sends ICMP echo requests only; IPv4.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn check_connection(
+        &self,
+        Parameters(args): Parameters<QualityArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use anabolic_core::netquality::{self, Kind, Monitor, Target};
+        if let Some(refused) = self.refuse(McpKind::Read) {
+            return refused;
+        }
+        let extra = match args
+            .address
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+        {
+            Some(a) => match a.parse::<std::net::Ipv4Addr>() {
+                Ok(ip) => Some(ip),
+                Err(_) => return fail(format!("{a} is not an IPv4 address")),
+            },
+            None => None,
+        };
+        let seconds = args.seconds.unwrap_or(10).clamp(5, 60);
+        let route = args.route.unwrap_or(false);
+        let result = blocking(move || {
+            let mut targets = netquality::targets();
+            if let Some(ip) = extra
+                && !targets.iter().any(|t| t.addr == ip)
+            {
+                targets.push(Target {
+                    kind: Kind::Server,
+                    addr: ip,
+                    label: ip.to_string(),
+                });
+            }
+            let internet = targets
+                .iter()
+                .find(|t| t.kind == Kind::Internet)
+                .map(|t| t.addr);
+            let monitor = Monitor::start(targets);
+            std::thread::sleep(Duration::from_secs(seconds) + Duration::from_millis(300));
+            let series = monitor.series();
+            drop(monitor);
+            let hops = route
+                .then(|| extra.or(internet))
+                .flatten()
+                .map(|to| (to, netquality::trace(to, 3)));
+            (series, hops)
+        })
+        .await;
+        let (series, hops) = result;
+        let span = Duration::from_secs(seconds + 5);
+        let of = |k: Kind| {
+            series
+                .iter()
+                .find(|s| s.target.kind == k)
+                .map(|s| s.stats(span))
+        };
+        let mut out = json!({
+            "verdict": netquality::verdict(of(Kind::Router), of(Kind::Internet), of(Kind::Server)),
+            "targets": series.iter().map(|s| {
+                let mut row = stats_json(&s.stats(span));
+                row["kind"] = json!(s.target.kind.label());
+                row["address"] = json!(s.target.addr.to_string());
+                row["what"] = json!(s.target.label);
+                row
+            }).collect::<Vec<_>>(),
+        });
+        if let Some((to, hops)) = hops {
+            out["route_to"] = json!(to.to_string());
+            out["route"] = match hops {
+                Ok(h) => json!(
+                    h.iter()
+                        .map(|h| {
+                            let mut row = stats_json(&h.stats());
+                            row["hop"] = json!(h.ttl);
+                            row["address"] = json!(h.addr.map(|a| a.to_string()));
+                            row
+                        })
+                        .collect::<Vec<_>>()
+                ),
+                Err(e) => json!(e),
+            };
+        }
+        ok(out)
+    }
+
     #[tool(
         description = "Every TCP connection and UDP endpoint with its program, the other end's \
                        address and name (from what programs looked up, else reverse DNS), ports \

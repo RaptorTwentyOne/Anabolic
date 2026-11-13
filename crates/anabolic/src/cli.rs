@@ -404,6 +404,37 @@ const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        name: "ping",
+        usage: "[ADDRESS] [--seconds N] [--route]",
+        about: "The connection's quality: router, DNS, internet and an address",
+        details: "  ADDRESS      also ping this IPv4 address (a game's server)
+  --seconds N  how long (5 to 60, default 10)
+  --route      trace the route to it, hop by hop",
+        group: Group::Look,
+        plan: |a| {
+            let mut args = Map::new();
+            a.word(0, "address", &mut args);
+            a.number("--seconds", "seconds", &mut args)?;
+            if a.flag("--route") {
+                args.insert("route".into(), Value::Bool(true));
+            }
+            Ok(tool(
+                "check_connection",
+                args,
+                View::Table {
+                    list: "targets",
+                    columns: &[
+                        "kind",
+                        "what",
+                        "avg_ms=Average",
+                        "jitter_ms=Jitter",
+                        "lost_pct=Lost",
+                    ],
+                },
+            ))
+        },
+    },
+    Command {
         name: "ports",
         usage: "",
         about: "Ports open to others, and who listens",
@@ -856,6 +887,7 @@ const FLAGS: &[&str] = &[
     "--serious",
     "--problems",
     "--look",
+    "--route",
     "--help",
 ];
 

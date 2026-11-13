@@ -6,6 +6,16 @@ new since the one before.
 
 ## Unreleased
 
+- **Connection quality** (Network page, Quality), in the manner of
+  PingPlotter and WinMTR: a ping a second to the router, the DNS server,
+  the internet and the server a program talks to most (a game in front
+  first), each with its delay, jitter, lost replies and the last two
+  minutes as a strip, and in words where the trouble lies: between the
+  PC and the router (the Wi-Fi or the cable), past it (the line or the
+  provider), or only on the way to the server. A route traced hop by hop
+  shows where delay and loss begin. Only ICMP echo requests are sent.
+  `anabolic-cli ping [ADDRESS] [--route]`, and `check_connection` for
+  MCP clients.
 - **For gamers**, what three small tools did:
   - *Timer resolution* (Stutters page): how often Windows' clock
     interrupt fires now, and every program that asked for a finer one

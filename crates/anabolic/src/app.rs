@@ -515,6 +515,7 @@ impl App {
                 Some("development") => NetTab::Development,
                 Some("destinations") => NetTab::Destinations,
                 Some("dns") => NetTab::Lookups,
+                Some("quality") => NetTab::Quality,
                 _ => NetTab::Programs,
             };
         }
@@ -1392,6 +1393,9 @@ impl eframe::App for App {
         let devices_shown =
             self.settings.tab == Tab::Performance && self.perf_view == PerfView::Devices;
         self.devices.tick(ui.ctx(), devices_shown);
+        let quality_shown = self.settings.tab == Tab::Network
+            && self.network.tab == crate::network_page::NetTab::Quality;
+        self.network.quality.tick(quality_shown);
         let checkup_shown =
             self.settings.tab == Tab::Performance && self.perf_view == PerfView::Checkup;
         self.checkup.tick(ui.ctx(), checkup_shown);
@@ -1787,6 +1791,7 @@ impl eframe::App for App {
                         &mut self.tables.names,
                         &self.settings.blocked,
                         &self.settings.watched_ports,
+                        self.game_mode.game.as_ref().map(|g| g.key.pid),
                         &mut cmds,
                     );
                 });

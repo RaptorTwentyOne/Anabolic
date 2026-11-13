@@ -29,6 +29,7 @@ use crate::{fmt, theme, widgets};
 
 mod dev;
 pub(crate) use dev::{DevPort, dev_ports};
+mod quality;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum NetTab {
@@ -41,6 +42,8 @@ pub enum NetTab {
     Destinations,
     /// The names programs looked up.
     Lookups,
+    /// Pings to the router, the internet and a game's server.
+    Quality,
 }
 
 /// A connection, by everything that tells two apart.
@@ -69,6 +72,7 @@ pub struct NetworkPage {
     /// A port being typed in to watch, and its name.
     add_port: String,
     add_name: String,
+    pub quality: quality::QualityView,
 }
 
 impl Default for NetworkPage {
@@ -89,6 +93,7 @@ impl Default for NetworkPage {
             development: TableView::sorted(0, false),
             add_port: String::new(),
             add_name: String::new(),
+            quality: Default::default(),
         }
     }
 }
@@ -312,6 +317,7 @@ fn header(ui: &mut Ui, snap: &Snapshot, activity: &NetActivity, page: &mut Netwo
             (NetTab::Development, "Development ports"),
             (NetTab::Destinations, "Destinations"),
             (NetTab::Lookups, "DNS"),
+            (NetTab::Quality, "Quality"),
         ] {
             if ui
                 .add(egui::Button::selectable(page.tab == tab, label))
@@ -347,6 +353,7 @@ pub fn show(
     names: &mut Names,
     blocked: &[String],
     watched: &[crate::settings::PortWatch],
+    game: Option<u32>,
     out: &mut Vec<UiCmd>,
 ) {
     let Some(activity) = snap.system.net_activity.clone() else {
@@ -403,6 +410,7 @@ pub fn show(
         NetTab::Development => dev::development_tab(ui, page, snap, &activity, watched, out),
         NetTab::Destinations => destinations_tab(ui, page, snap, &activity, names),
         NetTab::Lookups => lookups_tab(ui, page, snap, out),
+        NetTab::Quality => quality::show(ui, &mut page.quality, snap, &activity, game, names),
     }
 }
 

@@ -345,6 +345,7 @@ mod tests {
             names,
             [
                 "block_program",
+                "check_connection",
                 "close_connection",
                 "control_service",
                 "end_process",

@@ -56,6 +56,7 @@ pub mod memtools;
 pub mod model;
 pub mod modules;
 pub mod net;
+pub mod netquality;
 pub mod nettrace;
 pub mod placement;
 pub mod power;
