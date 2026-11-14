@@ -375,9 +375,17 @@ impl ActionRunner {
                         continue;
                     }
                     if let Action::Purge(what) = action {
+                        let mut memory = crate::memory::MemorySampler::new();
+                        let before = memory.sample();
                         let outcome = match crate::memtools::purge(what) {
                             Ok(()) => {
-                                Outcome::Info(format!("Done: {}", what.label().to_lowercase()))
+                                let done = format!("Done: {}", what.label().to_lowercase());
+                                Outcome::Info(
+                                    match crate::memtools::effect(what, &before, &memory.sample()) {
+                                        Some(effect) => format!("{done}: {effect}."),
+                                        None => format!("{done}."),
+                                    },
+                                )
                             }
                             Err(e) => Outcome::Error(format!("{}: {e}", what.label())),
                         };

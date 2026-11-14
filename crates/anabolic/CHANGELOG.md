@@ -156,12 +156,13 @@ new since the one before.
   `get_program_history` for MCP clients.
 - **Give memory back** (Performance, Memory): empty the standby list, only
   its low-priority part, the modified list, every working set or the file
-  cache, as RAMMap does, each with what it does and when it helps. On
-  Linux, the page cache.
+  cache, as RAMMap does, each with what it does and when it helps, and
+  afterwards what it freed. On Linux, the page cache.
 - **Live kernel dump** (Stutters page, and the System process' menu): the
   running kernel's memory for WinDbg, written without stopping anything,
   as Task Manager writes one: what a driver is doing while the PC stutters
-  or hangs.
+  or hangs. It takes seconds, and several GB on a PC with much RAM: it is
+  not started on a drive short of room.
 - **Anabolic's own memory stays put.** It kept a little of every process
   it saw start (its command line, its family, its program's icon), and a
   build starts thousands: some 10 KB each, over 100 MB an hour on a

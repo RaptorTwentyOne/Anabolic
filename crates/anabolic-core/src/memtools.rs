@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::model::{MemoryLists, MemoryStats};
+
 #[cfg_attr(windows, path = "windows/memtools.rs")]
 #[cfg_attr(target_os = "linux", path = "linux/memtools.rs")]
 mod imp;
@@ -66,8 +68,9 @@ impl Purge {
             }
             Purge::Modified => "Writes what programs changed in memory to disk now.",
             Purge::WorkingSets => {
-                "Takes every process' pages out of RAM; each brings back what it touches. \
-                 Everything is slower for a while: rarely what you want."
+                "Takes every process' pages out of RAM. What they changed goes to the page \
+                 file, often many gigabytes written in seconds, and each process brings back \
+                 what it touches, so everything is slower for a while. Rarely what you want."
             }
             Purge::FileCache => {
                 "Takes the system's file cache out of RAM: files are read from disk again."
@@ -87,6 +90,43 @@ impl Purge {
 
     pub fn from_key(key: &str) -> Option<Purge> {
         Purge::ALL.into_iter().find(|p| p.key() == key)
+    }
+}
+
+/// What a purge did, in a few words, from the memory figures before and
+/// after it; None where they cannot be read.
+pub fn effect(what: Purge, before: &MemoryStats, after: &MemoryStats) -> Option<String> {
+    if what == Purge::FileCache {
+        return Some(format!(
+            "{} of file cache let go",
+            size(before.system_cache.saturating_sub(after.system_cache))
+        ));
+    }
+    let (b, a) = (before.lists?, after.lists?);
+    let free = |l: &MemoryLists| l.free + l.zeroed;
+    Some(match what {
+        Purge::Standby | Purge::StandbyLowPriority => format!(
+            "{} freed, {} free now",
+            size(free(&a).saturating_sub(free(&b))),
+            size(free(&a))
+        ),
+        Purge::Modified => format!(
+            "{} written to disk",
+            size(b.modified.saturating_sub(a.modified))
+        ),
+        Purge::WorkingSets => format!(
+            "{} taken out of programs' working sets",
+            size((a.standby + a.modified).saturating_sub(b.standby + b.modified))
+        ),
+        Purge::FileCache => unreachable!(),
+    })
+}
+
+fn size(bytes: u64) -> String {
+    if bytes >= 1 << 30 {
+        format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64)
+    } else {
+        format!("{} MB", bytes >> 20)
     }
 }
 
@@ -129,5 +169,33 @@ mod tests {
             "{name}"
         );
         assert!(!name.contains(':') && !name.contains(' '), "{name}");
+    }
+
+    #[test]
+    fn says_what_a_purge_did() {
+        const GB: u64 = 1 << 30;
+        let at = |free, modified, standby| MemoryStats {
+            lists: Some(MemoryLists {
+                zeroed: 0,
+                free,
+                modified,
+                standby,
+            }),
+            ..Default::default()
+        };
+        let (before, after) = (at(0, 3 * GB, 40 * GB), at(40 * GB, 3 * GB, 0));
+        assert_eq!(
+            effect(Purge::Standby, &before, &after).unwrap(),
+            "40.0 GB freed, 40.0 GB free now"
+        );
+        let after = at(0, GB / 4, 40 * GB);
+        assert_eq!(
+            effect(Purge::Modified, &before, &after).unwrap(),
+            "2.8 GB written to disk"
+        );
+        assert_eq!(
+            effect(Purge::Standby, &before, &MemoryStats::default()),
+            None
+        );
     }
 }

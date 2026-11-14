@@ -336,7 +336,7 @@ impl App {
                             Pending::KernelDump => {
                                 if let Some(dir) = crate::data_dir().map(|d| d.join("dumps")) {
                                     self.toasts.info(
-                                        "Writing a live kernel dump: it takes a minute or two.",
+                                        "Writing a live kernel dump: it can take up to a minute.",
                                     );
                                     self.actions
                                         .run(anabolic_core::actions::Action::KernelDump {

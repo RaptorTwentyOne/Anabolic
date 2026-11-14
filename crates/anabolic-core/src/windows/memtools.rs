@@ -36,7 +36,8 @@ const MEMORY_PURGE_LOW_PRIORITY_STANDBY_LIST: u32 = 5;
 const SYSDBG_GET_LIVE_KERNEL_DUMP: u32 = 37;
 const LIVE_SYSTEM_DUMP: u32 = 0x161;
 
-/// Below this free on the dump's drive, no dump is started.
+/// Below this free on the dump's drive, no dump is started; more where
+/// there is more RAM (a 128 GB machine's kernel dump took 8.4 GB).
 const ROOM_NEEDED: u64 = 8 << 30;
 
 pub fn purge(what: Purge) -> Result<(), String> {
@@ -96,13 +97,15 @@ pub fn kernel_dump(dir: &Path, user_pages: bool) -> Result<KernelDump, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut free = 0u64;
     let wdir = wide(&dir.to_string_lossy());
+    let needed = ROOM_NEEDED.max(crate::memory::MemorySampler::new().sample().total / 8);
     if unsafe { GetDiskFreeSpaceExW(PCWSTR(wdir.as_ptr()), Some(&mut free), None, None) }.is_ok()
-        && free < ROOM_NEEDED
+        && free < needed
     {
         return Err(format!(
-            "{} has {} GB free: a kernel dump can take several",
+            "{} has {} GB free: a kernel dump on this PC can take up to {} GB",
             dir.display(),
-            free >> 30
+            free >> 30,
+            needed >> 30
         ));
     }
     enable_privilege(w!("SeDebugPrivilege"))?;
@@ -155,4 +158,99 @@ pub fn kernel_dump(dir: &Path, user_pages: bool) -> Result<KernelDump, String> {
         bytes,
         took: started.elapsed(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ntapi::SYSTEM_MEMORY_LIST_INFORMATION;
+
+    const MB: usize = 1 << 20;
+
+    fn lists() -> SYSTEM_MEMORY_LIST_INFORMATION {
+        enable_privilege(w!("SeProfileSingleProcessPrivilege")).unwrap();
+        let mut lists = SYSTEM_MEMORY_LIST_INFORMATION::default();
+        let mut returned = 0;
+        let status = unsafe {
+            ntapi::NtQuerySystemInformation(
+                ntapi::SystemMemoryListInformation,
+                (&raw mut lists).cast(),
+                std::mem::size_of::<SYSTEM_MEMORY_LIST_INFORMATION>() as u32,
+                &mut returned,
+            )
+        };
+        assert!(
+            ntapi::nt_success(status),
+            "{}",
+            ntapi::status_message(status)
+        );
+        lists
+    }
+
+    fn show(when: &str, l: &SYSTEM_MEMORY_LIST_INFORMATION) {
+        let by: Vec<String> = l
+            .PageCountByPriority
+            .iter()
+            .map(|p| format!("{}", p * 4096 / MB))
+            .collect();
+        println!(
+            "{when:<38} free {:>7} MB  modified {:>6} MB  standby {:>7} MB  by priority 0-7 [{}]",
+            (l.FreePageCount + l.ZeroPageCount) * 4096 / MB,
+            l.ModifiedPageCount * 4096 / MB,
+            l.PageCountByPriority.iter().sum::<usize>() * 4096 / MB,
+            by.join(" ")
+        );
+    }
+
+    /// Live: gives this machine's memory back, gentlest first. Not the
+    /// working sets unless ANABOLIC_PURGE_ALL is set: what programs changed
+    /// then goes to the page file, 26 GB of writes in 15 seconds once.
+    /// Administrator only, and never in a normal run:
+    /// `cargo test -p anabolic-core gives_memory_back -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn gives_memory_back() {
+        let all = std::env::var_os("ANABOLIC_PURGE_ALL").is_some();
+        let mut memory = crate::memory::MemorySampler::new();
+        show("before", &lists());
+        for what in Purge::ALL {
+            if what == Purge::WorkingSets && !all {
+                continue;
+            }
+            let before = memory.sample();
+            let t = Instant::now();
+            purge(what).unwrap_or_else(|e| panic!("{}: {e}", what.label()));
+            let took = t.elapsed();
+            show(&format!("{} ({took:.1?})", what.label()), &lists());
+            let said = crate::memtools::effect(what, &before, &memory.sample());
+            println!("{:<38} says: {}", "", said.unwrap_or_default());
+        }
+    }
+
+    /// Live: writes a kernel dump of this machine into ANABOLIC_DUMP_DIR
+    /// (or the temp folder) and leaves it there. Administrator only:
+    /// `cargo test -p anabolic-core writes_a_kernel_dump -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn writes_a_kernel_dump() {
+        let dir = std::env::var_os("ANABOLIC_DUMP_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("anabolic-kernel-dump"));
+        let dump = kernel_dump(&dir, false).unwrap();
+        println!(
+            "{} : {} MB in {:.1?}",
+            dump.path.display(),
+            dump.bytes >> 20,
+            dump.took
+        );
+        assert!(dump.bytes > 16 << 20);
+        let mut head = [0u8; 8];
+        use std::io::Read;
+        std::fs::File::open(&dump.path)
+            .unwrap()
+            .read_exact(&mut head)
+            .unwrap();
+        // A 64-bit kernel dump begins PAGEDU64.
+        assert_eq!(&head, b"PAGEDU64", "{head:?}");
+    }
 }
