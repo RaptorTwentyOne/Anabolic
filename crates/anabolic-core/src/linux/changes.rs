@@ -44,9 +44,19 @@ fn kind_of(package: &str) -> Kind {
 }
 
 fn dpkg(out: &mut Vec<Change>) -> bool {
-    let Ok(text) = std::fs::read_to_string("/var/log/dpkg.log") else {
-        return false;
-    };
+    // The log is turned over monthly; last month's stays as plain text
+    // beside it (older ones are compressed).
+    let mut found = false;
+    for path in ["/var/log/dpkg.log.1", "/var/log/dpkg.log"] {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            found = true;
+            dpkg_lines(&text, out);
+        }
+    }
+    found
+}
+
+fn dpkg_lines(text: &str, out: &mut Vec<Change>) {
     for line in text.lines() {
         // 2026-11-13 10:12:01 install name:amd64 <none> 1.2-3
         let w: Vec<&str> = line.split_whitespace().collect();
@@ -70,7 +80,6 @@ fn dpkg(out: &mut Vec<Change>) -> bool {
             times: 1,
         });
     }
-    true
 }
 
 fn pacman(out: &mut Vec<Change>) -> bool {
