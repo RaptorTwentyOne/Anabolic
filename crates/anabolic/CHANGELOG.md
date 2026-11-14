@@ -4,7 +4,14 @@ What changed in each release of Anabolic, newest first. Anabolic carries
 this file inside it: the first time a new version starts, it shows what is
 new since the one before.
 
-## Unreleased
+## 0.8.0 (2026-11-14)
+
+Most of the small tools a power user downloads one by one, inside
+Anabolic: what crashed and what changed before it, every device and its
+driver, everything that starts by itself, a process' memory region by
+region and its last day, the connection's quality, DNS, data usage and
+Wi-Fi, a disk speed test, VirusTotal, and a checkup of what costs speed
+without saying so. Anabolic's own memory no longer grows over days.
 
 - **Data usage** (Network page), in the manner of NetworkUsageView: what
   each program received and sent over the last day, week, month or two,

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/anabolic-core", "crates/anabolic"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ homepage = "https://github.com/RaptorTwentyOne/Anabolic"
 
 [workspace.dependencies]
 # The same version as the application: the two are released together.
-anabolic-core = { path = "crates/anabolic-core", version = "=0.7.1" }
+anabolic-core = { path = "crates/anabolic-core", version = "=0.8.0" }
 arc-swap = "1.9"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }
