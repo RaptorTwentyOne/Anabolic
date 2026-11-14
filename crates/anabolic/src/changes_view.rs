@@ -180,7 +180,12 @@ pub fn show(ui: &mut Ui, view: &mut ChangesView, crashes: Option<&Crashes>) {
                             };
                             ui.label(RichText::new(time).color(theme::TEXT_DIM));
                             ui.label(RichText::new(c.kind.label()).color(color(c.kind)));
-                            cell(ui, name_width, RichText::new(&c.what)).on_hover_text(&c.what);
+                            let what = if c.times > 1 {
+                                format!("{} ({} times)", c.what, c.times)
+                            } else {
+                                c.what.clone()
+                            };
+                            cell(ui, name_width, RichText::new(&what)).on_hover_text(&what);
                             cell(
                                 ui,
                                 detail_width,

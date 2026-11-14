@@ -50,11 +50,12 @@ pub struct Device {
 impl Device {
     /// Its own name and Windows' together, when they differ.
     pub fn full_name(&self) -> String {
-        match &self.product {
-            Some(p) if !self.name.to_lowercase().contains(&p.to_lowercase()) => {
-                format!("{p} ({})", self.name)
-            }
-            _ => self.name.clone(),
+        // A disk's name keeps its padded vendor field: "USB     SanDisk".
+        let tidy = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name = tidy(&self.name);
+        match self.product.as_deref().map(tidy) {
+            Some(p) if !name.to_lowercase().contains(&p.to_lowercase()) => format!("{p} ({name})"),
+            _ => name,
         }
     }
 }

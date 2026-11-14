@@ -646,7 +646,8 @@ impl AnabolicMcp {
             "by_program": by_program,
         });
         if let Some(since) = read.since {
-            out["records_reach_back_to"] = json!(anabolic_core::sysinfo::local_time(since));
+            out["application_log_reaches_back_to"] =
+                json!(anabolic_core::sysinfo::local_time(since));
         }
         if !read.notes.is_empty() {
             out["notes"] = json!(read.notes);

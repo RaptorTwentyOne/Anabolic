@@ -67,6 +67,7 @@ fn dpkg(out: &mut Vec<Change>) -> bool {
             },
             what: name.to_string(),
             detail: format!("{} {}", w[2], w[5]),
+            times: 1,
         });
     }
     true
@@ -105,6 +106,7 @@ fn pacman(out: &mut Vec<Change>) -> bool {
             },
             what: w[1].to_string(),
             detail: format!("{} {}", w[0], w[2..].join(" ")),
+            times: 1,
         });
     }
     true
@@ -118,6 +120,7 @@ pub fn read() -> Result<Changes, String> {
         notes.push("No package manager log was found (dpkg's or pacman's).".into());
     }
     changes.sort_by_key(|c| std::cmp::Reverse(c.at));
+    let mut changes = crate::changes::collapse(changes);
     changes.truncate(5000);
     Ok(Changes {
         changes,

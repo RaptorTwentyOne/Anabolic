@@ -520,6 +520,7 @@ impl AnabolicMcp {
                         "kind": c.kind.label(),
                         "what": c.what,
                         "detail": c.detail,
+                        "times": (c.times > 1).then_some(c.times),
                     })
                 }).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
@@ -530,6 +531,7 @@ impl AnabolicMcp {
                 "kind": c.kind.label(),
                 "what": c.what,
                 "detail": c.detail,
+                "times": (c.times > 1).then_some(c.times),
             })).collect::<Vec<_>>(),
             "notes": read.notes,
         }))

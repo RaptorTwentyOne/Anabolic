@@ -82,6 +82,7 @@ fn from_events(out: &mut Vec<Change>, notes: &mut Vec<String>) {
             kind,
             what,
             detail,
+            times: 1,
         };
         match (e.provider.as_str(), e.id) {
             ("Microsoft-Windows-WindowsUpdateClient", 19) => out.push(change(
@@ -207,6 +208,7 @@ fn from_uninstall(out: &mut Vec<Change>) {
                     .flatten()
                     .collect::<Vec<_>>()
                     .join(", "),
+                times: 1,
             });
         }
     }
@@ -219,6 +221,7 @@ pub fn read() -> Result<Changes, String> {
     from_events(&mut changes, &mut notes);
     from_uninstall(&mut changes);
     changes.sort_by_key(|c| std::cmp::Reverse(c.at));
+    let changes = crate::changes::collapse(changes);
     if let Some(since) = crate::evtlog::oldest("System") {
         notes.push(format!(
             "The event logs reach back to {}; programs' own install dates go further.",

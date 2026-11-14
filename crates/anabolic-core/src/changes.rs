@@ -60,6 +60,9 @@ pub struct Change {
     pub kind: Kind,
     pub what: String,
     pub detail: String,
+    /// How many times the same change came that day: 1 mostly, more for
+    /// a service a program installs again and again.
+    pub times: u32,
 }
 
 #[derive(Debug, Default)]
@@ -117,6 +120,35 @@ fn day_of(filetime: i64) -> String {
         .unwrap_or_default()
 }
 
+/// The calendar day a change belongs to. A day-only date is noon UTC of
+/// the day it names.
+fn day_key(c: &Change) -> String {
+    if c.day_only {
+        civil((c.at / 10_000_000 - 11_644_473_600).div_euclid(86_400))
+    } else {
+        day_of(c.at)
+    }
+}
+
+/// The same change more than once on a day, newest first, kept once with
+/// its count, at its latest.
+pub fn collapse(changes: Vec<Change>) -> Vec<Change> {
+    let mut out: Vec<Change> = Vec::with_capacity(changes.len());
+    let mut seen: std::collections::HashMap<(String, Kind, String, String), usize> =
+        std::collections::HashMap::new();
+    for c in changes {
+        let key = (day_key(&c), c.kind, c.what.clone(), c.detail.clone());
+        match seen.get(&key) {
+            Some(&i) => out[i].times += c.times.max(1),
+            None => {
+                seen.insert(key, out.len());
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// The days, newest first, that saw a change or a crash.
 pub fn days(changes: &[Change], crashes: Option<&crate::crashes::Crashes>) -> Vec<Day> {
     fn slot(out: &mut Vec<Day>, day: String) -> &mut Day {
@@ -135,13 +167,7 @@ pub fn days(changes: &[Change], crashes: Option<&crate::crashes::Crashes>) -> Ve
     }
     let mut out: Vec<Day> = Vec::new();
     for (i, c) in changes.iter().enumerate() {
-        // A day-only date is noon UTC of the day it names.
-        let day = if c.day_only {
-            civil((c.at / 10_000_000 - 11_644_473_600).div_euclid(86_400))
-        } else {
-            day_of(c.at)
-        };
-        slot(&mut out, day).changes.push(i);
+        slot(&mut out, day_key(c)).changes.push(i);
     }
     if let Some(cr) = crashes {
         let first = changes.last().map_or(i64::MAX, |c| c.at);
@@ -189,6 +215,7 @@ mod tests {
             kind,
             what: day.into(),
             detail: String::new(),
+            times: 1,
         };
         let list = [
             c("20261113", Kind::Driver),
@@ -199,6 +226,16 @@ mod tests {
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].day, "2026-11-13");
         assert_eq!(d[0].changes.len(), 2);
+
+        let again = collapse(vec![
+            c("20261113", Kind::Service),
+            c("20261113", Kind::Driver),
+            c("20261113", Kind::Service),
+            c("20261110", Kind::Service),
+        ]);
+        assert_eq!(again.len(), 3);
+        assert_eq!((again[0].kind, again[0].times), (Kind::Service, 2));
+        assert_eq!(again[2].times, 1);
     }
 
     #[test]

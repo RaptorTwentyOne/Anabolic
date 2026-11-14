@@ -415,21 +415,38 @@ const COMMANDS: &[Command] = &[
             let mut args = Map::new();
             a.word(0, "address", &mut args);
             a.number("--seconds", "seconds", &mut args)?;
-            if a.flag("--route") {
+            let route = a.flag("--route");
+            if route {
                 args.insert("route".into(), Value::Bool(true));
             }
+            const COLUMNS: &[&str] = &[
+                "kind",
+                "what",
+                "avg_ms=Average",
+                "jitter_ms=Jitter",
+                "lost_pct=Lost",
+            ];
             Ok(tool(
                 "check_connection",
                 args,
-                View::Table {
-                    list: "targets",
-                    columns: &[
-                        "kind",
-                        "what",
-                        "avg_ms=Average",
-                        "jitter_ms=Jitter",
-                        "lost_pct=Lost",
-                    ],
+                if route {
+                    View::Tables {
+                        list: "targets",
+                        columns: COLUMNS,
+                        then: "route",
+                        then_columns: &[
+                            "hop",
+                            "address",
+                            "avg_ms=Average",
+                            "jitter_ms=Jitter",
+                            "lost_pct=Lost",
+                        ],
+                    }
+                } else {
+                    View::Table {
+                        list: "targets",
+                        columns: COLUMNS,
+                    }
                 },
             ))
         },
@@ -827,7 +844,7 @@ const COMMANDS: &[Command] = &[
                 args,
                 View::Table {
                     list: "changes",
-                    columns: &["when", "kind", "what", "detail"],
+                    columns: &["when", "kind", "what", "times=Times", "detail"],
                 },
             ))
         },

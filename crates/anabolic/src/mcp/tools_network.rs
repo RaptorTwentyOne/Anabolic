@@ -390,30 +390,34 @@ impl AnabolicMcp {
                 .map(|t| t.addr);
             let monitor = Monitor::start(targets);
             std::thread::sleep(Duration::from_secs(seconds) + Duration::from_millis(300));
-            let series = monitor.series();
+            // Added up now: the window counts back from the moment it is
+            // read, and a route traced first would leave the pings out.
+            let span = Duration::from_secs(seconds + 5);
+            let measured: Vec<_> = monitor
+                .series()
+                .into_iter()
+                .map(|s| {
+                    let stats = s.stats(span);
+                    (s.target, stats)
+                })
+                .collect();
             drop(monitor);
             let hops = route
                 .then(|| extra.or(internet))
                 .flatten()
                 .map(|to| (to, netquality::trace(to, 3)));
-            (series, hops)
+            (measured, hops)
         })
         .await;
-        let (series, hops) = result;
-        let span = Duration::from_secs(seconds + 5);
-        let of = |k: Kind| {
-            series
-                .iter()
-                .find(|s| s.target.kind == k)
-                .map(|s| s.stats(span))
-        };
+        let (measured, hops) = result;
+        let of = |k: Kind| measured.iter().find(|(t, _)| t.kind == k).map(|(_, s)| *s);
         let mut out = json!({
             "verdict": netquality::verdict(of(Kind::Router), of(Kind::Internet), of(Kind::Server)),
-            "targets": series.iter().map(|s| {
-                let mut row = stats_json(&s.stats(span));
-                row["kind"] = json!(s.target.kind.label());
-                row["address"] = json!(s.target.addr.to_string());
-                row["what"] = json!(s.target.label);
+            "targets": measured.iter().map(|(target, stats)| {
+                let mut row = stats_json(stats);
+                row["kind"] = json!(target.kind.label());
+                row["address"] = json!(target.addr.to_string());
+                row["what"] = json!(target.label);
                 row
             }).collect::<Vec<_>>(),
         });

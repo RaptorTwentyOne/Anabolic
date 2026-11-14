@@ -23,6 +23,14 @@ pub enum View {
         list: &'static str,
         columns: &'static [&'static str],
     },
+    /// As Table, and a second list under it when the answer has one
+    /// (`ping --route`'s hops).
+    Tables {
+        list: &'static str,
+        columns: &'static [&'static str],
+        then: &'static str,
+        then_columns: &'static [&'static str],
+    },
     /// The text under `key` as it is: a report.
     Text { key: &'static str },
     /// The list under `list` as an indented tree, each item's `children`
@@ -50,6 +58,28 @@ pub fn render(value: &Value, view: &View) -> String {
             match value.get(*list).and_then(Value::as_array) {
                 Some(items) if !items.is_empty() => table(&mut out, items, columns),
                 _ => out.push_str("Nothing.\n"),
+            }
+            footer(&mut out, value, list);
+            out
+        }
+        View::Tables {
+            list,
+            columns,
+            then,
+            then_columns,
+        } => {
+            let mut out = String::new();
+            match value.get(*list).and_then(Value::as_array) {
+                Some(items) if !items.is_empty() => table(&mut out, items, columns),
+                _ => out.push_str("Nothing.\n"),
+            }
+            if let Some(items) = value
+                .get(*then)
+                .and_then(Value::as_array)
+                .filter(|i| !i.is_empty())
+            {
+                out.push('\n');
+                table(&mut out, items, then_columns);
             }
             footer(&mut out, value, list);
             out
@@ -300,8 +330,13 @@ fn footer(out: &mut String, value: &Value, list: &str) {
     };
     let mut notes = Vec::new();
     for (key, v) in map {
-        // A "no" (not truncated, say) is nothing to remark on.
-        if key == list || !is_flat(v) || v == &Value::Bool(false) {
+        // A "no" (not truncated, say) is nothing to remark on, and a text
+        // of many lines (a whole file) is no note: --json has it.
+        if key == list
+            || !is_flat(v)
+            || v == &Value::Bool(false)
+            || v.as_str().is_some_and(|s| s.contains('\n'))
+        {
             continue;
         }
         let text = scalar(key, v);
@@ -311,6 +346,9 @@ fn footer(out: &mut String, value: &Value, list: &str) {
         if key.contains("error") {
             let _ = writeln!(out, "{}: {text}", title(key));
         } else {
+            // Notes run on in one line: a sentence's full stop would
+            // stand before a comma.
+            let text = text.trim_end_matches('.');
             notes.push(format!("{} {text}", title(key).to_lowercase()));
         }
     }
