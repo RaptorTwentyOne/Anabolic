@@ -353,7 +353,10 @@ mod tests {
     #[test]
     fn reads_a_sleeping_childs_stack() {
         let mut child = std::process::Command::new("cmd.exe")
-            .args(["/c", "ping -n 30 127.0.0.1 >nul"])
+            .args([
+                "/c",
+                "%SystemRoot%\\System32\\PING.EXE -n 30 127.0.0.1 >nul",
+            ])
             .spawn()
             .expect("spawn cmd");
         std::thread::sleep(Duration::from_millis(500));

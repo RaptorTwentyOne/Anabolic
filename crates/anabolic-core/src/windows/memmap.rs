@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn maps_a_childs_memory() {
         let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping -n 6 127.0.0.1 >nul"])
+            .args(["/c", "%SystemRoot%\\System32\\PING.EXE -n 6 127.0.0.1 >nul"])
             .spawn()
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));

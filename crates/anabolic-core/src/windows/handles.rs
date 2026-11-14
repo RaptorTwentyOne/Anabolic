@@ -873,7 +873,7 @@ mod tests {
         std::fs::write(&path, b"held").unwrap();
         // The child inherits the open file as its stdin and sits on it.
         let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping -n 6 127.0.0.1 >nul"])
+            .args(["/c", "%SystemRoot%\\System32\\PING.EXE -n 6 127.0.0.1 >nul"])
             .stdin(std::fs::File::open(&path).unwrap())
             .spawn()
             .unwrap();

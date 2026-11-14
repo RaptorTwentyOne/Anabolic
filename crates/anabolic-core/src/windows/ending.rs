@@ -310,7 +310,10 @@ mod tests {
     #[test]
     fn a_child_has_one_holder_us_excluded() {
         let mut child = std::process::Command::new("cmd.exe")
-            .args(["/c", "ping -n 30 127.0.0.1 >nul"])
+            .args([
+                "/c",
+                "%SystemRoot%\\System32\\PING.EXE -n 30 127.0.0.1 >nul",
+            ])
             .spawn()
             .expect("spawn cmd");
         let mut scanner = crate::scan::ProcessScanner::new();

@@ -167,7 +167,7 @@ mod tests {
     /// A process of our own to limit: waits on its standard input.
     fn child() -> std::process::Child {
         std::process::Command::new("cmd.exe")
-            .args(["/c", "more"])
+            .args(["/c", r"%SystemRoot%\System32\more.com"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()

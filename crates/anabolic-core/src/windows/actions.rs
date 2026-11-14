@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn efficiency_mode_reads_back_what_was_set() {
         let mut c = std::process::Command::new("cmd.exe")
-            .args(["/c", "more"])
+            .args(["/c", r"%SystemRoot%\System32\more.com"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()

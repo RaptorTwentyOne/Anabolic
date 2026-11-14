@@ -296,7 +296,7 @@ fn records_a_child_step_by_step() {
     let _turn = crate::etw::kernel_turn();
     let file = std::env::temp_dir().join(format!("anabolic-activity-{}.txt", std::process::id()));
     let args = format!(
-        "/c echo recorded> \"{f}\" & reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\" /v ProgramFilesDir & reg query HKCU\\Software\\AnabolicNoSuchKey & del \"{f}\"",
+        "/c echo recorded> \"{f}\" & %SystemRoot%\\System32\\reg.exe query \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\" /v ProgramFilesDir & %SystemRoot%\\System32\\reg.exe query HKCU\\Software\\AnabolicNoSuchKey & del \"{f}\"",
         f = file.display()
     );
     let mut recorder =
