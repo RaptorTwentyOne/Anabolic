@@ -48,6 +48,12 @@ pub fn read() -> Result<Crashes, String> {
     let since = oldest("Application");
     let mut crashes = assemble(&events, &reports, &dumps, since);
     crashes.sort_by_key(|c| std::cmp::Reverse(c.at));
+    // Error Reporting keeps reports from before the log's start: the
+    // records reach back to the older of the two.
+    let since = match (since, crashes.last().map(|c| c.at)) {
+        (Some(s), Some(oldest)) => Some(s.min(oldest)),
+        (s, oldest) => s.or(oldest),
+    };
     Ok(Crashes {
         crashes,
         notes,
